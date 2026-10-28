@@ -681,7 +681,7 @@ wheels = [
 ]
 
 [[package]]
-name = "hr-sync"
+name = "hochfrequenz-hr-sync"
 source = { editable = "." }
 dependencies = [
     { name = "decidalo-client" },

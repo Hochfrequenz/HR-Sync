@@ -12,7 +12,7 @@ def _build_parser() -> argparse.ArgumentParser:
         prog="hr-sync",
         description="Rolls out the master data of new employees from Personio to weclapp and Decidalo.",
     )
-    parser.add_argument("--version", action="version", version=f"%(prog)s {version('hr-sync')}")
+    parser.add_argument("--version", action="version", version=f"%(prog)s {version('hochfrequenz-hr-sync')}")
     return parser
 
 
