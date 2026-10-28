@@ -40,6 +40,10 @@ def build_plan(
             if system not in targets:
                 continue
             target = targets[system]
+            if employee_number in target.excluded:
+                # e.g. a duplicate employee number: creating the employee would add yet another duplicate,
+                # and the target's notices already name the problem
+                continue
             existing = target.records.get(employee_number)
             if existing is None:
                 operations.append(Operation(system=system, type=OperationType.CREATE, record=desired))

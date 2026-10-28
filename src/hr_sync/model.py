@@ -121,7 +121,10 @@ class Snapshot(BaseModel):
     incomplete: frozenset[str] = frozenset()
     """weclapp only: the employee numbers of users without employee record"""
     excluded: dict[str, ExclusionReason] = Field(default_factory=dict)
-    """Personio only: why loaded employees with employee number are not part of :attr:`records`"""
+    """
+    why loaded employees with employee number are not part of :attr:`records`; in the target systems, these are
+    duplicate employee numbers, which the planner must not treat as missing
+    """
     notices: list[Notice] = Field(default_factory=list)
 
 

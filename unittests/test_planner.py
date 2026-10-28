@@ -1,6 +1,17 @@
 from datetime import date
 
-from hr_sync.model import EmployeeRecord, ExclusionReason, Notice, NoticeReason, Snapshot, System, TargetSystem
+import pytest
+
+from hr_sync.model import (
+    EmployeeRecord,
+    ExclusionReason,
+    Notice,
+    NoticeReason,
+    Snapshot,
+    SnapshotBuilder,
+    System,
+    TargetSystem,
+)
 from hr_sync.plan import Deviation, EmployeePlan, Operation, OperationType, SyncPlan
 from hr_sync.planner import build_plan, check_only
 
@@ -133,6 +144,22 @@ class TestBuildPlan:
             _targets(weclapp=_snapshot(System.WECLAPP, ERIKA, unknown, excluded)),
         )
         assert plan.only_in_target == {TargetSystem.WECLAPP: 1, TargetSystem.DECIDALO: 0}
+
+    @pytest.mark.parametrize("duplicated_in", list(TargetSystem))
+    def test_duplicate_employee_number_in_a_target_is_not_created_again(self, duplicated_in: TargetSystem) -> None:
+        builder = SnapshotBuilder(System(duplicated_in.value))
+        builder.add("1", ERIKA)
+        builder.add("2", ERIKA)
+        targets = _targets()
+        targets[duplicated_in] = builder.build()
+        plan = build_plan(_snapshot(System.PERSONIO, ERIKA), targets)
+        other = next(system for system in TargetSystem if system != duplicated_in)
+        assert plan.employees == (
+            EmployeePlan(
+                employee_number="00165",
+                operations=(Operation(system=other, type=OperationType.CREATE, record=ERIKA),),
+            ),
+        )
 
 
 class TestCheckOnly:
