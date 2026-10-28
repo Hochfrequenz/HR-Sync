@@ -252,7 +252,8 @@ class SyncPlan(BaseModel):
     def is_empty(self) -> bool: ...   # True, wenn es keine Operationen gibt; Abweichungen zählen nicht
 ```
 
-**Vergleich je Zielsystem:** Jeder Adapter legt fest, welche Felder er vergleicht.
+**Vergleich je Zielsystem:** Welche Felder je Zielsystem verglichen werden, steht zentral im Planner (`COMPARED_FIELDS`),
+damit die Vergleichsregeln an einer Stelle liegen.
 
 | System | verglichene Felder |
 |---|---|
@@ -550,11 +551,12 @@ src/hr_sync/
 ├── anonymize.py          # Anonymisierung im Test-Modus
 ├── config.py             # Settings (pydantic-settings), Prüfungen für den Test-Modus
 ├── events.py             # Loguru-Setup, wide_event(), Intercept-Handler
-├── model.py              # EmployeeRecord, Snapshot, Notice, ExclusionReason, System
+├── model.py              # EmployeeRecord, Snapshot, SnapshotBuilder, Notice, ExclusionReason, System, TargetSystem
 ├── plan.py               # Operation, Deviation, EmployeePlan, SyncPlan
-├── planner.py            # build_plan(personio, targets) -> SyncPlan, ohne IO
+├── planner.py            # build_plan(), check_only(), COMPARED_FIELDS; ohne IO
 ├── sync.py               # Orchestrierung: laden → planen → ausführen, die Schritte einzeln aufrufbar
 └── systems/
+    ├── __init__.py
     ├── personio.py       # Loader + Mapping
     ├── weclapp.py        # Loader + Mapping + Executor
     └── decidalo.py       # Loader + Mapping + Executor
@@ -585,8 +587,8 @@ Die Reihenfolge baut zuerst den Kern ohne IO und hängt dann die Systeme an:
 
 | AP | Inhalt | Ergebnis |
 |---|---|---|
-| 0 | **Repo-Setup:** Template auf `hr_sync` umbenennen, `pyproject.toml` (Paketname `hochfrequenz-hr-sync`, Abhängigkeiten, `[project.scripts]`), `.env.example`, README-Gerüst. Der PyPI-Publish-Workflow bleibt als auskommentierte Vorlage für AP 10. **Nachtrag:** In der `.env.example` von PR #2 steht noch `WECLAPP_EMPLOYEE_NUMBER_ATTRIBUTE_KEY`, sie braucht `WECLAPP_EMPLOYEE_NUMBER_ATTRIBUTE_ID` | CI grün mit leerem Paket |
-| 1 | **Datenmodell, Plan und Planner** inklusive Datenproblemen. **Nachtrag:** `email_owners` und `email_in_use` (Abschnitt 4.2) fehlen im Code von PR #2 noch | Planner vollständig getestet |
+| 0 | **Repo-Setup:** Template auf `hr_sync` umbenennen, `pyproject.toml` (Paketname `hochfrequenz-hr-sync`, Abhängigkeiten, `[project.scripts]`), `.env.example`, README-Gerüst. Der PyPI-Publish-Workflow bleibt als auskommentierte Vorlage für AP 10 | CI grün mit leerem Paket |
+| 1 | **Datenmodell, Plan und Planner** inklusive Datenproblemen und `email_in_use` | Planner vollständig getestet |
 | 2 | **weclapp-client erweitern** (`entry_date` in `Employee` und `EmployeeCreate`), im Repo `weclapp_client.py`, mit Release | neue Client-Version auf PyPI |
 | 3 | **Wide Events** mit Loguru, umschaltbare Ausgabe, Intercept-Handler | `wide_event()` getestet |
 | 4 | **Personio-Loader** mit Relevanzfilter und Mapping | Snapshot aus Personio, nur relevante Mitarbeiter |

@@ -4,7 +4,7 @@ Compares the snapshots and creates the plan. Contains no IO.
 
 from collections.abc import Collection, Mapping
 
-from hr_sync.model import EmployeeRecord, Notice, NoticeReason, Snapshot, TargetSystem
+from hr_sync.model import EmployeeRecord, Notice, NoticeReason, Snapshot, TargetSystem, email_key
 from hr_sync.plan import Deviation, EmployeePlan, Operation, OperationType, SyncPlan
 
 COMPARED_FIELDS: Mapping[TargetSystem, tuple[str, ...]] = {
@@ -26,10 +26,12 @@ def build_plan(
     """
     Creates the plan for the employees from the source (Personio) and the given target systems.
 
-    Employees missing in a target system are created. Existing employees are only compared; their deviations are
-    part of the plan, but not changed. With ``only``, the plan is restricted to these employee numbers.
+    Employees missing in a target system are created, unless their e-mail address already belongs to another user
+    there. Existing employees are only compared; their deviations are part of the plan, but not changed. With
+    ``only``, the plan is restricted to these employee numbers.
     """
     employees: list[EmployeePlan] = []
+    notices: list[Notice] = []
     for employee_number in sorted(source.records):
         if only is not None and employee_number not in only:
             continue
@@ -46,7 +48,19 @@ def build_plan(
                 continue
             existing = target.records.get(employee_number)
             if existing is None:
-                operations.append(Operation(system=system, type=OperationType.CREATE, record=desired))
+                owner = target.email_owners.get(email_key(desired.email)) if desired.email else None
+                if owner is None:
+                    operations.append(Operation(system=system, type=OperationType.CREATE, record=desired))
+                else:
+                    # creating the employee would yield a duplicate (weclapp) or change a foreign user (Decidalo)
+                    notices.append(
+                        Notice(
+                            system=target.system,
+                            reason=NoticeReason.EMAIL_IN_USE,
+                            system_id=owner,
+                            employee_number=employee_number,
+                        )
+                    )
                 continue
             fields = COMPARED_FIELDS[system]
             if employee_number in target.incomplete:
@@ -65,6 +79,7 @@ def build_plan(
     return SyncPlan(
         employees=tuple(employees),
         only_in_target={system: len(target.records.keys() - known) for system, target in targets.items()},
+        notices=tuple(notices),
     )
 
 

@@ -11,6 +11,7 @@ from hr_sync.model import (
     SnapshotBuilder,
     System,
     display_name_of,
+    email_key,
 )
 
 
@@ -214,3 +215,34 @@ class TestSnapshotBuilder:
         builder.add("user-2", _record("00165"))
         builder.add_without_employee_number("user-3")
         assert builder.build() == builder.build()
+
+    def test_email_owners_include_records_with_data_problems(self) -> None:
+        builder = SnapshotBuilder(System.WECLAPP)
+        builder.add("user-1", _record("00165"))
+        builder.add("user-2", _record("00200", email="Max.Mustermann@Example.com"))
+        builder.add("user-3", _record("00200", email="max.m@example.com"))
+        builder.add("user-4", _record("00300", email=None))
+        builder.add_without_employee_number("user-5", " Admin@Example.com ")
+        builder.add_without_employee_number("user-6", "  ")
+        builder.add_without_employee_number("user-7")
+        assert builder.build().email_owners == {
+            "erika.musterfrau@example.com": "user-1",
+            "max.mustermann@example.com": "user-2",
+            "max.m@example.com": "user-3",
+            "admin@example.com": "user-5",
+        }
+
+    def test_first_record_owns_a_shared_email(self) -> None:
+        builder = SnapshotBuilder(System.DECIDALO)
+        builder.add_without_employee_number("1", "shared@example.com")
+        builder.add("2", _record("00165", email="Shared@example.com"))
+        assert builder.build().email_owners == {"shared@example.com": "1"}
+
+
+class TestEmailKey:
+    """
+    Tests of the form in which e-mail addresses are compared.
+    """
+
+    def test_email_key(self) -> None:
+        assert email_key(" Erika.Musterfrau@Example.COM ") == "erika.musterfrau@example.com"

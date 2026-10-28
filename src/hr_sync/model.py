@@ -74,6 +74,8 @@ class NoticeReason(StrEnum):
     """an employee number passed with ``--only`` belongs to an employee that is not relevant"""
     UNKNOWN_EMPLOYEE_NUMBER = "unknown_employee_number"
     """an employee number passed with ``--only`` doesn't belong to any loaded employee"""
+    EMAIL_IN_USE = "email_in_use"
+    """the e-mail address of an employee to create already belongs to another user of the target system"""
 
 
 class ExclusionReason(StrEnum):
@@ -125,7 +127,19 @@ class Snapshot(BaseModel):
     why loaded employees with employee number are not part of :attr:`records`; in the target systems, these are
     duplicate employee numbers, which the planner must not treat as missing
     """
+    email_owners: dict[str, str] = Field(default_factory=dict)
+    """
+    the ids of all loaded records by :func:`email_key`, including the records with data problems; the planner uses it
+    to not create an employee whose e-mail address already belongs to another user
+    """
     notices: list[Notice] = Field(default_factory=list)
+
+
+def email_key(email: str) -> str:
+    """
+    Returns the e-mail address in the form in which addresses are compared: stripped and case-insensitive.
+    """
+    return email.strip().casefold()
 
 
 class SnapshotBuilder:
@@ -142,6 +156,7 @@ class SnapshotBuilder:
         self._candidates: dict[str, list[tuple[str, EmployeeRecord]]] = defaultdict(list)
         self._incomplete: set[str] = set()
         self._excluded: dict[str, ExclusionReason] = {}
+        self._email_owners: dict[str, str] = {}
         self._notices: list[Notice] = []
 
     def add(self, system_id: str, record: EmployeeRecord, *, incomplete: bool = False) -> None:
@@ -151,12 +166,15 @@ class SnapshotBuilder:
         self._candidates[record.employee_number].append((system_id, record))
         if incomplete:
             self._incomplete.add(record.employee_number)
+        self._note_email(system_id, record.email)
 
-    def add_without_employee_number(self, system_id: str) -> None:
+    def add_without_employee_number(self, system_id: str, email: str | None = None) -> None:
         """
-        Notes a record without employee number. It can't be part of the plan, because the key is missing.
+        Notes a record without employee number. It can't be part of the plan, because the key is missing, but its
+        e-mail address is still in use.
         """
         self._notices.append(self._notice(NoticeReason.MISSING_EMPLOYEE_NUMBER, system_id))
+        self._note_email(system_id, email)
 
     def exclude(self, system_id: str, employee_number: str | None, reason: ExclusionReason) -> None:
         """
@@ -191,8 +209,13 @@ class SnapshotBuilder:
             records=records,
             incomplete=frozenset(self._incomplete & records.keys()),
             excluded={number: reason for number, reason in excluded.items() if number not in records},
+            email_owners=dict(self._email_owners),
             notices=notices,
         )
+
+    def _note_email(self, system_id: str, email: str | None) -> None:
+        if email and email.strip():
+            self._email_owners.setdefault(email_key(email), system_id)
 
     def _notice(self, reason: NoticeReason, system_id: str, employee_number: str | None = None) -> Notice:
         return Notice(system=self._system, reason=reason, system_id=system_id, employee_number=employee_number)

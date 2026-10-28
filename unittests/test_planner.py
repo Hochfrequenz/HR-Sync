@@ -161,6 +161,44 @@ class TestBuildPlan:
             ),
         )
 
+    @pytest.mark.parametrize("in_use_in", list(TargetSystem))
+    def test_employee_is_not_created_if_the_email_is_in_use(self, in_use_in: TargetSystem) -> None:
+        builder = SnapshotBuilder(System(in_use_in.value))
+        builder.add_without_employee_number("42", "ERIKA.Musterfrau@example.com")
+        targets = _targets()
+        targets[in_use_in] = builder.build()
+        plan = build_plan(_snapshot(System.PERSONIO, ERIKA), targets)
+        other = next(system for system in TargetSystem if system != in_use_in)
+        assert plan.employees == (
+            EmployeePlan(
+                employee_number="00165",
+                operations=(Operation(system=other, type=OperationType.CREATE, record=ERIKA),),
+            ),
+        )
+        assert plan.notices == (
+            Notice(
+                system=System(in_use_in.value),
+                reason=NoticeReason.EMAIL_IN_USE,
+                system_id="42",
+                employee_number="00165",
+            ),
+        )
+
+    def test_email_of_another_employee_number_is_in_use(self) -> None:
+        builder = SnapshotBuilder(System.WECLAPP)
+        builder.add("user-7", ERIKA.model_copy(update={"employee_number": "00999"}))
+        plan = build_plan(_snapshot(System.PERSONIO, ERIKA), {TargetSystem.WECLAPP: builder.build()})
+        assert plan.employees == ()
+        assert plan.is_empty
+        assert [(notice.reason, notice.system_id) for notice in plan.notices] == [(NoticeReason.EMAIL_IN_USE, "user-7")]
+
+    def test_own_email_is_not_in_use(self) -> None:
+        builder = SnapshotBuilder(System.WECLAPP)
+        builder.add("user-1", ERIKA)
+        plan = build_plan(_snapshot(System.PERSONIO, ERIKA), {TargetSystem.WECLAPP: builder.build()})
+        assert plan.employees == ()
+        assert plan.notices == ()
+
 
 class TestCheckOnly:
     """

@@ -6,7 +6,7 @@ from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict
 
-from hr_sync.model import EmployeeRecord, TargetSystem
+from hr_sync.model import EmployeeRecord, Notice, TargetSystem
 
 
 class OperationType(StrEnum):
@@ -59,6 +59,8 @@ class SyncPlan(BaseModel):
     """sorted by employee number, so that "the first entry" is well-defined"""
     only_in_target: dict[TargetSystem, int]
     """the number of employees per target system that are not loaded from Personio at all"""
+    notices: tuple[Notice, ...] = ()
+    """hints found while planning, e.g. :attr:`NoticeReason.EMAIL_IN_USE`"""
 
     @property
     def is_empty(self) -> bool:
