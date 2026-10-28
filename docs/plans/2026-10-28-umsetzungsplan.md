@@ -33,7 +33,7 @@ HR-Sync überträgt beim Onboarding die Stammdaten neuer Mitarbeiter aus **Perso
 | Betrieb | erst einmal als CLI, Secrets aus `.env`. Hosting und Zeitplan klären wir später |
 | Zielsysteme | wählbar mit `--target weclapp` bzw. `--target decidalo`, Standard sind beide |
 | Testumgebungen | In Testumgebungen landen keine echten Namen oder E-Mails: Im Test-Modus (`HR_SYNC_ENVIRONMENT=test`) wird anonymisiert. MA-Nummer und Eintrittsdatum bleiben echt |
-| Decidalo im Test-Modus | eigene URL (`DECIDALO_BASE_URL`), `hasLogin=false` |
+| Decidalo im Test-Modus | eigene URL und eigener Key (`DECIDALO_TEST_BASE_URL`, `DECIDALO_TEST_API_KEY`), `hasLogin=false`. Die Testumgebung ist nur im Test-Modus erreichbar |
 | Integrationstest | Personio produktiv lesen, nur den ersten Planeintrag in die Decidalo-Testumgebung schreiben. Danach die Testperson wahlweise automatisch löschen (erst nachdem geprüft ist, dass sie angelegt wurde) oder zum Ansehen liegen lassen. Läuft nur lokal |
 
 ## 2. Ablauf
@@ -98,6 +98,17 @@ Erfüllen mehrere Employments beide Bedingungen, gilt das mit dem neuesten Start
 nicht relevant, z. B. künftige Mitarbeiter (`ONBOARDING` oder Start in der Zukunft), Mitarbeiter in Elternzeit o. Ä.
 (`LEAVE`) und ausgeschiedene (`INACTIVE`). Sie werden erst angelegt, sobald ihr Employment die Bedingungen erfüllt.
 
+**Sonderfall: aktives Employment ohne Startdatum.** Erfüllt kein Employment beide Bedingungen, hat der Mitarbeiter
+aber ein Employment im Status `ACTIVE` ohne `employment_start_date`, ist das ein Datenproblem: Es gibt ein Warn-Event
+(`missing_entry_date`), und der Mitarbeiter kommt nicht in den Plan. Diesen Fall prüfen wir **vor** dem Datumsfilter,
+sonst würde er still als „nicht relevant“ verschwinden.
+
+Die Prüfung läuft pro Mitarbeiter in dieser Reihenfolge:
+
+1. Gibt es ein Employment mit `ACTIVE` und Startdatum heute oder früher? Dann ist der Mitarbeiter relevant.
+2. Sonst: Gibt es ein Employment mit `ACTIVE` ohne Startdatum? Dann gibt es ein Warn-Event `missing_entry_date`.
+3. Sonst ist der Mitarbeiter nicht relevant, mit dem Grund `employment_not_active` oder `start_date_in_future`.
+
 „Heute“ ist das Datum in Europe/Berlin beim Start des Laufs. Der Loader bekommt es als Parameter, damit Tests es
 festlegen können.
 
@@ -107,8 +118,10 @@ festlegen können.
   `ONBOARDING` und `LEAVE`. Die genaue Regel prüfen wir danach am Employment.
 - `iter_employments(person.id)` für jede Person, daraus das relevante Employment bestimmen. Weil das ein Request pro
   Person ist, begrenzen wir die Parallelität mit einem `asyncio.Semaphore` (z. B. 5).
-- Erst **nach** diesem Filter prüfen wir auf Datenprobleme (Abschnitt 5). Künftige Mitarbeiter, denen MA-Nummer oder
-  E-Mail noch fehlen, lösen also keine Warnung aus.
+- MA-Nummer, E-Mail und doppelte MA-Nummern prüfen wir erst **nach** diesem Filter (Abschnitt 5). Künftige
+  Mitarbeiter, denen MA-Nummer oder E-Mail noch fehlen, lösen also keine Warnung aus.
+- Für geladene, aber ausgeschlossene Mitarbeiter mit MA-Nummer merkt sich der Snapshot den Grund (`excluded`). Das
+  braucht `--only` für eine genaue Meldung (Abschnitt 7).
 - MA-Nummer: `custom_attributes` mit `id == "company_employee_id"`, `value` ohne führende und folgende Leerzeichen.
 - Vorname, Nachname, E-Mail: `first_name`, `last_name`, `email`.
 - Eintrittsdatum: `employment_start_date` des relevanten Employments.
@@ -136,8 +149,9 @@ die Operation `COMPLETE`, die nur noch den Employee anlegt. Das ist kein Update,
 
 ### 3.3 Decidalo (Ziel)
 
-**Basis-URL:** Sie ist über `DECIDALO_BASE_URL` konfigurierbar, der Client nimmt sie als `base_url` an. Standard ist
-die produktive URL `https://import.decidalo.dev`. Für die Testumgebung siehe [Abschnitt 8](#8-testumgebungen-und-anonymisierung).
+**Basis-URL:** Im Produktionsmodus nutzt der Sync fest die produktive URL `https://import.decidalo.dev`, sie lässt
+sich nicht umkonfigurieren. Die Testumgebung ist nur im Test-Modus erreichbar, mit eigenen Variablen (siehe
+[Abschnitt 8](#8-testumgebungen-und-anonymisierung)). Der Client nimmt die URL als `base_url` an.
 
 **Laden:** `get_users()`, seitenweise mit `top` und `skip`. Wir lesen `employeeID`, `displayName`, `email` und `entryDate`.
 
@@ -177,6 +191,7 @@ class Snapshot(BaseModel):
     system: System                         # PERSONIO | WECLAPP | DECIDALO
     records: dict[str, EmployeeRecord]     # nach MA-Nummer, nur gültige Datensätze
     incomplete: set[str] = set()           # nur weclapp: User ohne Personalakte
+    excluded: dict[str, ExclusionReason] = {}  # nur Personio: MA-Nummer → Grund des Ausschlusses
     notices: list[Notice]                  # Datenprobleme, siehe Abschnitt 5
 ```
 
@@ -247,11 +262,13 @@ den neuen Operationstyp. Das Datenmodell und die Loader bleiben dabei unverände
 | MA-Nummer fehlt oder ist leer | alle | Warn-Event `sync.notice` (`reason=missing_employee_number`), Person nicht im Plan |
 | MA-Nummer kommt mehrfach vor | alle | Warn-Event (`reason=duplicate_employee_number`), alle Datensätze mit dieser Nummer nicht im Plan *(Vorschlag, ergänzt)* |
 | E-Mail fehlt | Personio | Warn-Event (`reason=missing_email`), Person nicht im Plan |
-| Employment `ACTIVE`, aber ohne Startdatum | Personio | Warn-Event (`reason=missing_entry_date`), Person nicht im Plan |
+| Employment `ACTIVE`, aber ohne Startdatum, und kein anderes Employment erfüllt die Bedingungen | Personio | Warn-Event (`reason=missing_entry_date`), Person nicht im Plan. Geprüft wird vor dem Datumsfilter (siehe [3.1](#31-personio-quelle)) |
 | Nicht relevant (kein aktives Employment oder Start in der Zukunft) | Personio | kein Warn-Event, weil das der Normalfall ist. Nur die Anzahl je Grund im `sync.load` |
 | Person steht nur im Zielsystem | weclapp, Decidalo | nur die Anzahl im Plan-Event (Offboarding kommt später) |
 
-In Personio werden nur relevante Mitarbeiter auf Datenprobleme geprüft (siehe [3.1](#31-personio-quelle)).
+In Personio werden MA-Nummer, E-Mail und doppelte MA-Nummern nur bei relevanten Mitarbeitern geprüft. Einzige
+Ausnahme ist das fehlende Startdatum eines aktiven Employments: Das prüfen wir vor dem Datumsfilter (siehe
+[3.1](#31-personio-quelle)).
 
 Ohne MA-Nummer wird die Person über ihre **systeminterne ID** benannt (Personio-Person-ID, weclapp-User-ID,
 Decidalo-`userID`). So lässt sie sich finden, ohne dass Namen im Log stehen.
@@ -273,7 +290,7 @@ with wide_event("sync.load", system="personio") as event:
 | Event | Wann | Inhalt (Auswahl) | Level |
 |---|---|---|---|
 | `sync.run` | einmal, am Ende | `run_id`, `environment`, `dry_run`, `only`, `targets`, Dauer, Summen je System und Operation, Anzahl Hinweise und Fehler, `exit_code` | INFO / ERROR |
-| `sync.load` | je System | `system`, `records`, `notices`, Dauer; bei Personio zusätzlich `not_relevant` je Grund | INFO / ERROR |
+| `sync.load` | je System | `system`, `records`, `notices`, Dauer; bei Personio zusätzlich `not_relevant` je Grund (`employment_not_active`, `start_date_in_future`) | INFO / ERROR |
 | `sync.notice` | je Datenproblem | `system`, `reason`, `system_id` | **WARNING** |
 | `sync.deviation` | je Person und Zielsystem mit Abweichung | `employee_number`, `system`, `fields` | INFO |
 | `sync.plan` | einmal | Operationen je System und Typ, `is_empty`, `only_in_target` je System | INFO |
@@ -310,7 +327,7 @@ die `.env` steht in `.gitignore`.
 | `WECLAPP_EMPLOYEE_NUMBER_ATTRIBUTE_KEY` | Standard `personalnummer` |
 | `WECLAPP_NEW_USER_STATUS` | Standard `ACTIVE` |
 | `DECIDALO_API_KEY` | Decidalo-Import-API |
-| `DECIDALO_BASE_URL` | Standard `https://import.decidalo.dev` (produktiv) |
+| `DECIDALO_TEST_BASE_URL`, `DECIDALO_TEST_API_KEY` | Decidalo-Testumgebung. Werden nur im Test-Modus gelesen und sind dort Pflicht (siehe [Abschnitt 8](#8-testumgebungen-und-anonymisierung)) |
 | `DECIDALO_EMPLOYEE_TYPE_NAME` | Standard `Internal` |
 | `DECIDALO_HAS_LOGIN` | Standard `true`; im Test-Modus wirkungslos (immer `false`) |
 | `HR_SYNC_ENVIRONMENT` | `production` (Standard) oder `test`, siehe [Abschnitt 8](#8-testumgebungen-und-anonymisierung) |
@@ -324,8 +341,15 @@ mit `argparse` (keine weitere Abhängigkeit).
 
 - `--only MA-NR` (mehrfach angebbar) begrenzt den Plan auf diese MA-Nummern.
   - Geladen wird trotzdem alles, damit Datenprobleme wie doppelte MA-Nummern erkannt werden.
-  - Steht eine angegebene MA-Nummer nicht in Personio, gibt es ein Warn-Event (`reason=unknown_employee_number`).
-    Ist der Mitarbeiter nicht relevant (siehe [3.1](#31-personio-quelle)), lautet der Grund `not_relevant`.
+  - Landet eine angegebene MA-Nummer nicht im Plan, gibt es ein Warn-Event. Der Grund kommt aus `excluded` im
+    Personio-Snapshot (siehe [3.1](#31-personio-quelle)):
+    - Der Mitarbeiter wurde geladen, ist aber nicht relevant: `reason=not_relevant` mit `detail`
+      (`employment_not_active` oder `start_date_in_future`).
+    - Der Mitarbeiter wurde wegen eines Datenproblems ausgeschlossen, z. B. `missing_email` oder `missing_entry_date`:
+      Dessen Warn-Event gibt es ohnehin.
+    - Die MA-Nummer steht bei keiner geladenen Person: `reason=unknown_employee_number`. Weil wir nur Personen mit
+      dem Personenstatus `ACTIVE` laden, kann das eine unbekannte Nummer oder ein ausgeschiedener Mitarbeiter sein.
+      Wir unterscheiden das bewusst nicht, sonst müssten wir für diese Meldung alle ehemaligen Mitarbeiter laden.
   - Der erste echte Lauf läuft verbindlich mit `--only` und der MA-Nummer einer Testperson (AP 9).
 
 **Exit-Codes:**
@@ -358,8 +382,18 @@ nur. Eine Testumgebung gibt es bisher nur für Decidalo, mit eigener URL (O12).
 - Neue Decidalo-User bekommen `hasLogin=false`, egal was in `DECIDALO_HAS_LOGIN` steht.
 - weclapp ist als Ziel gesperrt, solange es keinen weclapp-Testtenant gibt. Ein Lauf mit weclapp als Ziel bricht mit
   Exit-Code 2 ab. Im Test-Modus braucht es also `--target decidalo`.
-- Zeigt `DECIDALO_BASE_URL` auf die produktive URL, bricht der Lauf mit Exit-Code 2 ab.
+- Decidalo wird nur über `DECIDALO_TEST_BASE_URL` und `DECIDALO_TEST_API_KEY` angesprochen. Fehlt eine der beiden,
+  oder zeigt die URL auf die produktive URL, bricht der Lauf mit Exit-Code 2 ab.
 - Jedes Event trägt `environment=test`.
+
+**Beide Richtungen sind abgesichert:**
+
+- **Test-Modus → Produktion:** Die produktive URL wird abgelehnt, und weclapp ist gesperrt.
+- **Produktionsmodus → Testumgebung:** Der Produktionsmodus nutzt fest die produktive Decidalo-URL und liest die
+  `DECIDALO_TEST_*`-Variablen nicht. Vergisst jemand `HR_SYNC_ENVIRONMENT=test`, kann der Lauf die Testumgebung also
+  gar nicht erreichen. Echte Daten mit aktivem Login gelangen so nicht dorthin.
+
+Kommt später ein weclapp-Testtenant dazu, gilt dasselbe Muster mit `WECLAPP_TEST_*`.
 
 ### 8.2 Anonymisierung
 
@@ -382,9 +416,9 @@ echte Werte in die Testumgebung tragen.
 
 ### 8.3 Integrationstest gegen die Decidalo-Testumgebung
 
-Die Integrationstests laufen nur lokal. Fehlen die Zugangsdaten, werden sie übersprungen. Für Decidalo nutzen sie eigene
-Variablen (`DECIDALO_TEST_BASE_URL`, `DECIDALO_TEST_API_KEY`), damit sie nie versehentlich den produktiven Key aus der
-`.env` verwenden. Personio lesen sie mit den normalen Credentials aus der Produktion.
+Die Integrationstests laufen nur lokal. Fehlen die Zugangsdaten, werden sie übersprungen. Für Decidalo nutzen sie
+dieselben Variablen wie der Test-Modus (`DECIDALO_TEST_BASE_URL`, `DECIDALO_TEST_API_KEY`), nie den produktiven Key.
+Personio lesen sie mit den normalen Credentials aus der Produktion.
 
 | Marker | Was | Voraussetzung |
 |---|---|---|
@@ -424,7 +458,7 @@ src/hr_sync/
 ├── anonymize.py          # Anonymisierung im Test-Modus
 ├── config.py             # Settings (pydantic-settings), Prüfungen für den Test-Modus
 ├── events.py             # Loguru-Setup, wide_event(), Intercept-Handler
-├── model.py              # EmployeeRecord, Snapshot, Notice, System
+├── model.py              # EmployeeRecord, Snapshot, Notice, ExclusionReason, System
 ├── plan.py               # Operation, Deviation, EmployeePlan, SyncPlan
 ├── planner.py            # build_plan(personio, targets) -> SyncPlan, ohne IO
 ├── sync.py               # Orchestrierung: laden → planen → ausführen, die Schritte einzeln aufrufbar
@@ -445,12 +479,12 @@ Laufzeit-Abhängigkeiten: `personio-client`, `weclapp-client`, `decidalo-client`
 |---|---|
 | Planner | reine Unit-Tests ohne IO, tabellengetrieben (fehlt, vorhanden, Abweichung, unvollständig, Datenprobleme) |
 | Mapping | Unit-Tests mit Modellinstanzen der Clients |
-| Relevanz (Personio) | tabellengetrieben: alle Employment-Status inklusive abweichender Schreibweise; Startdatum gestern, heute, morgen; mehrere Employments; aktives Employment ohne Startdatum; künftiger Mitarbeiter ohne MA-Nummer erzeugt keine Warnung |
+| Relevanz (Personio) | tabellengetrieben: alle Employment-Status inklusive abweichender Schreibweise; Startdatum gestern, heute, morgen; mehrere Employments; aktives Employment ohne Startdatum erzeugt `missing_entry_date`, auch neben einem Employment mit künftigem Start; künftiger Mitarbeiter ohne MA-Nummer erzeugt keine Warnung; `--only` meldet `not_relevant` mit Grund bzw. `unknown_employee_number` |
 | Personio, Decidalo | `aioresponses` (beide Clients nutzen aiohttp und testen selbst so) |
 | weclapp | `weclapp_client.testing.FakeWeclapp` |
 | Ende-zu-Ende | ganzer Lauf gegen die Fakes; **ein zweiter Lauf erzeugt keine Schreibzugriffe**; Dry-Run schreibt nichts |
 | Events | Loguru-Sink in eine Liste; Felder und Level prüfen; keine personenbezogenen Werte |
-| Test-Modus | jedes Feld hat eine Anonymisierungsregel; der Payload an Decidalo enthält keine echten Namen oder E-Mails; `hasLogin=false`; Abbruch bei weclapp als Ziel oder bei der produktiven Decidalo-URL |
+| Test-Modus | jedes Feld hat eine Anonymisierungsregel; der Payload an Decidalo enthält keine echten Namen oder E-Mails; `hasLogin=false`; Abbruch bei weclapp als Ziel, bei fehlenden `DECIDALO_TEST_*` oder bei der produktiven Decidalo-URL; der Produktionsmodus nutzt die produktive URL, auch wenn `DECIDALO_TEST_*` gesetzt sind |
 | Integration | gegen die Decidalo-Testumgebung, siehe [8.3](#83-integrationstest-gegen-die-decidalo-testumgebung) |
 
 ## 11. Arbeitspakete
@@ -503,6 +537,6 @@ O5–O7 und O13 lassen sich in der Decidalo-Testumgebung klären, ohne produktiv
 | R5 | Viele Warnungen durch technische User ohne MA-Nummer verdecken die wichtigen | Warnungen gezielt auswerten; bei Bedarf Ignore-Liste (O10) |
 | R6 | Personenbezogene Daten gelangen über Fehlertexte oder Client-Logs ins Log | Event-Felder fest definiert, keine Fehlertexte, `diagnose=False`; Test auf personenbezogene Daten in der Ausgabe; Client-Logs nur ab WARNING |
 | R7 | Laden schlägt teilweise fehl, der Sync legt bestehende Personen doppelt an | Abbruch vor der Planung, wenn ein System nicht vollständig geladen wurde |
-| R8 | Echte Namen oder E-Mails gelangen in die Testumgebung | Der Test-Modus erzwingt Anonymisierung und `hasLogin=false`; ein Test prüft, dass jedes Feld eine Regel hat; ein Payload-Test findet keine echten Werte |
-| R9 | Ein Lauf im Test-Modus schreibt in eine produktive Umgebung | Abbruch bei der produktiven Decidalo-URL und bei weclapp als Ziel; die Integrationstests nutzen eigene `DECIDALO_TEST_*`-Variablen |
+| R8 | Echte Namen oder E-Mails gelangen in die Testumgebung, z. B. weil `HR_SYNC_ENVIRONMENT=test` vergessen wurde | Die Testumgebung ist nur im Test-Modus erreichbar, weil der Produktionsmodus fest die produktive URL nutzt; der Test-Modus erzwingt Anonymisierung und `hasLogin=false`; ein Test prüft, dass jedes Feld eine Regel hat; ein Payload-Test findet keine echten Werte |
+| R9 | Ein Lauf im Test-Modus schreibt in eine produktive Umgebung | Abbruch bei der produktiven Decidalo-URL und bei weclapp als Ziel; Test-Modus und Integrationstests nutzen nur die `DECIDALO_TEST_*`-Variablen |
 | R10 | Das automatische Aufräumen löscht einen echten User | Gelöscht wird nur im Test-Modus, nur nach der Prüfung, dass der User angelegt wurde, und nur ein User mit genau der anonymisierten E-Mail |
