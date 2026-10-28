@@ -26,17 +26,23 @@ HR-Sync überträgt beim Onboarding die Stammdaten neuer Mitarbeiter aus **Perso
 | Decidalo-displayName | `"Vorname Nachname"` |
 | Neue Decidalo-User | `hasLogin=true`, `employeeTypeName="Internal"`. Weitere Felder sind noch offen (O5) |
 | Neue weclapp-User | `status=ACTIVE` |
-| Eintrittsdatum | `employment_start_date` des neuesten Employments in Personio |
+| Relevante Personio-Mitarbeiter | **nur mit einem Employment im Status `ACTIVE`, dessen Startdatum heute oder in der Vergangenheit liegt** |
+| Eintrittsdatum | `employment_start_date` dieses Employments. Gibt es mehrere, gilt das mit dem neuesten Startdatum |
 | Logging | Wide Events mit Loguru. Ausgabe umschaltbar (lesbar oder JSON) |
 | Personenbezogene Daten in Logs | nein: nur MA-Nummer, systeminterne IDs, Feldnamen und Zahlen |
 | Betrieb | erst einmal als CLI, Secrets aus `.env`. Hosting und Zeitplan klären wir später |
+| Zielsysteme | wählbar mit `--target weclapp` bzw. `--target decidalo`, Standard sind beide |
+| Testumgebungen | In Testumgebungen landen keine echten Namen oder E-Mails: Im Test-Modus (`HR_SYNC_ENVIRONMENT=test`) wird anonymisiert. MA-Nummer und Eintrittsdatum bleiben echt |
+| Decidalo im Test-Modus | eigene URL (`DECIDALO_BASE_URL`), `hasLogin=false` |
+| Integrationstest | Personio produktiv lesen, nur den ersten Planeintrag in die Decidalo-Testumgebung schreiben. Danach die Testperson wahlweise automatisch löschen (erst nachdem geprüft ist, dass sie angelegt wurde) oder zum Ansehen liegen lassen. Läuft nur lokal |
 
 ## 2. Ablauf
 
 ```mermaid
 flowchart TD
-    A[Konfiguration aus .env] --> B[Personio laden + mappen]
-    B --> C[weclapp laden + mappen]
+    A[Konfiguration aus .env] --> B[Personio laden, relevante filtern, mappen]
+    B --> B2[nur im Test-Modus: anonymisieren]
+    B2 --> C[weclapp laden + mappen]
     C --> D[Decidalo laden + mappen]
     D --> E[Datenprobleme aussortieren]
     E --> F[Plan erstellen]
@@ -50,8 +56,11 @@ flowchart TD
 ```
 
 1. Konfiguration aus `.env` laden.
-2. Daten nacheinander laden: Personio, weclapp, Decidalo. Jeder Loader mappt auf das gemeinsame Modell und liefert einen
-   **Snapshot**: die Datensätze nach MA-Nummer und die Hinweise auf Datenprobleme.
+2. Daten nacheinander laden: Personio und die Zielsysteme aus `--target` (Standard: weclapp und Decidalo). Jeder Loader
+   mappt auf das gemeinsame Modell und liefert einen **Snapshot**: die Datensätze nach MA-Nummer und die Hinweise auf
+   Datenprobleme. Aus Personio kommen nur relevante Mitarbeiter (siehe [3.1](#31-personio-quelle)).
+   Im Test-Modus wird der Personio-Snapshot direkt nach dem Laden anonymisiert (siehe
+   [Abschnitt 8](#8-testumgebungen-und-anonymisierung)).
 3. Datenprobleme aussortieren (siehe [Abschnitt 5](#5-datenprobleme)). Für jedes gibt es ein Warn-Event.
 4. Plan erstellen. Das ist eine reine Funktion ohne IO: Für jede gültige Personio-Person (mit `--only` nur für die
    angegebenen MA-Nummern, siehe [Abschnitt 7](#7-konfiguration-cli-und-fehlerbehandlung)) und jedes Zielsystem gilt:
@@ -78,12 +87,31 @@ nacheinander abgefragt werden.
 
 ### 3.1 Personio (Quelle)
 
-- `iter_persons(status="ACTIVE")`. Der Personenstatus `ACTIVE` umfasst auch die Employment-Status `ONBOARDING` und
-  `LEAVE`, neue Mitarbeiter sind also schon vor ihrem Eintritt dabei.
+**Welche Mitarbeiter relevant sind:** Ein Mitarbeiter ist für den Sync nur relevant, wenn er ein Employment hat, das
+beide Bedingungen erfüllt:
+
+1. Der `status` des Employments ist `ACTIVE`. Weil Personio die Groß- und Kleinschreibung nicht einheitlich verwendet,
+   vergleichen wir ohne Rücksicht darauf.
+2. Das `employment_start_date` liegt **heute oder in der Vergangenheit**.
+
+Erfüllen mehrere Employments beide Bedingungen, gilt das mit dem neuesten Startdatum. Alle anderen Mitarbeiter sind
+nicht relevant, z. B. künftige Mitarbeiter (`ONBOARDING` oder Start in der Zukunft), Mitarbeiter in Elternzeit o. Ä.
+(`LEAVE`) und ausgeschiedene (`INACTIVE`). Sie werden erst angelegt, sobald ihr Employment die Bedingungen erfüllt.
+
+„Heute“ ist das Datum in Europe/Berlin beim Start des Laufs. Der Loader bekommt es als Parameter, damit Tests es
+festlegen können.
+
+**Laden und mappen:**
+
+- `iter_persons(status="ACTIVE")` als Vorfilter. Der Personenstatus `ACTIVE` umfasst die Employment-Status `ACTIVE`,
+  `ONBOARDING` und `LEAVE`. Die genaue Regel prüfen wir danach am Employment.
+- `iter_employments(person.id)` für jede Person, daraus das relevante Employment bestimmen. Weil das ein Request pro
+  Person ist, begrenzen wir die Parallelität mit einem `asyncio.Semaphore` (z. B. 5).
+- Erst **nach** diesem Filter prüfen wir auf Datenprobleme (Abschnitt 5). Künftige Mitarbeiter, denen MA-Nummer oder
+  E-Mail noch fehlen, lösen also keine Warnung aus.
 - MA-Nummer: `custom_attributes` mit `id == "company_employee_id"`, `value` ohne führende und folgende Leerzeichen.
 - Vorname, Nachname, E-Mail: `first_name`, `last_name`, `email`.
-- Eintrittsdatum: `iter_employments(person.id)`, davon das Employment mit dem neuesten `employment_start_date`.
-  Weil das ein Request pro Person ist, begrenzen wir die Parallelität mit einem `asyncio.Semaphore` (z. B. 5).
+- Eintrittsdatum: `employment_start_date` des relevanten Employments.
 - Credentials nur mit dem Scope `personio:persons:read`.
 
 ### 3.2 weclapp (Ziel)
@@ -108,6 +136,9 @@ die Operation `COMPLETE`, die nur noch den Employee anlegt. Das ist kein Update,
 
 ### 3.3 Decidalo (Ziel)
 
+**Basis-URL:** Sie ist über `DECIDALO_BASE_URL` konfigurierbar, der Client nimmt sie als `base_url` an. Standard ist
+die produktive URL `https://import.decidalo.dev`. Für die Testumgebung siehe [Abschnitt 8](#8-testumgebungen-und-anonymisierung).
+
 **Laden:** `get_users()`, seitenweise mit `top` und `skip`. Wir lesen `employeeID`, `displayName`, `email` und `entryDate`.
 
 **Anlegen:** `import_users_sync(UserBatchInput(users=[...]))` mit allen neuen Personen in einem Batch (bei Bedarf in
@@ -119,7 +150,7 @@ UserInput(
     displayName=f"{record.first_name} {record.last_name}",
     email=record.email,
     entryDate=record.entry_date,
-    hasLogin=True,
+    hasLogin=True,                 # im Test-Modus immer False
     employeeTypeName="Internal",
 )
 ```
@@ -179,7 +210,7 @@ class EmployeePlan(BaseModel):
 
 
 class SyncPlan(BaseModel):
-    employees: list[EmployeePlan]
+    employees: list[EmployeePlan]    # sortiert nach MA-Nummer, damit "der erste Eintrag" eindeutig ist
 
     @property
     def is_empty(self) -> bool: ...   # True, wenn es keine Operationen gibt; Abweichungen zählen nicht
@@ -203,7 +234,8 @@ Ein neues Feld braucht diese Schritte:
 2. Personio-Mapping ergänzen.
 3. Mapping und Anlage-Payload je Zielsystem ergänzen, bei Bedarf den Client erweitern.
 4. Feld in die verglichenen Felder des Adapters aufnehmen.
-5. Tests ergänzen.
+5. Anonymisierungsregel für den Test-Modus festlegen (siehe [8.2](#82-anonymisierung)).
+6. Tests ergänzen.
 
 Sollen später auch Updates laufen, macht der Planner aus Abweichungen `UPDATE`-Operationen, und die Executor lernen
 den neuen Operationstyp. Das Datenmodell und die Loader bleiben dabei unverändert.
@@ -215,8 +247,11 @@ den neuen Operationstyp. Das Datenmodell und die Loader bleiben dabei unverände
 | MA-Nummer fehlt oder ist leer | alle | Warn-Event `sync.notice` (`reason=missing_employee_number`), Person nicht im Plan |
 | MA-Nummer kommt mehrfach vor | alle | Warn-Event (`reason=duplicate_employee_number`), alle Datensätze mit dieser Nummer nicht im Plan *(Vorschlag, ergänzt)* |
 | E-Mail fehlt | Personio | Warn-Event (`reason=missing_email`), Person nicht im Plan |
-| Kein Employment oder kein Startdatum | Personio | offen (O8). Vorschlag: ohne Eintrittsdatum anlegen und Warn-Event |
+| Employment `ACTIVE`, aber ohne Startdatum | Personio | Warn-Event (`reason=missing_entry_date`), Person nicht im Plan |
+| Nicht relevant (kein aktives Employment oder Start in der Zukunft) | Personio | kein Warn-Event, weil das der Normalfall ist. Nur die Anzahl je Grund im `sync.load` |
 | Person steht nur im Zielsystem | weclapp, Decidalo | nur die Anzahl im Plan-Event (Offboarding kommt später) |
+
+In Personio werden nur relevante Mitarbeiter auf Datenprobleme geprüft (siehe [3.1](#31-personio-quelle)).
 
 Ohne MA-Nummer wird die Person über ihre **systeminterne ID** benannt (Personio-Person-ID, weclapp-User-ID,
 Decidalo-`userID`). So lässt sie sich finden, ohne dass Namen im Log stehen.
@@ -231,14 +266,14 @@ with wide_event("sync.load", system="personio") as event:
     ...
     event["records"] = len(snapshot.records)
     event["notices"] = len(snapshot.notices)
-# beim Verlassen kommen dazu: run_id, dry_run, duration_ms, outcome, bei Fehlern error.type und error.status_code
+# beim Verlassen kommen dazu: run_id, environment, dry_run, duration_ms, outcome, bei Fehlern error.type und error.status_code
 # Ausgabe: logger.bind(**fields).log(level, "sync.load")
 ```
 
 | Event | Wann | Inhalt (Auswahl) | Level |
 |---|---|---|---|
-| `sync.run` | einmal, am Ende | `run_id`, `dry_run`, `only`, Dauer, Summen je System und Operation, Anzahl Hinweise und Fehler, `exit_code` | INFO / ERROR |
-| `sync.load` | je System | `system`, `records`, `notices`, Dauer | INFO / ERROR |
+| `sync.run` | einmal, am Ende | `run_id`, `environment`, `dry_run`, `only`, `targets`, Dauer, Summen je System und Operation, Anzahl Hinweise und Fehler, `exit_code` | INFO / ERROR |
+| `sync.load` | je System | `system`, `records`, `notices`, Dauer; bei Personio zusätzlich `not_relevant` je Grund | INFO / ERROR |
 | `sync.notice` | je Datenproblem | `system`, `reason`, `system_id` | **WARNING** |
 | `sync.deviation` | je Person und Zielsystem mit Abweichung | `employee_number`, `system`, `fields` | INFO |
 | `sync.plan` | einmal | Operationen je System und Typ, `is_empty`, `only_in_target` je System | INFO |
@@ -275,17 +310,23 @@ die `.env` steht in `.gitignore`.
 | `WECLAPP_EMPLOYEE_NUMBER_ATTRIBUTE_KEY` | Standard `personalnummer` |
 | `WECLAPP_NEW_USER_STATUS` | Standard `ACTIVE` |
 | `DECIDALO_API_KEY` | Decidalo-Import-API |
+| `DECIDALO_BASE_URL` | Standard `https://import.decidalo.dev` (produktiv) |
 | `DECIDALO_EMPLOYEE_TYPE_NAME` | Standard `Internal` |
-| `DECIDALO_HAS_LOGIN` | Standard `true` |
+| `DECIDALO_HAS_LOGIN` | Standard `true`; im Test-Modus wirkungslos (immer `false`) |
+| `HR_SYNC_ENVIRONMENT` | `production` (Standard) oder `test`, siehe [Abschnitt 8](#8-testumgebungen-und-anonymisierung) |
 | `HR_SYNC_LOG_FORMAT` | `pretty` oder `json` |
 
-**CLI:** `hr-sync [--dry-run] [--only MA-NR ...] [--log-format pretty|json]`, umgesetzt mit `argparse` (keine weitere
-Abhängigkeit).
+**CLI:** `hr-sync [--dry-run] [--only MA-NR ...] [--target weclapp|decidalo ...] [--log-format pretty|json]`, umgesetzt
+mit `argparse` (keine weitere Abhängigkeit).
+
+- `--target` (mehrfach angebbar) wählt die Zielsysteme. Ohne Angabe laufen beide. Systeme, die nicht gewählt sind,
+  werden weder geladen noch beschrieben, und ihre Zugangsdaten müssen nicht gesetzt sein.
 
 - `--only MA-NR` (mehrfach angebbar) begrenzt den Plan auf diese MA-Nummern.
   - Geladen wird trotzdem alles, damit Datenprobleme wie doppelte MA-Nummern erkannt werden.
   - Steht eine angegebene MA-Nummer nicht in Personio, gibt es ein Warn-Event (`reason=unknown_employee_number`).
-  - Der erste echte Lauf läuft verbindlich mit `--only` und der MA-Nummer einer Testperson (AP 8).
+    Ist der Mitarbeiter nicht relevant (siehe [3.1](#31-personio-quelle)), lautet der Grund `not_relevant`.
+  - Der erste echte Lauf läuft verbindlich mit `--only` und der MA-Nummer einer Testperson (AP 9).
 
 **Exit-Codes:**
 
@@ -293,7 +334,7 @@ Abhängigkeit).
 |---|---|
 | 0 | erfolgreich, auch bei leerem Plan oder Hinweisen |
 | 1 | mindestens eine Operation ist fehlgeschlagen |
-| 2 | Abbruch (Konfiguration, Authentifizierung, Fehler beim Laden) |
+| 2 | Abbruch (Konfiguration, Authentifizierung, Fehler beim Laden, unzulässige Einstellungen im Test-Modus) |
 
 **Fehler beim Ausführen:**
 
@@ -303,41 +344,116 @@ Abhängigkeit).
   Operationen dieses Systems werden mit `outcome=skipped` übersprungen, das andere Zielsystem läuft weiter.
 - Der nächste Lauf holt alles Übersprungene nach, weil der Plan immer aus dem aktuellen Stand entsteht.
 
-## 8. Projektstruktur
+## 8. Testumgebungen und Anonymisierung
+
+In Testumgebungen dürfen keine echten personenbezogenen Daten landen. Personio gibt es nur produktiv, dort lesen wir
+nur. Eine Testumgebung gibt es bisher nur für Decidalo, mit eigener URL (O12).
+
+### 8.1 Test-Modus
+
+`HR_SYNC_ENVIRONMENT=test` schaltet den Test-Modus ein. Dann gilt:
+
+- Der Personio-Snapshot wird direkt nach dem Laden anonymisiert, also vor der Planung. Plan, Ausführung und
+  Zielsystem bekommen nur anonymisierte Daten zu sehen. Die Anonymisierung lässt sich im Test-Modus nicht abschalten.
+- Neue Decidalo-User bekommen `hasLogin=false`, egal was in `DECIDALO_HAS_LOGIN` steht.
+- weclapp ist als Ziel gesperrt, solange es keinen weclapp-Testtenant gibt. Ein Lauf mit weclapp als Ziel bricht mit
+  Exit-Code 2 ab. Im Test-Modus braucht es also `--target decidalo`.
+- Zeigt `DECIDALO_BASE_URL` auf die produktive URL, bricht der Lauf mit Exit-Code 2 ab.
+- Jedes Event trägt `environment=test`.
+
+### 8.2 Anonymisierung
+
+| Feld | im Test-Modus |
+|---|---|
+| MA-Nummer | bleibt echt (Schlüssel) |
+| Vorname | `Test` |
+| Nachname | `Person-<MA-Nummer>` |
+| displayName | ergibt sich daraus: `Test Person-<MA-Nummer>` |
+| E-Mail | `test-<MA-Nummer>@example.com`. Die Domain ist für Beispiele reserviert, Mails dorthin werden nicht zugestellt |
+| Eintrittsdatum | bleibt echt |
+
+Die Ersatzwerte hängen nur von der MA-Nummer ab. So erkennt ein zweiter Lauf die angelegte Testperson wieder, ohne
+Abweichungen. Ein geheimer Schlüssel ist nicht nötig, weil die Ersatzwerte nichts verraten, was nicht schon in der
+MA-Nummer steht.
+
+Ein Test stellt sicher, dass jedes Feld von `EmployeeRecord` eine Anonymisierungsregel hat oder ausdrücklich als
+„bleibt echt“ markiert ist. Ein neues Feld (siehe [4.3](#43-weitere-felder-ergänzen)) kann also nicht unbemerkt
+echte Werte in die Testumgebung tragen.
+
+### 8.3 Integrationstest gegen die Decidalo-Testumgebung
+
+Die Integrationstests laufen nur lokal. Fehlen die Zugangsdaten, werden sie übersprungen. Für Decidalo nutzen sie eigene
+Variablen (`DECIDALO_TEST_BASE_URL`, `DECIDALO_TEST_API_KEY`), damit sie nie versehentlich den produktiven Key aus der
+`.env` verwenden. Personio lesen sie mit den normalen Credentials aus der Produktion.
+
+| Marker | Was | Voraussetzung |
+|---|---|---|
+| `integration` | Personio lesen, anonymisieren, Decidalo-Testumgebung lesen, Plan erstellen, Dry-Run | Personio-Credentials, `DECIDALO_TEST_*` |
+| `integration_write` | zusätzlich den ersten Planeintrag in die Decidalo-Testumgebung schreiben | zusätzlich `HR_SYNC_IT_ALLOW_WRITES=1` |
+
+Ablauf von `integration_write`:
+
+1. Der Test setzt den Test-Modus mit dem Ziel Decidalo.
+2. Laden, anonymisieren, Plan erstellen.
+3. Den ersten Eintrag des Plans nehmen, der eine Operation hat. Gibt es keinen, wird der Test übersprungen.
+4. Nur diesen Eintrag ausführen. Dafür lassen sich die Schritte in `sync.py` (laden, planen, ausführen) einzeln
+   aufrufen, und der Test übergibt einen Plan, der nur diesen Eintrag enthält.
+5. Prüfen, ob der User angelegt wurde: `get_users(employee_id=...)` findet genau einen User mit den anonymisierten
+   Werten, dem echten Eintrittsdatum und ohne Login.
+6. Prüfen, dass ein neuer Plan für diese MA-Nummer keine Operation mehr enthält.
+7. Aufräumen, wahlweise:
+   - **Automatisch löschen** (Standard): per Import mit `delete=true`, danach wird geprüft, dass der User weg ist.
+     Gelöscht wird nur, wenn Schritt 5 den User gefunden hat **und** seine E-Mail genau `test-<MA-Nummer>@example.com`
+     lautet. So kann der Test keinen echten User löschen. Das Aufräumen läuft auch dann, wenn eine Prüfung in Schritt 5
+     oder 6 fehlschlägt.
+   - **Liegen lassen** mit der pytest-Option `--keep-test-data`: Der Test gibt die MA-Nummer aus, damit man den Eintrag
+     in Decidalo ansehen kann. Der nächste Lauf nimmt dann den nächsten Planeintrag.
+
+```bash
+uv run pytest -m integration_write
+uv run pytest -m integration_write --keep-test-data
+```
+
+## 9. Projektstruktur
 
 ```
 src/hr_sync/
 ├── __init__.py
 ├── __main__.py           # python -m hr_sync
 ├── cli.py                # argparse, Exit-Codes
-├── config.py             # Settings (pydantic-settings)
+├── anonymize.py          # Anonymisierung im Test-Modus
+├── config.py             # Settings (pydantic-settings), Prüfungen für den Test-Modus
 ├── events.py             # Loguru-Setup, wide_event(), Intercept-Handler
 ├── model.py              # EmployeeRecord, Snapshot, Notice, System
 ├── plan.py               # Operation, Deviation, EmployeePlan, SyncPlan
 ├── planner.py            # build_plan(personio, targets) -> SyncPlan, ohne IO
-├── sync.py               # Orchestrierung: laden → planen → ausführen
+├── sync.py               # Orchestrierung: laden → planen → ausführen, die Schritte einzeln aufrufbar
 └── systems/
     ├── personio.py       # Loader + Mapping
     ├── weclapp.py        # Loader + Mapping + Executor
     └── decidalo.py       # Loader + Mapping + Executor
 unittests/
+└── integration/          # gegen die Decidalo-Testumgebung, nur lokal
 ```
 
 Laufzeit-Abhängigkeiten: `personio-client`, `weclapp-client`, `decidalo-client`, `loguru`, `pydantic`,
 `pydantic-settings`. Für die Tests kommen `pytest-asyncio` und `aioresponses` dazu.
 
-## 9. Tests
+## 10. Tests
 
 | Ebene | Wie |
 |---|---|
 | Planner | reine Unit-Tests ohne IO, tabellengetrieben (fehlt, vorhanden, Abweichung, unvollständig, Datenprobleme) |
 | Mapping | Unit-Tests mit Modellinstanzen der Clients |
+| Relevanz (Personio) | tabellengetrieben: alle Employment-Status inklusive abweichender Schreibweise; Startdatum gestern, heute, morgen; mehrere Employments; aktives Employment ohne Startdatum; künftiger Mitarbeiter ohne MA-Nummer erzeugt keine Warnung |
 | Personio, Decidalo | `aioresponses` (beide Clients nutzen aiohttp und testen selbst so) |
 | weclapp | `weclapp_client.testing.FakeWeclapp` |
 | Ende-zu-Ende | ganzer Lauf gegen die Fakes; **ein zweiter Lauf erzeugt keine Schreibzugriffe**; Dry-Run schreibt nichts |
 | Events | Loguru-Sink in eine Liste; Felder und Level prüfen; keine personenbezogenen Werte |
+| Test-Modus | jedes Feld hat eine Anonymisierungsregel; der Payload an Decidalo enthält keine echten Namen oder E-Mails; `hasLogin=false`; Abbruch bei weclapp als Ziel oder bei der produktiven Decidalo-URL |
+| Integration | gegen die Decidalo-Testumgebung, siehe [8.3](#83-integrationstest-gegen-die-decidalo-testumgebung) |
 
-## 10. Arbeitspakete
+## 11. Arbeitspakete
 
 Die Reihenfolge baut zuerst den Kern ohne IO und hängt dann die Systeme an:
 
@@ -347,38 +463,46 @@ Die Reihenfolge baut zuerst den Kern ohne IO und hängt dann die Systeme an:
 | 1 | **Datenmodell, Plan und Planner** inklusive Datenproblemen | Planner vollständig getestet |
 | 2 | **weclapp-client erweitern** (`entry_date` in `Employee` und `EmployeeCreate`), im Repo `weclapp_client.py`, mit Release | neue Client-Version auf PyPI |
 | 3 | **Wide Events** mit Loguru, umschaltbare Ausgabe, Intercept-Handler | `wide_event()` getestet |
-| 4 | **Personio-Loader** und Mapping | Snapshot aus Personio |
+| 4 | **Personio-Loader** mit Relevanzfilter und Mapping | Snapshot aus Personio, nur relevante Mitarbeiter |
 | 5 | **weclapp-Loader und -Executor** (`CREATE`, `COMPLETE`) | gegen `FakeWeclapp` getestet |
 | 6 | **Decidalo-Loader und -Executor** (Batch-Import, Ergebnisse pro Zeile) | mit `aioresponses` getestet |
-| 7 | **Orchestrierung, CLI** (inklusive `--only`), **Dry-Run, Exit-Codes**, Ende-zu-Ende-Tests | `hr-sync --dry-run` läuft; ein Test zeigt, dass `--only` alle anderen Personen aus dem Plan nimmt |
-| 8 | **Testlauf:** Dry-Run gegen die echten Systeme (nur lesend) und offene Punkte klären. Dann der erste echte Lauf, **nur mit `--only <MA-Nummer der Testperson>`**, vorher mit denselben Optionen als Dry-Run. Voraussetzung: Die Testperson steht mit MA-Nummer und E-Mail in Personio | Go-live-Entscheidung |
+| 7 | **Orchestrierung, CLI** (inklusive `--only` und `--target`), **Dry-Run, Exit-Codes**, Ende-zu-Ende-Tests | `hr-sync --dry-run` läuft; Tests zeigen, dass `--only` alle anderen Personen aus dem Plan nimmt und `--target` die anderen Systeme nicht anfasst |
+| 8 | **Test-Modus und Integrationstest:** Anonymisierung, Prüfungen für den Test-Modus, Integrationstests gegen die Decidalo-Testumgebung mit wählbarem Aufräumen | `uv run pytest -m integration_write` legt den ersten Planeintrag anonymisiert in der Testumgebung an, prüft ihn und räumt auf |
+| 9 | **Testlauf:** Dry-Run gegen die echten Systeme (nur lesend) und offene Punkte klären. Dann der erste echte Lauf, **nur mit `--only <MA-Nummer der Testperson>`**, vorher mit denselben Optionen als Dry-Run. Voraussetzung: Die Testperson steht mit MA-Nummer, E-Mail und einem aktiven Employment (Start heute oder früher) in Personio | Go-live-Entscheidung |
 
 AP 2 liegt in einem anderen Repo und kann parallel zu AP 1, 3 und 4 laufen.
 
-## 11. Offene Punkte
+## 12. Offene Punkte
 
 | # | Frage | Bis wann | Bezug |
 |---|---|---|---|
-| O1 | Kosten aktive weclapp-User (`ACTIVE`) eine Lizenz? Geht `ACTIVE` ohne Lizenz überhaupt? | vor AP 8 | weclapp S1 ([#14](https://github.com/Hochfrequenz/weclapp_client.py/issues/14)) |
-| O2 | Verschickt weclapp beim Anlegen eines aktiven Users automatisch eine Einladung? | vor AP 8 | weclapp S3 ([#16](https://github.com/Hochfrequenz/weclapp_client.py/issues/16)) |
-| O3 | Gibt es das Custom Attribute `personalnummer` im weclapp-Tenant schon, und sind die Bestands-User gepflegt? | vor AP 8 | weclapp S4 ([#17](https://github.com/Hochfrequenz/weclapp_client.py/issues/17)) |
-| O4 | Prüft weclapp E-Mail-Adressen auf Eindeutigkeit? (siehe Risiko R2) | vor AP 8 | weclapp S2 ([#15](https://github.com/Hochfrequenz/weclapp_client.py/issues/15)) |
+| O1 | Kosten aktive weclapp-User (`ACTIVE`) eine Lizenz? Geht `ACTIVE` ohne Lizenz überhaupt? | vor AP 9 | weclapp S1 ([#14](https://github.com/Hochfrequenz/weclapp_client.py/issues/14)) |
+| O2 | Verschickt weclapp beim Anlegen eines aktiven Users automatisch eine Einladung? | vor AP 9 | weclapp S3 ([#16](https://github.com/Hochfrequenz/weclapp_client.py/issues/16)) |
+| O3 | Gibt es das Custom Attribute `personalnummer` im weclapp-Tenant schon, und sind die Bestands-User gepflegt? | vor AP 9 | weclapp S4 ([#17](https://github.com/Hochfrequenz/weclapp_client.py/issues/17)) |
+| O4 | Prüft weclapp E-Mail-Adressen auf Eindeutigkeit? (siehe Risiko R2) | vor AP 9 | weclapp S2 ([#15](https://github.com/Hochfrequenz/weclapp_client.py/issues/15)) |
 | O5 | Welche weiteren Felder braucht ein neuer Decidalo-User (Berechtigungsrolle, Team, Standort, Land, …)? Bekommt er bei `hasLogin=true` eine Mail? | vor AP 6 | Brainstorming |
 | O6 | Woran erkennt der Decidalo-Import bestehende User (`employeeID`, `email`, beides)? Ein User ohne `employeeID`, aber mit gleicher E-Mail könnte sonst überschrieben werden | vor AP 6 | Risiko R3 |
 | O7 | Hat `GET /importapi/User` eine maximale Seitengröße, und wie groß darf ein Import-Batch sein? | AP 6 | – |
-| O8 | Personio-Person ohne Employment oder Startdatum: ohne Eintrittsdatum anlegen oder überspringen? | AP 1 | Abschnitt 5 |
+| O8 | ~~Personio-Person ohne Employment oder Startdatum: ohne Eintrittsdatum anlegen oder überspringen?~~ **Erledigt:** Ohne aktives Employment mit Startdatum heute oder früher ist ein Mitarbeiter nicht relevant. Ein aktives Employment ohne Startdatum ist ein Datenproblem | – | Abschnitt 3.1, 5 |
 | O9 | Betrieb: Hosting, Zeitplan, Verwaltung der Secrets | später | weclapp S6 ([#19](https://github.com/Hochfrequenz/weclapp_client.py/issues/19)) |
-| O10 | Brauchen wir eine Ignore-Liste für technische User ohne MA-Nummer (Admins, API-User), damit die Warnungen nicht jedes Mal kommen? | nach AP 8 | Risiko R5 |
+| O10 | Brauchen wir eine Ignore-Liste für technische User ohne MA-Nummer (Admins, API-User), damit die Warnungen nicht jedes Mal kommen? | nach AP 9 | Risiko R5 |
 | O11 | Welche Python-Version? Laut weclapp-Plan (K3) die neueste | AP 0 | – |
+| O12 | URL und API-Key der Decidalo-Testumgebung. Akzeptiert Decidalo E-Mails mit der Domain `example.com`? | vor AP 8 | Abschnitt 8 |
+| O13 | Was bewirkt `delete=true` im Decidalo-Import: endgültig löschen oder nur deaktivieren? Lässt sich dieselbe `employeeID` danach wieder anlegen? | vor AP 8 | Abschnitt 8.3 |
 
-## 12. Risiken
+O5–O7 und O13 lassen sich in der Decidalo-Testumgebung klären, ohne produktive Daten anzufassen.
+
+## 13. Risiken
 
 | # | Risiko | Gegenmaßnahme |
 |---|---|---|
 | R1 | Aktive weclapp-User kosten Lizenzen oder lösen Einladungs-Mails aus | O1 und O2 vor dem ersten echten Lauf klären; der erste Lauf läuft nur mit `--only` für eine Testperson |
 | R2 | In weclapp gibt es schon einen User mit derselben E-Mail, aber ohne MA-Nummer. Der Sync betrachtet ihn nicht und legt die Person neu an: Dublette, oder weclapp lehnt das ab | Warnung für User ohne MA-Nummer; Bestandsdaten vor dem ersten Lauf pflegen (O3); Dry-Run zuerst |
 | R3 | Der Decidalo-Import ist ein Upsert. Erkennt er User über die E-Mail, ändert er womöglich einen bestehenden User, obwohl wir nur anlegen wollen | O6 klären; vor dem Import prüfen, ob die E-Mail schon bei einem User ohne `employeeID` vorkommt |
-| R4 | Die Clients sind Pre-Releases, weclapp ist noch nicht gegen einen echten Tenant getestet | auf Minor-Version pinnen; AP 8 zuerst nur lesend |
+| R4 | Die Clients sind Pre-Releases, weclapp ist noch nicht gegen einen echten Tenant getestet | auf Minor-Version pinnen; AP 9 zuerst nur lesend |
 | R5 | Viele Warnungen durch technische User ohne MA-Nummer verdecken die wichtigen | Warnungen gezielt auswerten; bei Bedarf Ignore-Liste (O10) |
 | R6 | Personenbezogene Daten gelangen über Fehlertexte oder Client-Logs ins Log | Event-Felder fest definiert, keine Fehlertexte, `diagnose=False`; Test auf personenbezogene Daten in der Ausgabe; Client-Logs nur ab WARNING |
 | R7 | Laden schlägt teilweise fehl, der Sync legt bestehende Personen doppelt an | Abbruch vor der Planung, wenn ein System nicht vollständig geladen wurde |
+| R8 | Echte Namen oder E-Mails gelangen in die Testumgebung | Der Test-Modus erzwingt Anonymisierung und `hasLogin=false`; ein Test prüft, dass jedes Feld eine Regel hat; ein Payload-Test findet keine echten Werte |
+| R9 | Ein Lauf im Test-Modus schreibt in eine produktive Umgebung | Abbruch bei der produktiven Decidalo-URL und bei weclapp als Ziel; die Integrationstests nutzen eigene `DECIDALO_TEST_*`-Variablen |
+| R10 | Das automatische Aufräumen löscht einen echten User | Gelöscht wird nur im Test-Modus, nur nach der Prüfung, dass der User angelegt wurde, und nur ein User mit genau der anonymisierten E-Mail |
