@@ -11,6 +11,8 @@ HR-Sync überträgt beim Onboarding die Stammdaten neuer Mitarbeiter aus **Perso
 - **Operationen:** nur **Anlegen**. Bestehende Personen bleiben unverändert, abweichende Felder werden geloggt.
 - **Felder (Phase 1):** MA-Nummer, Vorname, Nachname, E-Mail, Eintrittsdatum. Weitere Felder folgen später
   (siehe [4.3](#43-weitere-felder-ergänzen)).
+- **Verteilung:** Am Ende erscheint HR-Sync als PyPI-Paket `hochfrequenz-hr-sync`, das auch andere Firmen nutzen
+  können (siehe [Abschnitt 9](#9-pypi-paket)).
 - **Nicht im Umfang:** Aktualisieren bestehender Personen, Offboarding (Personen, die nur noch im Zielsystem stehen),
   Hosting und Zeitplan.
 
@@ -32,6 +34,9 @@ HR-Sync überträgt beim Onboarding die Stammdaten neuer Mitarbeiter aus **Perso
 | Logging | Wide Events mit Loguru. Ausgabe umschaltbar (lesbar oder JSON) |
 | Personenbezogene Daten in Logs | nein: nur MA-Nummer, systeminterne IDs, Feldnamen und Zahlen |
 | Betrieb | erst einmal als CLI, Secrets aus `.env`. Hosting und Zeitplan klären wir später |
+| PyPI-Paket | `hochfrequenz-hr-sync`, Befehl `hr-sync`, Import-Paket `hr_sync`, Lizenz MIT wie die Clients. Der Zeitpunkt des ersten Releases ist offen (O14) |
+| Zielgruppe des Pakets | auch andere Firmen: Alles Firmenspezifische ist konfigurierbar und dokumentiert. CLI, Umgebungsvariablen, Exit-Codes und Event-Felder sind eine stabile Schnittstelle |
+| Stabile Version | erst, wenn auch die Clients stabil sind. Bis dahin erscheint HR-Sync nur als Pre-Release |
 | Zielsysteme | wählbar mit `--target weclapp` bzw. `--target decidalo`, Standard sind beide |
 | Testumgebungen | In Testumgebungen landen keine echten Namen oder E-Mails: Im Test-Modus (`HR_SYNC_ENVIRONMENT=test`) wird anonymisiert. MA-Nummer und Eintrittsdatum bleiben echt |
 | Decidalo im Test-Modus | eigene URL und eigener Key (`DECIDALO_TEST_BASE_URL`, `DECIDALO_TEST_API_KEY`), `hasLogin=false`. Die Testumgebung ist nur im Test-Modus erreichbar |
@@ -110,7 +115,7 @@ Die Prüfung läuft pro Mitarbeiter in dieser Reihenfolge:
 2. Sonst: Gibt es ein Employment mit `ACTIVE` ohne Startdatum? Dann gibt es ein Warn-Event `missing_entry_date`.
 3. Sonst ist der Mitarbeiter nicht relevant, mit dem Grund `employment_not_active` oder `start_date_in_future`.
 
-„Heute“ ist das Datum in Europe/Berlin beim Start des Laufs. Der Loader bekommt es als Parameter, damit Tests es
+„Heute“ ist das Datum beim Start des Laufs in der Zeitzone aus `HR_SYNC_TIMEZONE` (Standard `Europe/Berlin`). Der Loader bekommt es als Parameter, damit Tests es
 festlegen können.
 
 **Laden und mappen:**
@@ -319,25 +324,34 @@ with wide_event("sync.load", system="personio") as event:
 
 ## 7. Konfiguration, CLI und Fehlerbehandlung
 
-Die Konfiguration kommt über `pydantic-settings` aus der Umgebung bzw. aus `.env`. Im Repo liegt eine `.env.example`,
-die `.env` steht in `.gitignore`.
+Die Konfiguration kommt über `pydantic-settings` aus der Umgebung bzw. aus einer `.env`-Datei: standardmäßig aus dem
+aktuellen Verzeichnis, mit `--env-file` aus einem beliebigen Pfad. Im Repo liegt eine `.env.example`, die `.env` steht in
+`.gitignore`.
+
+Alle Werte, die von der Firma abhängen, sind Variablen. Die Standardwerte sind die von Hochfrequenz. Sie sind in der
+Tabelle mit *(HF)* markiert und werden im README als solche dokumentiert, damit andere Firmen sie anpassen können
+(siehe [9.1](#91-nutzbar-für-andere-firmen)).
 
 | Variable | Bedeutung |
 |---|---|
 | `PERSONIO_CLIENT_ID`, `PERSONIO_CLIENT_SECRET`, `PERSONIO_APP_ID` | Personio-API |
-| `PERSONIO_EMPLOYEE_NUMBER_ATTRIBUTE` | Standard `company_employee_id` |
+| `PERSONIO_EMPLOYEE_NUMBER_ATTRIBUTE` | Standard `company_employee_id` *(HF)* |
 | `WECLAPP_API_TOKEN`, `WECLAPP_BASE_URL` bzw. `WECLAPP_TENANT` | weclapp-API (wie `WeclappConfig.from_env()`) |
-| `WECLAPP_EMPLOYEE_NUMBER_ATTRIBUTE_KEY` | Standard `personalnummer` |
-| `WECLAPP_NEW_USER_STATUS` | Standard `ACTIVE` |
+| `WECLAPP_EMPLOYEE_NUMBER_ATTRIBUTE_KEY` | Standard `personalnummer` *(HF)* |
+| `WECLAPP_NEW_USER_STATUS` | Standard `ACTIVE` *(HF)* |
 | `DECIDALO_API_KEY` | Decidalo-Import-API |
 | `DECIDALO_TEST_BASE_URL`, `DECIDALO_TEST_API_KEY` | Decidalo-Testumgebung. Werden nur im Test-Modus gelesen und sind dort Pflicht (siehe [Abschnitt 8](#8-testumgebungen-und-anonymisierung)) |
-| `DECIDALO_EMPLOYEE_TYPE_NAME` | Standard `Internal` |
-| `DECIDALO_HAS_LOGIN` | Standard `true`; im Test-Modus wirkungslos (immer `false`) |
+| `DECIDALO_EMPLOYEE_TYPE_NAME` | Standard `Internal` *(HF)* |
+| `DECIDALO_HAS_LOGIN` | Standard `true` *(HF)*; im Test-Modus wirkungslos (immer `false`) |
 | `HR_SYNC_ENVIRONMENT` | `production` (Standard) oder `test`, siehe [Abschnitt 8](#8-testumgebungen-und-anonymisierung) |
+| `HR_SYNC_TIMEZONE` | Zeitzone für „heute“ in der Relevanzregel, Standard `Europe/Berlin` *(HF)* |
 | `HR_SYNC_LOG_FORMAT` | `pretty` oder `json` |
 
-**CLI:** `hr-sync [--dry-run] [--only MA-NR ...] [--target weclapp|decidalo ...] [--log-format pretty|json]`, umgesetzt
-mit `argparse` (keine weitere Abhängigkeit).
+**CLI:** `hr-sync [--dry-run] [--only MA-NR ...] [--target weclapp|decidalo ...] [--env-file PFAD] [--log-format pretty|json]`,
+umgesetzt mit `argparse` (keine weitere Abhängigkeit).
+
+- `--env-file PFAD` liest die Konfiguration aus dieser Datei statt aus `.env` im aktuellen Verzeichnis. Das ist wichtig,
+  wenn HR-Sync als Tool installiert ist (`uv tool install`, `pipx`) und aus einem beliebigen Verzeichnis läuft.
 
 - `--target` (mehrfach angebbar) wählt die Zielsysteme. Ohne Angabe laufen beide. Systeme, die nicht gewählt sind,
   werden weder geladen noch beschrieben, und ihre Zugangsdaten müssen nicht gesetzt sein.
@@ -452,7 +466,61 @@ uv run pytest -m integration_write
 uv run pytest -m integration_write --keep-test-data
 ```
 
-## 9. Projektstruktur
+## 9. PyPI-Paket
+
+Am Ende erscheint HR-Sync als Paket auf PyPI. So können es auch andere Firmen nutzen, die Personio mit weclapp
+und/oder Decidalo verbinden.
+
+| Punkt | Festlegung |
+|---|---|
+| Paketname | `hochfrequenz-hr-sync`, installierbar mit `pip install hochfrequenz-hr-sync` oder `uv tool install hochfrequenz-hr-sync` |
+| Befehl und Import | Befehl `hr-sync`, Python-Paket `hr_sync` |
+| Lizenz | MIT wie die Clients, mit einer `LICENSE`-Datei im Repo |
+| Versionen | aus den Git-Tags (`v0.1.0`) über hatch-vcs, nach SemVer. Solange `personio-client` oder `weclapp-client` (oder ein anderer Client) ein Pre-Release ist, erscheint auch HR-Sync nur als Pre-Release, z. B. `0.1.0a1` |
+| Veröffentlichung | Ein GitHub-Release mit Tag `v*` startet `python-publish.yml`: Tests, Build und Upload per Trusted Publishing mit dem Environment `release`, wie in den Client-Repos. Bis dahin liegt der Workflow als auskommentierte Vorlage im Repo |
+| Zeitpunkt | offen (O14), frühestens nach AP 7, wenn die CLI läuft |
+
+### 9.1 Nutzbar für andere Firmen
+
+- **Firmenspezifisches ist konfigurierbar** (Abschnitt 7): das Attribut der MA-Nummer in Personio, der Key des Custom
+  Attributes in weclapp, der Status neuer weclapp-User, Mitarbeitertyp und Login in Decidalo und die Zeitzone. Die
+  Standardwerte von Hochfrequenz sind im README als solche gekennzeichnet.
+- **Zielsysteme sind wählbar** mit `--target`. Wer nur weclapp oder nur Decidalo nutzt, braucht nur dessen
+  Zugangsdaten.
+- **`--env-file`** erlaubt eine Konfigurationsdatei außerhalb des aktuellen Verzeichnisses.
+- **Fest eingebaut bleiben** die Relevanzregel für Personio, „nur anlegen“, das displayName-Format „Vorname Nachname“
+  und die Anonymisierung im Test-Modus. Brauchen andere Firmen dort etwas anderes, kommt das als eigener Punkt (O15).
+- **Hochfrequenz-Interna bleiben aus dem Paket:** Der Umsetzungsplan und die Integrationstests liegen nur im Repo. Das
+  Wheel enthält nur `src`, das sdist schließt `unittests` aus.
+
+### 9.2 Stabile Schnittstelle
+
+Ab dem ersten Release gelten als öffentliche Schnittstelle:
+
+- die CLI-Optionen
+- die Umgebungsvariablen
+- die Exit-Codes
+- die Namen und Felder der Wide Events (wer die JSON-Ausgabe auswertet, verlässt sich darauf)
+
+Änderungen daran sind Breaking Changes: bei `0.x` eine neue Minor-Version, ab `1.0` eine neue Major-Version, jeweils
+mit Release-Notes. Die Python-Module (`hr_sync.*`) sind keine öffentliche API.
+
+### 9.3 Voraussetzungen für das erste Release
+
+- **`LICENSE`-Datei** (MIT, Copyright Hochfrequenz).
+- **README als Nutzerdoku** (Englisch):
+  - Installation
+  - Voraussetzungen je System: Personio-Credentials mit Scope, Custom Attribute in weclapp, Decidalo-API-Key
+  - Konfigurationsreferenz mit den Hochfrequenz-Standardwerten
+  - CLI und Exit-Codes
+  - Events
+  - Test-Modus
+- **Python-Obergrenze:** `requires-python` steht auf `<3.15`, weil `personio-client` und `decidalo-client` `aiohttp<3.14`
+  verlangen und es `aiohttp 3.13` nicht für Python 3.15 gibt. Eine Obergrenze ist für ein Paket ungünstig. Sie sollte vor
+  dem Release fallen (O16).
+- **Pre-Release-Regel prüfen:** Sind alle Clients stabil? Sonst wird das Release ein Pre-Release.
+
+## 10. Projektstruktur
 
 ```
 src/hr_sync/
@@ -477,7 +545,7 @@ unittests/
 Laufzeit-Abhängigkeiten: `personio-client`, `weclapp-client`, `decidalo-client`, `loguru`, `pydantic`,
 `pydantic-settings`. Für die Tests kommen `pytest-asyncio` und `aioresponses` dazu.
 
-## 10. Tests
+## 11. Tests
 
 | Ebene | Wie |
 |---|---|
@@ -491,26 +559,28 @@ Laufzeit-Abhängigkeiten: `personio-client`, `weclapp-client`, `decidalo-client`
 | Test-Modus | jedes Feld hat eine Anonymisierungsregel; der Payload an Decidalo enthält keine echten Namen oder E-Mails; `hasLogin=false`; Abbruch bei weclapp als Ziel, bei fehlenden `DECIDALO_TEST_*` oder bei der produktiven Decidalo-URL; der Produktionsmodus nutzt die produktive URL, auch wenn `DECIDALO_TEST_*` gesetzt sind |
 | Integration | gegen die Decidalo-Testumgebung, siehe [8.3](#83-integrationstest-gegen-die-decidalo-testumgebung) |
 
-## 11. Arbeitspakete
+## 12. Arbeitspakete
 
 Die Reihenfolge baut zuerst den Kern ohne IO und hängt dann die Systeme an:
 
 | AP | Inhalt | Ergebnis |
 |---|---|---|
-| 0 | **Repo-Setup:** Template auf `hr_sync` umbenennen, `pyproject.toml` (Name, Abhängigkeiten, `[project.scripts]`), `.env.example`, README-Gerüst, PyPI-Publish-Workflow entfernen (es ist eine Anwendung, keine Bibliothek) | CI grün mit leerem Paket |
+| 0 | **Repo-Setup:** Template auf `hr_sync` umbenennen, `pyproject.toml` (Paketname `hochfrequenz-hr-sync`, Abhängigkeiten, `[project.scripts]`), `.env.example`, README-Gerüst. Der PyPI-Publish-Workflow bleibt als auskommentierte Vorlage für AP 10 | CI grün mit leerem Paket |
 | 1 | **Datenmodell, Plan und Planner** inklusive Datenproblemen | Planner vollständig getestet |
 | 2 | **weclapp-client erweitern** (`entry_date` in `Employee` und `EmployeeCreate`), im Repo `weclapp_client.py`, mit Release | neue Client-Version auf PyPI |
 | 3 | **Wide Events** mit Loguru, umschaltbare Ausgabe, Intercept-Handler | `wide_event()` getestet |
 | 4 | **Personio-Loader** mit Relevanzfilter und Mapping | Snapshot aus Personio, nur relevante Mitarbeiter |
 | 5 | **weclapp-Loader und -Executor** (`CREATE`, `COMPLETE`) | gegen `FakeWeclapp` getestet |
 | 6 | **Decidalo-Loader und -Executor** (synchroner Import über `ImportSync`, Ergebnisse pro Zeile) | mit `aioresponses` getestet |
-| 7 | **Orchestrierung, CLI** (inklusive `--only` und `--target`), **Dry-Run, Exit-Codes**, Ende-zu-Ende-Tests | `hr-sync --dry-run` läuft; Tests zeigen, dass `--only` alle anderen Personen aus dem Plan nimmt und `--target` die anderen Systeme nicht anfasst |
+| 7 | **Orchestrierung, CLI** (inklusive `--only`, `--target` und `--env-file`), **Dry-Run, Exit-Codes**, Ende-zu-Ende-Tests | `hr-sync --dry-run` läuft; Tests zeigen, dass `--only` alle anderen Personen aus dem Plan nimmt und `--target` die anderen Systeme nicht anfasst |
 | 8 | **Test-Modus und Integrationstest:** Anonymisierung, Prüfungen für den Test-Modus, Integrationstests gegen die Decidalo-Testumgebung mit wählbarem Aufräumen | `uv run pytest -m integration_write` legt den ersten Planeintrag anonymisiert in der Testumgebung an, prüft ihn und räumt auf |
 | 9 | **Testlauf:** Dry-Run gegen die echten Systeme (nur lesend) und offene Punkte klären. Dann der erste echte Lauf, **nur mit `--only <MA-Nummer der Testperson>`**, vorher mit denselben Optionen als Dry-Run. Voraussetzung: Die Testperson steht mit MA-Nummer, E-Mail und einem aktiven Employment (Start heute oder früher) in Personio | Go-live-Entscheidung |
+| 10 | **PyPI-Paket** (siehe [Abschnitt 9](#9-pypi-paket)): `LICENSE`, README als Nutzerdoku, Publish-Workflow aktivieren, Trusted Publisher auf PyPI und Environment `release` einrichten, Python-Obergrenze prüfen, Release als Pre-Release oder stabil je nach Clients. Zeitpunkt offen (O14) | `hochfrequenz-hr-sync` auf PyPI |
 
-AP 2 liegt in einem anderen Repo und kann parallel zu AP 1, 3 und 4 laufen.
+AP 2 liegt in einem anderen Repo und kann parallel zu AP 1, 3 und 4 laufen. Dasselbe gilt für O16 (aiohttp-Grenze in
+den Clients), das vor AP 10 erledigt sein sollte.
 
-## 12. Offene Punkte
+## 13. Offene Punkte
 
 | # | Frage | Bis wann | Bezug |
 |---|---|---|---|
@@ -524,13 +594,16 @@ AP 2 liegt in einem anderen Repo und kann parallel zu AP 1, 3 und 4 laufen.
 | O8 | ~~Personio-Person ohne Employment oder Startdatum: ohne Eintrittsdatum anlegen oder überspringen?~~ **Erledigt:** Ohne aktives Employment mit Startdatum heute oder früher ist ein Mitarbeiter nicht relevant. Ein aktives Employment ohne Startdatum ist ein Datenproblem | – | Abschnitt 3.1, 5 |
 | O9 | Betrieb: Hosting, Zeitplan, Verwaltung der Secrets | später | weclapp S6 ([#19](https://github.com/Hochfrequenz/weclapp_client.py/issues/19)) |
 | O10 | Brauchen wir eine Ignore-Liste für technische User ohne MA-Nummer (Admins, API-User), damit die Warnungen nicht jedes Mal kommen? | nach AP 9 | Risiko R5 |
-| O11 | Welche Python-Version? Laut weclapp-Plan (K3) die neueste | AP 0 | – |
+| O11 | ~~Welche Python-Version? Laut weclapp-Plan (K3) die neueste~~ **Erledigt in AP 0:** Python 3.14 (CI 3.11–3.14), `requires-python = ">=3.11,<3.15"`, weil die Clients `aiohttp<3.14` verlangen (siehe O16) | – | AP 0 |
 | O12 | URL und API-Key der Decidalo-Testumgebung. Akzeptiert Decidalo E-Mails mit der Domain `example.com`? | vor AP 8 | Abschnitt 8 |
 | O13 | Was bewirkt `delete=true` in `ImportSync`: endgültig löschen oder nur deaktivieren? Lässt sich dieselbe `employeeID` danach wieder anlegen? | vor AP 8 | Abschnitt 8.3 |
+| O14 | Wann erscheint das erste Release auf PyPI? | offen | Abschnitt 9 |
+| O15 | Brauchen andere Firmen weitere Einstellungen, z. B. für das displayName-Format oder die Relevanzregel? | nach Bedarf | Abschnitt 9.1 |
+| O16 | `aiohttp`-Grenze in `personio-client` und `decidalo-client` auf `<3.15` anheben und neu releasen (`aiohttp 3.14` unterstützt Python 3.15). Danach entfällt die Obergrenze `<3.15` in HR-Sync | vor AP 10 | Abschnitt 9.3, O11 |
 
 O5–O7 und O13 lassen sich in der Decidalo-Testumgebung klären, ohne produktive Daten anzufassen.
 
-## 13. Risiken
+## 14. Risiken
 
 | # | Risiko | Gegenmaßnahme |
 |---|---|---|
@@ -544,3 +617,5 @@ O5–O7 und O13 lassen sich in der Decidalo-Testumgebung klären, ohne produktiv
 | R8 | Echte Namen oder E-Mails gelangen in die Testumgebung, z. B. weil `HR_SYNC_ENVIRONMENT=test` vergessen wurde | Die Testumgebung ist nur im Test-Modus erreichbar, weil der Produktionsmodus fest die produktive URL nutzt; der Test-Modus erzwingt Anonymisierung und `hasLogin=false`; ein Test prüft, dass jedes Feld eine Regel hat; ein Payload-Test findet keine echten Werte |
 | R9 | Ein Lauf im Test-Modus schreibt in eine produktive Umgebung | Abbruch bei der produktiven Decidalo-URL und bei weclapp als Ziel; Test-Modus und Integrationstests nutzen nur die `DECIDALO_TEST_*`-Variablen |
 | R10 | Das automatische Aufräumen löscht einen echten User | Gelöscht wird nur im Test-Modus, nur nach der Prüfung, dass der User angelegt wurde, und nur ein User mit genau der anonymisierten E-Mail |
+| R11 | Annahmen von Hochfrequenz passen für andere Firmen nicht | Firmenspezifisches ist konfigurierbar und im README gekennzeichnet; weitere Einstellungen nach Bedarf (O15) |
+| R12 | Änderungen an CLI, Variablen oder Events brechen die Installationen anderer Firmen | Diese sind als stabile Schnittstelle definiert (9.2), Breaking Changes nur mit neuer Minor- bzw. Major-Version und Release-Notes |
