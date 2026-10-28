@@ -53,7 +53,8 @@ flowchart TD
 2. Daten nacheinander laden: Personio, weclapp, Decidalo. Jeder Loader mappt auf das gemeinsame Modell und liefert einen
    **Snapshot**: die Datensätze nach MA-Nummer und die Hinweise auf Datenprobleme.
 3. Datenprobleme aussortieren (siehe [Abschnitt 5](#5-datenprobleme)). Für jedes gibt es ein Warn-Event.
-4. Plan erstellen. Das ist eine reine Funktion ohne IO: Für jede gültige Personio-Person und jedes Zielsystem gilt:
+4. Plan erstellen. Das ist eine reine Funktion ohne IO: Für jede gültige Personio-Person (mit `--only` nur für die
+   angegebenen MA-Nummern, siehe [Abschnitt 7](#7-konfiguration-cli-und-fehlerbehandlung)) und jedes Zielsystem gilt:
    - Die Person fehlt: Operation `CREATE`.
    - Die Person ist vorhanden: Felder vergleichen und Abweichungen festhalten (nur die Feldnamen).
 5. Hat der Plan keine Operationen, endet der Lauf. Im Dry-Run wird der Plan nur geloggt.
@@ -230,13 +231,13 @@ with wide_event("sync.load", system="personio") as event:
     ...
     event["records"] = len(snapshot.records)
     event["notices"] = len(snapshot.notices)
-# beim Verlassen kommen dazu: run_id, dry_run, duration_ms, outcome, bei Fehlern error.type und error.message
+# beim Verlassen kommen dazu: run_id, dry_run, duration_ms, outcome, bei Fehlern error.type und error.status_code
 # Ausgabe: logger.bind(**fields).log(level, "sync.load")
 ```
 
 | Event | Wann | Inhalt (Auswahl) | Level |
 |---|---|---|---|
-| `sync.run` | einmal, am Ende | `run_id`, `dry_run`, Dauer, Summen je System und Operation, Anzahl Hinweise und Fehler, `exit_code` | INFO / ERROR |
+| `sync.run` | einmal, am Ende | `run_id`, `dry_run`, `only`, Dauer, Summen je System und Operation, Anzahl Hinweise und Fehler, `exit_code` | INFO / ERROR |
 | `sync.load` | je System | `system`, `records`, `notices`, Dauer | INFO / ERROR |
 | `sync.notice` | je Datenproblem | `system`, `reason`, `system_id` | **WARNING** |
 | `sync.deviation` | je Person und Zielsystem mit Abweichung | `employee_number`, `system`, `fields` | INFO |
@@ -244,8 +245,16 @@ with wide_event("sync.load", system="personio") as event:
 | `sync.operation` | je Operation | `employee_number`, `system`, `type`, `outcome` (`success`, `error`, `skipped`, `dry_run`), `target_id`, Fehler | INFO / ERROR |
 
 - **Keine personenbezogenen Werte:** nur MA-Nummer, systeminterne IDs, Feldnamen und Zahlen. Ein Test prüft, dass
-  Namen und E-Mail-Adressen der Testdaten nicht in der Log-Ausgabe auftauchen. Fehlertexte der APIs können Werte
-  enthalten, deshalb werden sie vor dem Loggen gekürzt bzw. nur mit Fehlertyp und Statuscode geloggt (siehe O12).
+  Namen und E-Mail-Adressen der Testdaten nicht in der Log-Ausgabe auftauchen.
+- **Keine Fehlertexte:** Meldungen der APIs und `str(error)` können Namen oder E-Mail-Adressen enthalten, auch in
+  gekürzter Form. Deshalb kommen nur fest definierte Felder ins Event:
+  - immer der Fehlertyp (Klassenname) und der HTTP-Statuscode
+  - bei Personio die `trace_id`
+  - bei weclapp `problem_type` und die betroffenen Properties (`location` aus `validation_errors`), nicht die
+    Meldungstexte
+  - bei Decidalo der `status` der Zeile, nicht `errorMessage`
+
+  Loguru läuft mit `diagnose=False`, und die Events enthalten keine Tracebacks, weil diese Variablenwerte zeigen können.
 - **Im Dry-Run** gibt es für jede geplante Operation ein `sync.operation` mit `outcome=dry_run`. So ist pro Person
   sichtbar, was passieren würde.
 - **Ausgabe umschaltbar:** `--log-format pretty|json` bzw. `HR_SYNC_LOG_FORMAT`, Standard ist `pretty`.
@@ -270,7 +279,13 @@ die `.env` steht in `.gitignore`.
 | `DECIDALO_HAS_LOGIN` | Standard `true` |
 | `HR_SYNC_LOG_FORMAT` | `pretty` oder `json` |
 
-**CLI:** `hr-sync [--dry-run] [--log-format pretty|json]`, umgesetzt mit `argparse` (keine weitere Abhängigkeit).
+**CLI:** `hr-sync [--dry-run] [--only MA-NR ...] [--log-format pretty|json]`, umgesetzt mit `argparse` (keine weitere
+Abhängigkeit).
+
+- `--only MA-NR` (mehrfach angebbar) begrenzt den Plan auf diese MA-Nummern.
+  - Geladen wird trotzdem alles, damit Datenprobleme wie doppelte MA-Nummern erkannt werden.
+  - Steht eine angegebene MA-Nummer nicht in Personio, gibt es ein Warn-Event (`reason=unknown_employee_number`).
+  - Der erste echte Lauf läuft verbindlich mit `--only` und der MA-Nummer einer Testperson (AP 8).
 
 **Exit-Codes:**
 
@@ -335,8 +350,8 @@ Die Reihenfolge baut zuerst den Kern ohne IO und hängt dann die Systeme an:
 | 4 | **Personio-Loader** und Mapping | Snapshot aus Personio |
 | 5 | **weclapp-Loader und -Executor** (`CREATE`, `COMPLETE`) | gegen `FakeWeclapp` getestet |
 | 6 | **Decidalo-Loader und -Executor** (Batch-Import, Ergebnisse pro Zeile) | mit `aioresponses` getestet |
-| 7 | **Orchestrierung, CLI, Dry-Run, Exit-Codes**, Ende-zu-Ende-Tests | `hr-sync --dry-run` läuft |
-| 8 | **Testlauf:** Dry-Run gegen die echten Systeme (nur lesend), offene Punkte klären, erster echter Lauf mit einer Testperson | Go-live-Entscheidung |
+| 7 | **Orchestrierung, CLI** (inklusive `--only`), **Dry-Run, Exit-Codes**, Ende-zu-Ende-Tests | `hr-sync --dry-run` läuft; ein Test zeigt, dass `--only` alle anderen Personen aus dem Plan nimmt |
+| 8 | **Testlauf:** Dry-Run gegen die echten Systeme (nur lesend) und offene Punkte klären. Dann der erste echte Lauf, **nur mit `--only <MA-Nummer der Testperson>`**, vorher mit denselben Optionen als Dry-Run. Voraussetzung: Die Testperson steht mit MA-Nummer und E-Mail in Personio | Go-live-Entscheidung |
 
 AP 2 liegt in einem anderen Repo und kann parallel zu AP 1, 3 und 4 laufen.
 
@@ -355,16 +370,15 @@ AP 2 liegt in einem anderen Repo und kann parallel zu AP 1, 3 und 4 laufen.
 | O9 | Betrieb: Hosting, Zeitplan, Verwaltung der Secrets | später | weclapp S6 ([#19](https://github.com/Hochfrequenz/weclapp_client.py/issues/19)) |
 | O10 | Brauchen wir eine Ignore-Liste für technische User ohne MA-Nummer (Admins, API-User), damit die Warnungen nicht jedes Mal kommen? | nach AP 8 | Risiko R5 |
 | O11 | Welche Python-Version? Laut weclapp-Plan (K3) die neueste | AP 0 | – |
-| O12 | Wie gehen wir mit API-Fehlertexten um, die personenbezogene Werte enthalten können? | AP 3 | Abschnitt 6 |
 
 ## 12. Risiken
 
 | # | Risiko | Gegenmaßnahme |
 |---|---|---|
-| R1 | Aktive weclapp-User kosten Lizenzen oder lösen Einladungs-Mails aus | O1 und O2 vor dem ersten echten Lauf klären; erster Lauf mit einer Testperson |
+| R1 | Aktive weclapp-User kosten Lizenzen oder lösen Einladungs-Mails aus | O1 und O2 vor dem ersten echten Lauf klären; der erste Lauf läuft nur mit `--only` für eine Testperson |
 | R2 | In weclapp gibt es schon einen User mit derselben E-Mail, aber ohne MA-Nummer. Der Sync betrachtet ihn nicht und legt die Person neu an: Dublette, oder weclapp lehnt das ab | Warnung für User ohne MA-Nummer; Bestandsdaten vor dem ersten Lauf pflegen (O3); Dry-Run zuerst |
 | R3 | Der Decidalo-Import ist ein Upsert. Erkennt er User über die E-Mail, ändert er womöglich einen bestehenden User, obwohl wir nur anlegen wollen | O6 klären; vor dem Import prüfen, ob die E-Mail schon bei einem User ohne `employeeID` vorkommt |
 | R4 | Die Clients sind Pre-Releases, weclapp ist noch nicht gegen einen echten Tenant getestet | auf Minor-Version pinnen; AP 8 zuerst nur lesend |
 | R5 | Viele Warnungen durch technische User ohne MA-Nummer verdecken die wichtigen | Warnungen gezielt auswerten; bei Bedarf Ignore-Liste (O10) |
-| R6 | Personenbezogene Daten gelangen über Fehlertexte oder Client-Logs ins Log | Event-Felder fest definiert; Test auf PII in der Ausgabe; Client-Logs nur ab WARNING (O12) |
+| R6 | Personenbezogene Daten gelangen über Fehlertexte oder Client-Logs ins Log | Event-Felder fest definiert, keine Fehlertexte, `diagnose=False`; Test auf personenbezogene Daten in der Ausgabe; Client-Logs nur ab WARNING |
 | R7 | Laden schlägt teilweise fehl, der Sync legt bestehende Personen doppelt an | Abbruch vor der Planung, wenn ein System nicht vollständig geladen wurde |
