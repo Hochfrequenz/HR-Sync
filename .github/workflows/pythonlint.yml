@@ -17,10 +17,10 @@ jobs:
         include:
           - linter-env: linting
             commands: |
-              uv run ruff check src/mypackage unittests
+              uv run ruff check src/hr_sync unittests
           - linter-env: type_check
             commands: |
-              uv run mypy --show-error-codes src/mypackage --strict
+              uv run mypy --show-error-codes src/hr_sync --strict
               uv run mypy --show-error-codes unittests --strict
           - linter-env: spell_check
             commands: |
@@ -31,7 +31,7 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v10.3.2
         with:
-          python-version: "3.15"
+          python-version: "3.14"
       - name: Install Dependencies
         run: uv sync --group ${{ matrix.linter-env }}
       - name: Run ${{ matrix.linter-env }}
