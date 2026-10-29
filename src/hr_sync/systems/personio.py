@@ -1,11 +1,23 @@
 """
-Loads the employees from Personio, the source of HR-Sync.
+The adapter of Personio, the source of HR-Sync.
+
+Like every adapter, it separates loading from mapping:
+
+- :func:`fetch_persons` only talks to Personio and returns the data as it comes.
+- :func:`map_persons` applies the rules and builds the snapshot. It contains no IO, so it can be tested and debugged
+  with plain data.
+- :func:`load_personio` does both and logs the event ``sync.load``.
+
+The Personio client is async only. :func:`fetch_persons` hides that behind a single ``asyncio.run``; everything else
+is synchronous.
 """
 
 import asyncio
 from collections import Counter
 from collections.abc import AsyncIterator, Sequence
+from dataclasses import dataclass, field
 from datetime import date
+from types import TracebackType
 from typing import Literal, Protocol
 
 from personio_client import Employment, Person
@@ -13,88 +25,113 @@ from personio_client import Employment, Person
 from hr_sync.events import wide_event
 from hr_sync.model import EmployeeRecord, ExclusionReason, Snapshot, SnapshotBuilder, System, display_name_of
 
-DEFAULT_CONCURRENCY = 5
-"""how many persons' employments are requested at the same time; Personio's rate limit bucket held 100 requests"""
-
 
 class PersonioSource(Protocol):
-    """The part of :class:`personio_client.PersonioClient` that the loader uses."""
+    """The part of :class:`personio_client.PersonioClient` that :func:`fetch_persons` uses."""
+
+    async def __aenter__(self) -> object: ...
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+        /,
+    ) -> None: ...
 
     def iter_persons(self, *, status: Literal["ACTIVE", "INACTIVE"] | None = None) -> AsyncIterator[Person]: ...
 
     def iter_employments(self, person_id: str) -> AsyncIterator[Employment]: ...
 
 
-async def load_personio(
-    client: PersonioSource,
-    *,
-    employee_number_attribute: str,
-    today: date,
-    concurrency: int = DEFAULT_CONCURRENCY,
-) -> Snapshot:
+@dataclass(frozen=True)
+class LoadedPerson:
+    """A person of Personio with its employments, as loaded."""
+
+    person: Person
+    employments: tuple[Employment, ...] = ()
+
+
+@dataclass(frozen=True)
+class MappedPersons:
+    """The result of :func:`map_persons`: the snapshot and the numbers for the event ``sync.load``."""
+
+    snapshot: Snapshot
+    without_id: int = 0
+    """persons without id, which can't be part of the snapshot"""
+    not_relevant: dict[ExclusionReason, int] = field(default_factory=dict)
+    """the number of persons that are not relevant, per reason"""
+
+
+def load_personio(client: PersonioSource, *, employee_number_attribute: str, today: date) -> Snapshot:
     """
     Loads the persons of Personio and maps those with a relevant employment onto the common model.
 
-    Only the persons with status ``ACTIVE`` are loaded; that includes onboarding persons and persons on leave, whose
-    employments :func:`relevant_employment` then sorts out. Persons that are not relevant yield no notice, so future
-    employees without employee number or e-mail address don't cause warnings. The employee number is the value of the
-    custom attribute with the id ``employee_number_attribute``. ``today`` is the day of the run, i.e. ``date.today()``:
-    dates are compared by the day only, without time zones, because all employees are in Germany. Logs one event
-    ``sync.load``.
-
-    Raises:
-        ValueError: if ``concurrency`` is not positive.
+    See :func:`fetch_persons` and :func:`map_persons`. Logs one event ``sync.load``.
     """
-    if concurrency < 1:
-        raise ValueError(f"concurrency must be at least 1, got {concurrency}")
     with wide_event("sync.load", system=System.PERSONIO) as event:
-        persons = [person async for person in client.iter_persons(status="ACTIVE")]
-        with_id = [(person.id, person) for person in persons if person.id is not None]
-        all_employments = await _load_employments(client, [person_id for person_id, _ in with_id], concurrency)
-        builder = SnapshotBuilder(System.PERSONIO, require_email=True)
-        not_relevant: Counter[ExclusionReason] = Counter()
-        for (person_id, person), employments in zip(with_id, all_employments, strict=True):
-            employee_number = employee_number_of(person, employee_number_attribute)
-            employment = relevant_employment(employments, today)
-            if isinstance(employment, ExclusionReason):
-                builder.exclude(person_id, employee_number, employment)
-                if not employment.is_data_problem:
-                    not_relevant[employment] += 1
-            elif employee_number is None:
-                builder.add_without_employee_number(person_id, person.email)
-            else:
-                builder.add(person_id, _record(person, employee_number, employment))
-        snapshot = builder.build()
+        persons = fetch_persons(client)
+        mapped = map_persons(persons, employee_number_attribute=employee_number_attribute, today=today)
         event["persons"] = len(persons)
-        event["without_id"] = len(persons) - len(with_id)
-        event["records"] = len(snapshot.records)
-        event["notices"] = len(snapshot.notices)
-        event["not_relevant"] = {reason.value: count for reason, count in sorted(not_relevant.items())}
-        return snapshot
+        event["without_id"] = mapped.without_id
+        event["records"] = len(mapped.snapshot.records)
+        event["notices"] = len(mapped.snapshot.notices)
+        event["not_relevant"] = {reason.value: count for reason, count in sorted(mapped.not_relevant.items())}
+        return mapped.snapshot
 
 
-async def _load_employments(client: PersonioSource, person_ids: list[str], concurrency: int) -> list[list[Employment]]:
+def fetch_persons(client: PersonioSource) -> list[LoadedPerson]:
     """
-    Loads the employments of the persons, at most ``concurrency`` at the same time.
+    Loads the persons with status ``ACTIVE`` and the employments of each person, one request after the other.
 
-    If a request fails, the other requests are cancelled and awaited before the error is re-raised, so that no request
-    outlives the client. Unlike ``asyncio.TaskGroup``, this keeps the original exception instead of an exception
-    group, so that the event names the actual error.
+    The status ``ACTIVE`` includes onboarding persons and persons on leave; :func:`map_persons` sorts them out. The
+    client is opened and closed within a single ``asyncio.run``, so this must not be called from a running event loop.
+    Persons without id (all fields are optional in the API) can't be asked for their employments and come without.
     """
-    semaphore = asyncio.Semaphore(concurrency)
+    return asyncio.run(_fetch_persons(client))
 
-    async def employments_of(person_id: str) -> list[Employment]:
-        async with semaphore:
-            return [employment async for employment in client.iter_employments(person_id)]
 
-    tasks = [asyncio.ensure_future(employments_of(person_id)) for person_id in person_ids]
-    try:
-        return await asyncio.gather(*tasks)
-    except BaseException:
-        for task in tasks:
-            task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
-        raise
+async def _fetch_persons(client: PersonioSource) -> list[LoadedPerson]:
+    async with client:
+        persons = [person async for person in client.iter_persons(status="ACTIVE")]
+        loaded: list[LoadedPerson] = []
+        for person in persons:
+            if person.id is None:
+                loaded.append(LoadedPerson(person))
+                continue
+            employments = [employment async for employment in client.iter_employments(person.id)]
+            loaded.append(LoadedPerson(person, tuple(employments)))
+        return loaded
+
+
+def map_persons(persons: Sequence[LoadedPerson], *, employee_number_attribute: str, today: date) -> MappedPersons:
+    """
+    Maps the persons with a relevant employment (see :func:`relevant_employment`) onto the common model, without IO.
+
+    The employee number is the value of the custom attribute with the id ``employee_number_attribute``. ``today`` is
+    the day of the run, i.e. ``date.today()``: dates are compared by the day only, without time zones, because all
+    employees are in Germany. Persons that are not relevant yield no notice, so future employees without employee
+    number or e-mail address don't cause warnings. Persons without id are skipped and counted.
+    """
+    builder = SnapshotBuilder(System.PERSONIO, require_email=True)
+    not_relevant: Counter[ExclusionReason] = Counter()
+    without_id = 0
+    for loaded in persons:
+        person = loaded.person
+        if person.id is None:
+            without_id += 1
+            continue
+        employee_number = employee_number_of(person, employee_number_attribute)
+        employment = relevant_employment(loaded.employments, today)
+        if isinstance(employment, ExclusionReason):
+            builder.exclude(person.id, employee_number, employment)
+            if not employment.is_data_problem:
+                not_relevant[employment] += 1
+        elif employee_number is None:
+            builder.add_without_employee_number(person.id, person.email)
+        else:
+            builder.add(person.id, _record(person, employee_number, employment))
+    return MappedPersons(snapshot=builder.build(), without_id=without_id, not_relevant=dict(not_relevant))
 
 
 def relevant_employment(employments: Sequence[Employment], today: date) -> Employment | ExclusionReason:

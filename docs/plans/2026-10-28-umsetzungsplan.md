@@ -35,6 +35,7 @@ HR-Sync überträgt beim Onboarding die Stammdaten neuer Mitarbeiter aus **Perso
 | Relevante Personio-Mitarbeiter | **nur mit einem Employment im Status `ACTIVE`, dessen Startdatum heute oder in der Vergangenheit liegt** |
 | Eintrittsdatum | `employment_start_date` dieses Employments. Gibt es mehrere, gilt das mit dem neuesten Startdatum |
 | Datumswerte | tagesgenau als `datetime.date`, ohne Uhrzeit und ohne Zeitzonen. Alle Mitarbeiter sind in Deutschland. „Heute“ ist `date.today()` beim Start des Laufs |
+| Programmstruktur | synchron, gut wart- und debugbar. async nur gekapselt in den Adaptern für Personio und Decidalo, mit einem `asyncio.run` je Lauf und System. Anfragen nacheinander. Jeder Adapter trennt Laden (IO) und Mappen (reine Logik), siehe Abschnitt 3 |
 | Logging | Wide Events mit Loguru. Ausgabe umschaltbar (lesbar oder JSON) |
 | Personenbezogene Daten in Logs | nein: nur MA-Nummer, systeminterne IDs, Feldnamen und Zahlen |
 | Betrieb | zeitgesteuert auf einem internen Server (Cron, Task Scheduler oder Container-Job), die Secrets liegen dort in einer `.env`. Welcher Server, welches Intervall und wer benachrichtigt wird, ist offen (O9) |
@@ -96,8 +97,27 @@ geplant, sonst würden bestehende Personen doppelt angelegt.
 | Decidalo | [`decidalo-client`](https://github.com/Hochfrequenz/decidalo_client.py) `0.3.1` | async (aiohttp), Import-API | `employeeID` | nur `displayName`; Anlegen über den synchronen Import `ImportSync` (ein Upsert) |
 
 Personio und weclapp sind Pre-Releases. Wir pinnen auf die Minor-Version, z. B. `weclapp-client>=0.1.0a1,<0.2`.
-Das Programm läuft mit asyncio. weclapp wird darin synchron aufgerufen, das ist unkritisch, weil die Systeme ohnehin
-nacheinander abgefragt werden.
+
+**HR-Sync ist synchron.** `personio-client` und `decidalo-client` gibt es nur async. Ihre Adapter kapseln das: Je Lauf
+und System öffnet genau eine Funktion den Client in einem einzigen `asyncio.run(...)`, stellt die Anfragen
+nacheinander und schließt den Client wieder. Für den Rest des Programms (Planner, Events, Orchestrierung, CLI, weclapp)
+ist async unsichtbar. Das hält Stacktraces und Breakpoints linear und die Tests ohne Event-Loop.
+
+**Nacheinander statt parallel.** Auch innerhalb eines Systems laufen die Anfragen nacheinander. Die Log-Events kommen
+dann in der Reihenfolge der Arbeit, Fehler lassen sich reproduzieren, und das Rate Limit von Personio wird geschont.
+Die längere Laufzeit (grob 30 s bei 100 Mitarbeitern) ist für einen zeitgesteuerten Lauf unkritisch. Wird sie doch
+zum Problem, lässt sich Parallelität in der Lade-Funktion nachrüsten, ohne dass sich sonst etwas ändert.
+
+**Aufbau jedes Adapters: laden, mappen.**
+
+| Teil | Aufgabe | Tests |
+|---|---|---|
+| `fetch_…` | nur IO: Daten mit dem Client holen und so zurückgeben, wie sie kommen | wenige Tests mit einem kleinen Fake-Client |
+| `map_…` | Regeln, Mapping und Snapshot, ohne IO und ohne async | mit einfachen Daten, ohne Client |
+| `load_…` | ruft beides auf und erzeugt das Event `sync.load` | Inhalt des Events |
+
+Fast der ganze fachliche Code steckt damit in reinen Funktionen. Man kann sie im Debugger mit echten Daten aus einem
+Lauf füttern. Die Executor für weclapp und Decidalo (AP 5 und 6) bekommen ebenfalls eine synchrone Schnittstelle.
 
 ### 3.1 Personio (Quelle)
 
@@ -130,8 +150,7 @@ Mitarbeiter in Deutschland sind. Der Loader bekommt das Datum als Parameter, dam
 
 - `iter_persons(status="ACTIVE")` als Vorfilter. Der Personenstatus `ACTIVE` umfasst die Employment-Status `ACTIVE`,
   `ONBOARDING` und `LEAVE`. Die genaue Regel prüfen wir danach am Employment.
-- `iter_employments(person.id)` für jede Person, daraus das relevante Employment bestimmen. Weil das ein Request pro
-  Person ist, begrenzen wir die Parallelität mit einem `asyncio.Semaphore` (z. B. 5).
+- `iter_employments(person.id)` für jede Person, nacheinander, daraus das relevante Employment bestimmen.
 - MA-Nummer, E-Mail und doppelte MA-Nummern prüfen wir erst **nach** diesem Filter (Abschnitt 5). Künftige
   Mitarbeiter, denen MA-Nummer oder E-Mail noch fehlen, lösen also keine Warnung aus.
 - Für geladene, aber ausgeschlossene Mitarbeiter mit MA-Nummer merkt sich der Snapshot den Grund (`excluded`). Das
@@ -143,14 +162,18 @@ Mitarbeiter in Deutschland sind. Der Loader bekommt das Datum als Parameter, dam
 
 Umgesetzt in [`systems/personio.py`](../../src/hr_sync/systems/personio.py) (AP 4):
 
-- `load_personio(client, employee_number_attribute=…, today=…, concurrency=5)` liefert den Snapshot. Er erzeugt ein Event
-  `sync.load` mit `persons`, `without_id`, `records`, `notices` und `not_relevant` je Grund.
+- `fetch_persons(client)` holt die Personen und ihre Employments nacheinander, als Liste von `LoadedPerson`. Den
+  Client öffnet und schließt die Funktion selbst in einem `asyncio.run`, auch bei einem Fehler.
+- `map_persons(persons, employee_number_attribute=…, today=…)` ist rein. Sie liefert den Snapshot sowie die Zahlen
+  `without_id` und `not_relevant` je Grund.
+- `load_personio(client, employee_number_attribute=…, today=…)` ruft beides auf und erzeugt das Event `sync.load` mit
+  `persons`, `without_id`, `records`, `notices` und `not_relevant`.
 - `relevant_employment(employments, today)` setzt die Relevanzregel um. Das Ergebnis ist das relevante Employment
   oder der Grund, warum es keines gibt.
 - `employee_number_of(person, attribute_id)` liest die MA-Nummer. Eine Zahl wird zum String, leere Werte gelten als
   fehlend.
-- `client` ist als Protocol `PersonioSource` typisiert (`iter_persons`, `iter_employments`). Die Tests nutzen einen
-  Fake-Client, mypy prüft, dass der echte `PersonioClient` das Protocol erfüllt.
+- `client` ist als Protocol `PersonioSource` typisiert (asynchroner Kontextmanager, `iter_persons`,
+  `iter_employments`). mypy prüft, dass der echte `PersonioClient` das Protocol erfüllt.
 - Personen ohne `id` (laut Spec optional) lassen sich nicht abfragen. Sie werden übersprungen und in `without_id`
   gezählt.
 
@@ -606,16 +629,16 @@ src/hr_sync/
 ├── sync.py               # Orchestrierung: laden → planen → ausführen, die Schritte einzeln aufrufbar
 └── systems/
     ├── __init__.py
-    ├── personio.py       # Loader + Mapping
-    ├── weclapp.py        # Loader + Mapping + Executor
-    └── decidalo.py       # Loader + Mapping + Executor
+    ├── personio.py       # fetch (IO) + map (Logik) + load
+    ├── weclapp.py        # fetch + map + load, dazu der Executor
+    └── decidalo.py       # fetch + map + load, dazu der Executor
 unittests/
 └── integration/          # gegen die Decidalo-Testumgebung, nur lokal
 ```
 
 Laufzeit-Abhängigkeiten: `personio-client`, `weclapp-client`, `decidalo-client`, `loguru`, `pydantic`,
-`pydantic-settings`. Die async-Tests laufen mit `asyncio.run()`, ohne weiteres Test-Plugin. Für Decidalo kommt
-eventuell `aioresponses` dazu (AP 6).
+`pydantic-settings`. Die Tests sind synchron und brauchen kein Plugin für async-Tests. Für Decidalo kommt eventuell
+`aioresponses` dazu (AP 6).
 
 ## 11. Tests
 
@@ -624,8 +647,8 @@ eventuell `aioresponses` dazu (AP 6).
 | Planner | reine Unit-Tests ohne IO, tabellengetrieben (fehlt, vorhanden, Abweichung, unvollständig, Datenprobleme, E-Mail schon vergeben); ein Datenproblem in einem Zielsystem blockiert den Mitarbeiter in allen Systemen, aber keine anderen Mitarbeiter |
 | Mapping | Unit-Tests mit Modellinstanzen der Clients |
 | Relevanz (Personio) | tabellengetrieben: alle Employment-Status inklusive abweichender Schreibweise; Startdatum gestern, heute, morgen; mehrere Employments; aktives Employment ohne Startdatum erzeugt `missing_entry_date`, auch neben einem Employment mit künftigem Start; künftiger Mitarbeiter ohne MA-Nummer erzeugt keine Warnung; `--only` meldet `not_relevant` mit Grund bzw. `unknown_employee_number` |
-| Personio | Fake-Client hinter dem Protocol `PersonioSource`; mypy prüft, dass der echte `PersonioClient` es erfüllt |
-| Decidalo | Fake-Client wie bei Personio oder `aioresponses` (der Client nutzt aiohttp), Entscheidung in AP 6 |
+| Personio | die Logik (`map_persons`, Relevanzregel) mit einfachen Daten ohne Client; das Laden (`fetch_persons`) mit einem kleinen Fake-Client hinter dem Protocol `PersonioSource`. mypy prüft, dass der echte `PersonioClient` es erfüllt |
+| Decidalo | dasselbe Muster; für das Laden ein Fake-Client oder `aioresponses` (der Client nutzt aiohttp), Entscheidung in AP 6 |
 | weclapp | `weclapp_client.testing.FakeWeclapp` |
 | Ende-zu-Ende | ganzer Lauf gegen die Fakes; **ein zweiter Lauf erzeugt keine Schreibzugriffe**; Dry-Run schreibt nichts |
 | Events | Loguru-Sink in eine Liste; Felder und Level prüfen; keine personenbezogenen Werte |

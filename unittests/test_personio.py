@@ -1,6 +1,7 @@
 import asyncio
 from collections.abc import AsyncIterator
 from datetime import date
+from types import TracebackType
 from typing import Literal
 
 import pytest
@@ -8,7 +9,16 @@ from personio_client import Employment, Person, PersonioClient
 from personio_client.models import PersonCustomAttribute
 
 from hr_sync.model import EmployeeRecord, ExclusionReason, NoticeReason
-from hr_sync.systems.personio import PersonioSource, employee_number_of, load_personio, relevant_employment
+from hr_sync.systems.personio import (
+    LoadedPerson,
+    MappedPersons,
+    PersonioSource,
+    employee_number_of,
+    fetch_persons,
+    load_personio,
+    map_persons,
+    relevant_employment,
+)
 
 ATTRIBUTE = "company_employee_id"
 EARLIER = date(2026, 9, 1)
@@ -33,23 +43,39 @@ def _person(
     return Person(id=person_id, first_name=first_name, last_name=last_name, email=email, custom_attributes=attributes)
 
 
-class _FakePersonio:
-    """A Personio client that returns the given persons and employments and records how it is used."""
+def _loaded(person: Person, *employments: Employment) -> LoadedPerson:
+    return LoadedPerson(person, employments)
 
-    def __init__(
-        self,
-        entries: list[tuple[Person, list[Employment]]],
-        fail_for: str | None = None,
-        slow_for: str | None = None,
-    ) -> None:
+
+def _map(*persons: LoadedPerson) -> MappedPersons:
+    return map_persons(persons, employee_number_attribute=ATTRIBUTE, today=TODAY)
+
+
+class _FakePersonio:
+    """An async Personio client that returns the given persons and employments and records how it is used."""
+
+    def __init__(self, entries: list[tuple[Person, list[Employment]]], fail_for: str | None = None) -> None:
         self._persons = [person for person, _ in entries]
         self._employments = {person.id: employments for person, employments in entries}
         self._fail_for = fail_for
-        self._slow_for = slow_for
         self.status_filters: list[str | None] = []
+        self.requested: list[str] = []
         self.running = 0
         self.max_running = 0
-        self.cancelled: list[str] = []
+        self.opened = False
+        self.closed = False
+
+    async def __aenter__(self) -> "_FakePersonio":
+        self.opened = True
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        self.closed = True
 
     async def iter_persons(self, *, status: Literal["ACTIVE", "INACTIVE"] | None = None) -> AsyncIterator[Person]:
         self.status_filters.append(status)
@@ -57,19 +83,15 @@ class _FakePersonio:
             yield person
 
     async def iter_employments(self, person_id: str) -> AsyncIterator[Employment]:
+        self.requested.append(person_id)
         self.running += 1
         self.max_running = max(self.max_running, self.running)
         try:
             await asyncio.sleep(0)
             if person_id == self._fail_for:
                 raise ConnectionError("Personio is not reachable")
-            if person_id == self._slow_for:
-                await asyncio.sleep(60)
             for employment in self._employments[person_id]:
                 yield employment
-        except asyncio.CancelledError:
-            self.cancelled.append(person_id)
-            raise
         finally:
             self.running -= 1
 
@@ -144,15 +166,14 @@ class TestEmployeeNumberOf:
         assert employee_number_of(Person(id="1"), ATTRIBUTE) is None
 
 
-class TestLoadPersonio:
+class TestMapPersons:
     """
-    Tests of loading and mapping the persons of Personio.
+    Tests of mapping the loaded persons onto the common model, with plain data.
     """
 
     def test_relevant_person(self) -> None:
-        client = _FakePersonio([(_person(), [_employment()])])
-        snapshot = asyncio.run(load_personio(client, employee_number_attribute=ATTRIBUTE, today=TODAY))
-        assert snapshot.records == {
+        mapped = _map(_loaded(_person(), _employment()))
+        assert mapped.snapshot.records == {
             "00165": EmployeeRecord(
                 employee_number="00165",
                 first_name="Erika",
@@ -162,57 +183,100 @@ class TestLoadPersonio:
                 entry_date=EARLIER,
             )
         }
-        assert snapshot.system_ids == {"00165": "1"}
-        assert snapshot.notices == []
-        assert client.status_filters == ["ACTIVE"]
+        assert mapped.snapshot.system_ids == {"00165": "1"}
+        assert mapped.snapshot.notices == []
+        assert mapped.without_id == 0
+        assert mapped.not_relevant == {}
 
     def test_entry_date_is_the_start_of_the_relevant_employment(self) -> None:
-        client = _FakePersonio([(_person(), [_employment("INACTIVE", date(2020, 1, 1)), _employment("ACTIVE", TODAY)])])
-        snapshot = asyncio.run(load_personio(client, employee_number_attribute=ATTRIBUTE, today=TODAY))
-        assert snapshot.records["00165"].entry_date == TODAY
+        mapped = _map(_loaded(_person(), _employment("INACTIVE", date(2020, 1, 1)), _employment("ACTIVE", TODAY)))
+        assert mapped.snapshot.records["00165"].entry_date == TODAY
 
     def test_not_relevant_persons_yield_no_notices(self) -> None:
-        client = _FakePersonio(
-            [
-                (_person("1", "00300", email=None), [_employment("ONBOARDING", LATER)]),
-                (_person("2", None, email=None), [_employment("ACTIVE", LATER)]),
-                (_person("3", "00400"), [_employment("ACTIVE", LATER)]),
-            ]
+        mapped = _map(
+            _loaded(_person("1", "00300", email=None), _employment("ONBOARDING", LATER)),
+            _loaded(_person("2", None, email=None), _employment("ACTIVE", LATER)),
+            _loaded(_person("3", "00400"), _employment("ACTIVE", LATER)),
+            _loaded(_person("4", "00500"), _employment("LEAVE", EARLIER)),
         )
-        snapshot = asyncio.run(load_personio(client, employee_number_attribute=ATTRIBUTE, today=TODAY))
-        assert snapshot.records == {}
-        assert snapshot.notices == []
-        assert snapshot.excluded == {
+        assert mapped.snapshot.records == {}
+        assert mapped.snapshot.notices == []
+        assert mapped.snapshot.excluded == {
             "00300": ExclusionReason.EMPLOYMENT_NOT_ACTIVE,
             "00400": ExclusionReason.START_DATE_IN_FUTURE,
+            "00500": ExclusionReason.EMPLOYMENT_NOT_ACTIVE,
+        }
+        assert mapped.not_relevant == {
+            ExclusionReason.EMPLOYMENT_NOT_ACTIVE: 2,
+            ExclusionReason.START_DATE_IN_FUTURE: 2,
         }
 
     def test_data_problems_of_relevant_persons(self) -> None:
-        client = _FakePersonio(
-            [
-                (_person("1", "00100"), [_employment("ACTIVE", None)]),
-                (_person("2", None, email="max.mustermann@example.com"), [_employment()]),
-                (_person("3", "00300", email=None), [_employment()]),
-                (_person("4", "00400", email="shared@example.com"), [_employment()]),
-                (_person("5", "00500", email="Shared@example.com"), [_employment()]),
-                (_person("6", "00600", email="valid@example.com"), [_employment()]),
-            ]
+        mapped = _map(
+            _loaded(_person("1", "00100"), _employment("ACTIVE", None)),
+            _loaded(_person("2", None, email="max.mustermann@example.com"), _employment()),
+            _loaded(_person("3", "00300", email=None), _employment()),
+            _loaded(_person("4", "00400", email="shared@example.com"), _employment()),
+            _loaded(_person("5", "00500", email="Shared@example.com"), _employment()),
+            _loaded(_person("6", "00600", email="valid@example.com"), _employment()),
         )
-        snapshot = asyncio.run(load_personio(client, employee_number_attribute=ATTRIBUTE, today=TODAY))
-        assert set(snapshot.records) == {"00600"}
-        assert sorted((notice.reason, notice.system_id) for notice in snapshot.notices) == [
+        assert set(mapped.snapshot.records) == {"00600"}
+        assert sorted((notice.reason, notice.system_id) for notice in mapped.snapshot.notices) == [
             (NoticeReason.DUPLICATE_EMAIL, "4"),
             (NoticeReason.DUPLICATE_EMAIL, "5"),
             (NoticeReason.MISSING_EMAIL, "3"),
             (NoticeReason.MISSING_EMPLOYEE_NUMBER, "2"),
             (NoticeReason.MISSING_ENTRY_DATE, "1"),
         ]
+        # a data problem is not "not relevant"
+        assert mapped.not_relevant == {}
 
-    def test_person_without_id_is_skipped(self, events: list[dict[str, object]]) -> None:
-        client = _FakePersonio([(_person(None, "00165"), []), (_person("2", "00200"), [_employment()])])
-        snapshot = asyncio.run(load_personio(client, employee_number_attribute=ATTRIBUTE, today=TODAY))
-        assert set(snapshot.records) == {"00200"}
-        assert events[-1]["without_id"] == 1
+    def test_person_without_id_is_skipped(self) -> None:
+        mapped = _map(_loaded(_person(None, "00165")), _loaded(_person("2", "00200"), _employment()))
+        assert set(mapped.snapshot.records) == {"00200"}
+        assert mapped.without_id == 1
+
+
+class TestFetchPersons:
+    """
+    Tests of loading the persons with the (async) Personio client.
+    """
+
+    def test_loads_the_active_persons_with_their_employments(self) -> None:
+        erika, max_ = _person("1", "00165"), _person("2", "00200")
+        client = _FakePersonio([(erika, [_employment()]), (max_, [_employment("INACTIVE"), _employment()])])
+        assert fetch_persons(client) == [
+            _loaded(erika, _employment()),
+            _loaded(max_, _employment("INACTIVE"), _employment()),
+        ]
+        assert client.status_filters == ["ACTIVE"]
+        assert client.opened
+        assert client.closed
+
+    def test_requests_one_after_the_other(self) -> None:
+        client = _FakePersonio([(_person(str(i), f"00{i}00"), [_employment()]) for i in range(1, 6)])
+        fetch_persons(client)
+        assert client.requested == ["1", "2", "3", "4", "5"]
+        assert client.max_running == 1
+
+    def test_person_without_id_gets_no_request(self) -> None:
+        without_id = _person(None, "00165")
+        client = _FakePersonio([(without_id, []), (_person("2", "00200"), [_employment()])])
+        persons = fetch_persons(client)
+        assert persons[0] == _loaded(without_id)
+        assert client.requested == ["2"]
+
+    def test_client_is_closed_after_an_error(self) -> None:
+        client = _FakePersonio([(_person("1", "00100"), [_employment()])], fail_for="1")
+        with pytest.raises(ConnectionError):
+            fetch_persons(client)
+        assert client.closed
+
+
+class TestLoadPersonio:
+    """
+    Tests of loading and mapping together, with the event ``sync.load``.
+    """
 
     def test_event(self, events: list[dict[str, object]]) -> None:
         client = _FakePersonio(
@@ -222,58 +286,30 @@ class TestLoadPersonio:
                 (_person("3", "00300"), [_employment("ONBOARDING", LATER)]),
                 (_person("4", "00400"), [_employment("ACTIVE", LATER)]),
                 (_person("5", "00500"), [_employment("LEAVE", EARLIER)]),
+                (_person(None, "00600"), []),
             ]
         )
-        asyncio.run(load_personio(client, employee_number_attribute=ATTRIBUTE, today=TODAY))
+        snapshot = load_personio(client, employee_number_attribute=ATTRIBUTE, today=TODAY)
+        assert set(snapshot.records) == {"00100"}
         assert len(events) == 1
         event = events[0]
         assert event["event"] == "sync.load"
         assert event["system"] == "personio"
         assert event["outcome"] == "success"
-        assert event["persons"] == 5
-        assert event["without_id"] == 0
+        assert event["persons"] == 6
+        assert event["without_id"] == 1
         assert event["records"] == 1
         assert event["notices"] == 1
         assert event["not_relevant"] == {"employment_not_active": 2, "start_date_in_future": 1}
 
-    def test_concurrency_is_limited(self) -> None:
-        client = _FakePersonio([(_person(str(i), f"00{i}00"), [_employment()]) for i in range(1, 7)])
-        asyncio.run(load_personio(client, employee_number_attribute=ATTRIBUTE, today=TODAY, concurrency=2))
-        assert client.max_running == 2
-
     def test_error_aborts_the_load(self, events: list[dict[str, object]]) -> None:
         client = _FakePersonio([(_person("1", "00100"), [_employment()]), (_person("2", "00200"), [])], fail_for="2")
         with pytest.raises(ConnectionError):
-            asyncio.run(load_personio(client, employee_number_attribute=ATTRIBUTE, today=TODAY))
+            load_personio(client, employee_number_attribute=ATTRIBUTE, today=TODAY)
         assert events[0]["outcome"] == "error"
         assert events[0]["error"] == {"type": "ConnectionError"}
 
-    def test_error_cancels_the_other_requests(self) -> None:
-        client = _FakePersonio(
-            [(_person("1", "00100"), [_employment()]), (_person("2", "00200"), [_employment()])],
-            fail_for="1",
-            slow_for="2",
-        )
-
-        async def load_and_check() -> list[str]:
-            with pytest.raises(ConnectionError):
-                await load_personio(client, employee_number_attribute=ATTRIBUTE, today=TODAY)
-            # checked right after the error, before asyncio.run() cancels whatever is still running
-            return list(client.cancelled)
-
-        assert asyncio.run(load_and_check()) == ["2"]
-        assert client.running == 0
-
-    @pytest.mark.parametrize("concurrency", [0, -1])
-    def test_concurrency_must_be_positive(self, concurrency: int) -> None:
-        client = _FakePersonio([(_person(), [_employment()])])
-        with pytest.raises(ValueError, match="concurrency"):
-            asyncio.run(
-                load_personio(client, employee_number_attribute=ATTRIBUTE, today=TODAY, concurrency=concurrency)
-            )
-        assert client.status_filters == []
-
     def test_personio_client_is_a_source(self) -> None:
-        # mypy checks that the real client fits the protocol the loader expects
+        # mypy checks that the real client fits the protocol the adapter expects
         source: PersonioSource = PersonioClient(client_id="id", client_secret="secret")
         assert source is not None
