@@ -28,6 +28,12 @@ _ERROR_ATTRIBUTES = ("status_code", "trace_id", "problem_type")
 _PACKAGE = __name__.partition(".")[0]
 """the package of HR-Sync, whose frames name the code location of an error"""
 
+_COMPREHENSIONS = frozenset({"<listcomp>", "<setcomp>", "<dictcomp>", "<genexpr>"})
+"""
+the code names of comprehensions, which have frames of their own (before Python 3.12; generator expressions in every
+version); the code location names the function around them instead, so that it doesn't depend on the Python version
+"""
+
 _OPERATION_LEVELS = {Outcome.ERROR: "ERROR", Outcome.SKIPPED: "WARNING"}
 """the levels of the events ``sync.operation`` that are not INFO"""
 
@@ -138,15 +144,21 @@ def _code_location(error: BaseException) -> dict[str, object]:
     Returns module, function and line of the innermost frame of HR-Sync in the traceback: where HR-Sync raised the
     error or called the library that raised it. File paths are left out, because they may contain user names.
 
-    Frames of this module are skipped, because they only log the error. Without a frame of HR-Sync, e.g. for an
-    exception that was never raised, the result is empty.
+    Frames of this module are skipped, because they only log the error, and so are frames of comprehensions (see
+    :data:`_COMPREHENSIONS`). Without a frame of HR-Sync, e.g. for an exception that was never raised, the result is
+    empty.
     """
     location: dict[str, object] = {}
     traceback = error.__traceback__
     while traceback is not None:
         frame = traceback.tb_frame
         module = frame.f_globals.get("__name__")
-        if isinstance(module, str) and module != __name__ and module.partition(".")[0] == _PACKAGE:
+        if (
+            isinstance(module, str)
+            and module != __name__
+            and module.partition(".")[0] == _PACKAGE
+            and frame.f_code.co_name not in _COMPREHENSIONS
+        ):
             location = {"module": module, "function": frame.f_code.co_name, "line": traceback.tb_lineno}
         traceback = traceback.tb_next
     return location

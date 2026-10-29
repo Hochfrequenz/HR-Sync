@@ -150,6 +150,30 @@ class TestErrorFields:
             "line": ANY,
         }
 
+    @pytest.mark.parametrize(
+        "expression",
+        [
+            pytest.param("[int(value) for value in values]", id="list comprehension"),
+            pytest.param("{int(value) for value in values}", id="set comprehension"),
+            pytest.param("{value: int(value) for value in values}", id="dict comprehension"),
+            pytest.param("list(int(value) for value in values)", id="generator expression"),
+        ],
+    )
+    def test_code_location_names_the_function_around_a_comprehension(self, expression: str) -> None:
+        # comprehensions have frames of their own before Python 3.12, generator expressions in every version
+        namespace: dict[str, object] = {"__name__": "hr_sync.example"}
+        exec(f"def convert(values):\n    return {expression}\n", namespace)
+        convert = namespace["convert"]
+        assert callable(convert)
+        with pytest.raises(ValueError, match="invalid literal") as error_info:
+            convert(["00165", "Erika"])
+        assert error_fields(error_info.value) == {
+            "type": "ValueError",
+            "module": "hr_sync.example",
+            "function": "convert",
+            "line": 2,
+        }
+
     def test_no_code_location_without_a_frame_of_hr_sync(self) -> None:
         # pydantic raises the error, and the validators of HR-Sync have already returned
         with pytest.raises(ValidationError) as error_info:

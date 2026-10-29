@@ -454,8 +454,10 @@ Umgesetzt in [`events.py`](../../src/hr_sync/events.py) (AP 3):
   - bei Decidalo der `status` der Zeile, nicht `errorMessage` (setzt der Executor in AP 6)
   - die Codestelle (AP 7): `module`, `function` und `line` des innersten Frames aus `hr_sync`. Das ist die Stelle, an
     der HR-Sync den Fehler ausgelöst oder die Bibliothek aufgerufen hat, die ihn ausgelöst hat. Frames aus `events.py`
-    zählen nicht, sie loggen den Fehler nur. Der Dateipfad fehlt bewusst, weil er den Benutzernamen enthalten kann.
-    Ohne Frame aus `hr_sync` gibt es keine Codestelle
+    zählen nicht, sie loggen den Fehler nur. Comprehensions und Generator-Ausdrücke zählen auch nicht, es zählt die
+    Funktion um sie herum: Vor Python 3.12 haben Comprehensions einen eigenen Frame (`<listcomp>`), so hängt das Feld
+    nicht von der Python-Version ab. Der Dateipfad fehlt bewusst, weil er den Benutzernamen enthalten kann. Ohne Frame
+    aus `hr_sync` gibt es keine Codestelle
 
   Loguru läuft mit `diagnose=False`, und die Events enthalten keine Tracebacks, weil diese Variablenwerte zeigen können.
 - **Im Dry-Run** gibt es für jede geplante Operation ein `sync.operation` mit `outcome=dry_run`. So ist pro Person
