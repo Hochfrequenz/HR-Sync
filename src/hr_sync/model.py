@@ -78,6 +78,8 @@ class NoticeReason(StrEnum):
     """the e-mail address of an employee belongs to another user of the target system"""
     DUPLICATE_EMAIL = "duplicate_email"
     """several employees of the source share an e-mail address"""
+    DEACTIVATED_IN_TARGET = "deactivated_in_target"
+    """a relevant employee is deactivated in the target system, e.g. after a re-entry"""
 
 
 class ExclusionReason(StrEnum):
@@ -127,6 +129,11 @@ class Snapshot(BaseModel):
     """the ids of the valid records in their system by employee number"""
     incomplete: frozenset[str] = frozenset()
     """weclapp only: the employee numbers of users without employee record"""
+    deactivated: frozenset[str] = frozenset()
+    """
+    Decidalo only: the employee numbers of deactivated users; they are a data problem only if the employee is relevant,
+    which the planner checks
+    """
     excluded: dict[str, ExclusionReason] = Field(default_factory=dict)
     """
     why loaded employees with employee number are not part of :attr:`records`; in the target systems, these are
@@ -161,17 +168,22 @@ class SnapshotBuilder:
         self._require_email = require_email
         self._candidates: dict[str, list[tuple[str, EmployeeRecord]]] = defaultdict(list)
         self._incomplete: set[str] = set()
+        self._deactivated: set[str] = set()
         self._excluded: dict[str, ExclusionReason] = {}
         self._email_owners: dict[str, list[str]] = defaultdict(list)
         self._notices: list[Notice] = []
 
-    def add(self, system_id: str, record: EmployeeRecord, *, incomplete: bool = False) -> None:
+    def add(
+        self, system_id: str, record: EmployeeRecord, *, incomplete: bool = False, deactivated: bool = False
+    ) -> None:
         """
         Adds a mapped record. Duplicate employee numbers and e-mail addresses are checked in :meth:`build`.
         """
         self._candidates[record.employee_number].append((system_id, record))
         if incomplete:
             self._incomplete.add(record.employee_number)
+        if deactivated:
+            self._deactivated.add(record.employee_number)
         self._note_email(system_id, record.email)
 
     def add_without_employee_number(self, system_id: str, email: str | None = None) -> None:
@@ -220,6 +232,7 @@ class SnapshotBuilder:
             records=records,
             system_ids=system_ids,
             incomplete=frozenset(self._incomplete & records.keys()),
+            deactivated=frozenset(self._deactivated & records.keys()),
             excluded={number: reason for number, reason in excluded.items() if number not in records},
             email_owners={email: tuple(owners) for email, owners in self._email_owners.items()},
             notices=notices,

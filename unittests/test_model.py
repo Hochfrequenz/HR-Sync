@@ -272,6 +272,17 @@ class TestSnapshotBuilder:
         builder.add("user-3", _record("00200"))
         assert builder.build().system_ids == {"00165": "user-1"}
 
+    def test_deactivated_records(self) -> None:
+        builder = SnapshotBuilder(System.DECIDALO)
+        builder.add("1", _record("00165"), deactivated=True)
+        builder.add("2", _record("00200"), deactivated=True)
+        builder.add("3", _record("00200"))
+        builder.add("4", _record("00300"))
+        snapshot = builder.build()
+        # only valid records; the duplicate 00200 is not part of the snapshot
+        assert snapshot.deactivated == frozenset({"00165"})
+        assert snapshot.notices[0].reason == NoticeReason.DUPLICATE_EMPLOYEE_NUMBER
+
 
 class TestEmailKey:
     """

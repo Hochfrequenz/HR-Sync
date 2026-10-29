@@ -244,6 +244,28 @@ class TestBuildPlan:
         )
         assert plan.is_empty
 
+    def test_deactivated_user_blocks_the_employee(self) -> None:
+        decidalo = SnapshotBuilder(System.DECIDALO)
+        decidalo.add("42", ERIKA_IN_DECIDALO, deactivated=True)
+        plan = build_plan(_snapshot(System.PERSONIO, ERIKA), _targets(decidalo=decidalo.build()))
+        # nothing happens with the employee, not even the CREATE in weclapp
+        assert plan.employees == ()
+        assert plan.notices == (
+            Notice(
+                system=System.DECIDALO,
+                reason=NoticeReason.DEACTIVATED_IN_TARGET,
+                system_id="42",
+                employee_number="00165",
+            ),
+        )
+
+    def test_deactivated_user_of_a_former_employee_is_no_problem(self) -> None:
+        decidalo = SnapshotBuilder(System.DECIDALO)
+        decidalo.add("43", MAX.model_copy(update={"first_name": None, "last_name": None}), deactivated=True)
+        plan = build_plan(_snapshot(System.PERSONIO, ERIKA), _targets(decidalo=decidalo.build()))
+        assert plan.notices == ()
+        assert [operation.system for operation in plan.employees[0].operations] == list(TargetSystem)
+
 
 class TestCheckOnly:
     """
