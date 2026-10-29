@@ -31,8 +31,9 @@ def build_plan(
 
     If there is a data problem with an employee in any target system, nothing happens with this employee, in no
     target system: an employee is only created if everything about them is consistent. The problems are logged as
-    notices: duplicate employee numbers by the target's snapshot, e-mail addresses that belong to another user
-    (:attr:`NoticeReason.EMAIL_IN_USE`) by the plan.
+    notices: duplicate employee numbers by the target's snapshot; e-mail addresses that belong to another user
+    (:attr:`NoticeReason.EMAIL_IN_USE`) and deactivated users (:attr:`NoticeReason.DEACTIVATED_IN_TARGET`) by the
+    plan, because they are only a problem for a relevant employee.
     """
     employees: list[EmployeePlan] = []
     notices: list[Notice] = []
@@ -51,6 +52,17 @@ def build_plan(
                 # e.g. a duplicate employee number, which the target's notices already name
                 has_problem = True
                 continue
+            if employee_number in target.deactivated:
+                # e.g. a re-entry: someone has to reactivate the user, HR-Sync only creates
+                notices.append(
+                    Notice(
+                        system=target.system,
+                        reason=NoticeReason.DEACTIVATED_IN_TARGET,
+                        system_id=target.system_ids.get(employee_number),
+                        employee_number=employee_number,
+                    )
+                )
+                has_problem = True
             conflicts = _email_conflicts(employee_number, desired, target)
             if conflicts:
                 # creating the employee would yield a duplicate (weclapp) or change a foreign user (Decidalo)

@@ -30,7 +30,10 @@ HR-Sync überträgt beim Onboarding die Stammdaten neuer Mitarbeiter aus **Perso
 | E-Mail | wird nach weclapp und Decidalo übertragen (weclapp braucht sie zum Anlegen) |
 | Decidalo-displayName | `"Vorname Nachname"` |
 | Anlegen in Decidalo | über den **synchronen Import-Endpunkt** `POST /importapi/User/ImportSync` (Client: `import_users_sync`), nicht über `ImportAsync`. Die Ergebnisse pro Zeile kommen direkt in der Antwort, ohne Polling und ohne Callback |
-| Neue Decidalo-User | `hasLogin=true`, `employeeTypeName="Internal"`. `isImported` wird nicht gesetzt. Weitere Felder sind noch offen (O5) |
+| Neue Decidalo-User | `hasLogin=true`, `employeeTypeName="Internal"`. `isImported` wird nicht gesetzt. Vorerst nur diese und die Stammdatenfelder, weitere Felder sind noch offen (O5) |
+| Decidalo-Zeilenstatus | Nur `Created` ist ein Erfolg. Jeder andere Status, auch `Updated`, ist ein Fehler, weil HR-Sync nur neue User schickt |
+| Deaktivierter Decidalo-User | Gehört seine MA-Nummer einem relevanten Personio-Mitarbeiter (z. B. Wiedereintritt), ist das ein Datenproblem: Warn-Event `deactivated_in_target`, und nach dem Grundsatz passiert mit dem Mitarbeiter nichts |
+| Gescheiterter Aufruf | Scheitert ein Aufruf als Ganzes, sind die Operationen seines Pakets Fehler. Die restlichen Operationen dieses Systems werden übersprungen (`skipped`) |
 | Neue weclapp-User | `status=ACTIVE`. Aktive User kosten Lizenzgebühren, die Kosten sind eingeplant |
 | Relevante Personio-Mitarbeiter | **nur mit einem Employment im Status `ACTIVE`, dessen Startdatum heute oder in der Vergangenheit liegt** |
 | Eintrittsdatum | `employment_start_date` dieses Employments. Gibt es mehrere, gilt das mit dem neuesten Startdatum |
@@ -98,9 +101,9 @@ geplant, sonst würden bestehende Personen doppelt angelegt.
 
 Personio und weclapp sind Pre-Releases. Wir pinnen auf die Minor-Version, z. B. `weclapp-client>=0.1.0a1,<0.2`.
 
-**HR-Sync ist synchron.** `personio-client` und `decidalo-client` gibt es nur async. Ihre Adapter kapseln das: Je Lauf
-und System öffnet genau eine Funktion den Client in einem einzigen `asyncio.run(...)`, stellt die Anfragen
-nacheinander und schließt den Client wieder. Für den Rest des Programms (Planner, Events, Orchestrierung, CLI, weclapp)
+**HR-Sync ist synchron.** `personio-client` und `decidalo-client` gibt es nur async. Ihre Adapter kapseln das: Je
+Schritt (Laden, Ausführen) öffnet genau eine Funktion den Client in einem einzigen `asyncio.run(...)`, stellt die
+Anfragen nacheinander und schließt den Client wieder. Für den Rest des Programms (Planner, Events, Orchestrierung, CLI, weclapp)
 ist async unsichtbar. Das hält Stacktraces und Breakpoints linear und die Tests ohne Event-Loop.
 
 **Nacheinander statt parallel.** Auch innerhalb eines Systems laufen die Anfragen nacheinander. Die Log-Events kommen
@@ -116,8 +119,16 @@ zum Problem, lässt sich Parallelität in der Lade-Funktion nachrüsten, ohne da
 | `map_…` | Regeln, Mapping und Snapshot, ohne IO und ohne async | mit einfachen Daten, ohne Client |
 | `load_…` | ruft beides auf und erzeugt das Event `sync.load` | Inhalt des Events |
 
+Die Executor der Zielsysteme folgen demselben Muster:
+
+| Teil | Aufgabe | Tests |
+|---|---|---|
+| `send_…` | nur IO: die Anfragen stellen und die Antworten zurückgeben | mit einem Fake-Client |
+| `evaluate_…` | aus den Antworten ein `OperationResult` je Operation machen, ohne IO | mit einfachen Daten |
+| `execute_…` | ruft beides auf und erzeugt ein Event `sync.operation` je Operation | Inhalt der Events |
+
 Fast der ganze fachliche Code steckt damit in reinen Funktionen. Man kann sie im Debugger mit echten Daten aus einem
-Lauf füttern. Die Executor für weclapp und Decidalo (AP 5 und 6) bekommen ebenfalls eine synchrone Schnittstelle.
+Lauf füttern.
 
 ### 3.1 Personio (Quelle)
 
@@ -232,6 +243,32 @@ Die Antwort von `ImportSync` hat ein Ergebnis pro Zeile (`rowIndex`, `status`, `
 Operation-Event pro Person. Scheitern einzelne Zeilen, antwortet die API mit HTTP 500 und den Ergebnissen pro Zeile.
 Der Client liefert diese Ergebnisse trotzdem zurück.
 
+Umgesetzt in [`systems/decidalo.py`](../../src/hr_sync/systems/decidalo.py) (AP 6):
+
+- **Laden:**
+  - `fetch_users(client)` holt alle User.
+  - `map_users(users)` mappt `employeeID`, `displayName`, `email` und `entryDate`. Die `system_id` ist die `userID`.
+  - `load_decidalo(client)` ruft beides auf und erzeugt das Event `sync.load` mit `users`, `records`, `deactivated`
+    und `notices`.
+- **Deaktivierte User** (`deactivationDate` gesetzt) gehören zum Snapshot, sie sind in `Snapshot.deactivated`
+  markiert. Ein Problem sind sie nur, wenn ihre MA-Nummer einem relevanten Personio-Mitarbeiter gehört. Dann erzeugt
+  der Planner ein Warn-Event `deactivated_in_target`, und mit dem Mitarbeiter passiert in keinem System etwas, z. B.
+  bei einem Wiedereintritt, bis jemand den User reaktiviert. Ehemalige Mitarbeiter erzeugen so keine Warnungen.
+- **Anlegen:** `execute_decidalo(client, operations, employee_type_name=…, has_login=…, batch_size=100)`. Es nimmt nur
+  Decidalo-`CREATE` an, alles andere ist ein Programmierfehler (`ValueError`). `batch_size` muss zwischen 1 und
+  `MAX_BATCH_SIZE` (100) liegen, bis die echten Grenzen geprüft sind (O7).
+  - `user_input` baut die Zeile. Es sendet vorerst nur die festgelegten Felder (O5).
+  - `send_batches` schickt die Pakete nacheinander und hört nach dem ersten Aufruf auf, der als Ganzes scheitert:
+    `DecidaloClientError`, `aiohttp.ClientError` oder `TimeoutError`. Andere Exceptions sind Programmierfehler und
+    werden nicht abgefangen.
+  - `evaluate_batches` ordnet die Zeilen über die `employeeID` zu, nicht über `rowIndex`: Die Spec sagt nicht, ob
+    `rowIndex` bei 0 oder 1 beginnt.
+    - Nur der Zeilenstatus `Created` ist ein Erfolg. Jeder andere Status ist ein Fehler, denn HR-Sync schickt nur
+      neue User. `Updated` oder `NotModified` hieße also, dass Decidalo einen bestehenden User getroffen hat.
+    - Fehlt die Zeile, ist das ein Fehler mit `detail=no_result`.
+    - Bei einem gescheiterten Aufruf sind die Operationen seines Pakets Fehler und die restlichen `skipped`.
+  - Die `errorMessage` von Decidalo wird nie geloggt, weil sie personenbezogene Daten enthalten kann.
+
 ## 4. Datenmodell und Plan
 
 ### 4.1 Gemeinsames Modell
@@ -251,6 +288,7 @@ class Snapshot(BaseModel):
     records: dict[str, EmployeeRecord]     # nach MA-Nummer, nur gültige Datensätze
     system_ids: dict[str, str] = {}        # MA-Nummer → ID des gültigen Datensatzes im System
     incomplete: set[str] = set()           # nur weclapp: User ohne Personalakte
+    deactivated: set[str] = set()          # nur Decidalo: deaktivierte User
     excluded: dict[str, ExclusionReason] = {}  # MA-Nummer → Grund des Ausschlusses (in den Zielen: Dubletten)
     email_owners: dict[str, tuple[str, ...]] = {}  # E-Mail (ohne Groß-/Kleinschreibung) → IDs aller User damit
     notices: list[Notice]                  # Datenprobleme, siehe Abschnitt 5
@@ -293,6 +331,14 @@ class SyncPlan(BaseModel):
     @property
     def is_empty(self) -> bool: ...   # True, wenn es keine Operationen gibt; Abweichungen zählen nicht
 ```
+
+**Ergebnis der Ausführung:** Die Executor liefern je Operation ein
+`OperationResult(operation, outcome, target_id, detail, error)`.
+- `outcome` ist `success`, `error`, `skipped` oder `dry_run`.
+- `detail` ist ein Grund aus dem Zielsystem, z. B. der Zeilenstatus von Decidalo.
+- `error` enthält die `error_fields` einer Exception.
+
+Daraus entstehen die Events `sync.operation` und die Summen in `sync.run` (AP 7).
 
 **Vergleich je Zielsystem:** Welche Felder je Zielsystem verglichen werden, steht zentral im Planner (`COMPARED_FIELDS`),
 damit die Vergleichsregeln an einer Stelle liegen.
@@ -343,6 +389,7 @@ den neuen Operationstyp. Das Datenmodell und die Loader bleiben dabei unverände
 | Nicht relevant (kein aktives Employment oder Start in der Zukunft) | Personio | kein Warn-Event, weil das der Normalfall ist. Nur die Anzahl je Grund im `sync.load` |
 | Person steht nur im Zielsystem | weclapp, Decidalo | nur die Anzahl im Plan-Event (Offboarding kommt später) |
 | E-Mail des Mitarbeiters gehört im Zielsystem einem anderen User | weclapp, Decidalo | Warn-Event (`reason=email_in_use`) mit MA-Nummer und `system_id` des anderen Users; mit dem Mitarbeiter passiert in keinem System etwas (siehe 4.2) |
+| User eines relevanten Mitarbeiters ist im Zielsystem deaktiviert | Decidalo | Warn-Event (`reason=deactivated_in_target`) mit MA-Nummer und `system_id`; mit dem Mitarbeiter passiert in keinem System etwas. Deaktivierte User ehemaliger Mitarbeiter erzeugen keine Warnung (siehe 3.3) |
 
 Für alle Fälle gilt der **Grundsatz** aus 1.1: Mit einem Mitarbeiter, zu dem es ein Datenproblem gibt, passiert nichts,
 in keinem System. Angelegt wird nur, wer überall stimmig ist. Abweichungen zählen nicht dazu: Sie werden nur geloggt
@@ -382,11 +429,11 @@ Umgesetzt in [`events.py`](../../src/hr_sync/events.py) (AP 3):
 | Event | Wann | Inhalt (Auswahl) | Level |
 |---|---|---|---|
 | `sync.run` | einmal, am Ende | `run_id`, `environment`, `dry_run`, `only`, `targets`, Dauer, Summen je System und Operation, Anzahl Hinweise und Fehler, `exit_code` | INFO / ERROR |
-| `sync.load` | je System | `system`, `records`, `notices`, Dauer; bei Personio zusätzlich `persons`, `without_id` und `not_relevant` je Grund (`employment_not_active`, `start_date_in_future`) | INFO / ERROR |
+| `sync.load` | je System | `system`, `records`, `notices`, Dauer; bei Personio zusätzlich `persons`, `without_id` und `not_relevant` je Grund (`employment_not_active`, `start_date_in_future`); bei Decidalo `users` und `deactivated` | INFO / ERROR |
 | `sync.notice` | je Datenproblem | `system`, `reason`, `system_id` | **WARNING** |
 | `sync.deviation` | je Person und Zielsystem mit Abweichung | `employee_number`, `system`, `fields` | INFO |
 | `sync.plan` | einmal | Operationen je System und Typ, `is_empty`, `only_in_target` je System | INFO |
-| `sync.operation` | je Operation | `employee_number`, `system`, `type`, `outcome` (`success`, `error`, `skipped`, `dry_run`), `target_id`, Fehler | INFO / ERROR |
+| `sync.operation` | je Operation | `employee_number`, `system`, `type`, `outcome` (`success`, `error`, `skipped`, `dry_run`), `target_id`, `detail` (z. B. Zeilenstatus), `error` | INFO; ERROR bei `error`, WARNING bei `skipped` |
 
 - **Keine personenbezogenen Werte:** nur MA-Nummer, systeminterne IDs, Feldnamen und Zahlen. Ein Test prüft, dass
   Namen und E-Mail-Adressen der Testdaten nicht in der Log-Ausgabe auftauchen.
@@ -637,8 +684,8 @@ unittests/
 ```
 
 Laufzeit-Abhängigkeiten: `personio-client`, `weclapp-client`, `decidalo-client`, `loguru`, `pydantic`,
-`pydantic-settings`. Die Tests sind synchron und brauchen kein Plugin für async-Tests. Für Decidalo kommt eventuell
-`aioresponses` dazu (AP 6).
+`pydantic-settings`. Die Tests sind synchron und brauchen kein Plugin für async-Tests. Auch für Decidalo genügt ein
+Fake-Client, `aioresponses` ist nicht nötig.
 
 ## 11. Tests
 
@@ -648,7 +695,7 @@ Laufzeit-Abhängigkeiten: `personio-client`, `weclapp-client`, `decidalo-client`
 | Mapping | Unit-Tests mit Modellinstanzen der Clients |
 | Relevanz (Personio) | tabellengetrieben: alle Employment-Status inklusive abweichender Schreibweise; Startdatum gestern, heute, morgen; mehrere Employments; aktives Employment ohne Startdatum erzeugt `missing_entry_date`, auch neben einem Employment mit künftigem Start; künftiger Mitarbeiter ohne MA-Nummer erzeugt keine Warnung; `--only` meldet `not_relevant` mit Grund bzw. `unknown_employee_number` |
 | Personio | die Logik (`map_persons`, Relevanzregel) mit einfachen Daten ohne Client; das Laden (`fetch_persons`) mit einem kleinen Fake-Client hinter dem Protocol `PersonioSource`. mypy prüft, dass der echte `PersonioClient` es erfüllt |
-| Decidalo | dasselbe Muster; für das Laden ein Fake-Client oder `aioresponses` (der Client nutzt aiohttp), Entscheidung in AP 6 |
+| Decidalo | dasselbe Muster: Mapping und Auswertung der Zeilen mit einfachen Daten, Laden und Senden mit einem Fake-Client hinter dem Protocol `DecidaloTarget`. mypy prüft, dass der echte `DecidaloClient` es erfüllt. Ein Test prüft, dass `errorMessage` und Fehlertexte nicht in den Events landen |
 | weclapp | `weclapp_client.testing.FakeWeclapp` |
 | Ende-zu-Ende | ganzer Lauf gegen die Fakes; **ein zweiter Lauf erzeugt keine Schreibzugriffe**; Dry-Run schreibt nichts |
 | Events | Loguru-Sink in eine Liste; Felder und Level prüfen; keine personenbezogenen Werte |
@@ -667,7 +714,7 @@ Die Reihenfolge baut zuerst den Kern ohne IO und hängt dann die Systeme an:
 | 3 | **Wide Events** mit Loguru, umschaltbare Ausgabe, Intercept-Handler | `wide_event()` getestet |
 | 4 | **Personio-Loader** mit Relevanzfilter und Mapping | Snapshot aus Personio, nur relevante Mitarbeiter |
 | 5 | **weclapp-Loader und -Executor** (`CREATE`, `COMPLETE`) | gegen `FakeWeclapp` getestet |
-| 6 | **Decidalo-Loader und -Executor** (synchroner Import über `ImportSync`, Ergebnisse pro Zeile) | mit `aioresponses` getestet |
+| 6 | **Decidalo-Loader und -Executor** (synchroner Import über `ImportSync`, Ergebnisse pro Zeile) | mit Fake-Client und einfachen Daten getestet |
 | 7 | **Orchestrierung, CLI** (inklusive `--only`, `--target` und `--env-file`), **Dry-Run, Exit-Codes**, Ende-zu-Ende-Tests | `hr-sync --dry-run` läuft; Tests zeigen, dass `--only` alle anderen Personen aus dem Plan nimmt und `--target` die anderen Systeme nicht anfasst |
 | 8 | **Test-Modus und Integrationstest:** Anonymisierung, Prüfungen für den Test-Modus, Integrationstests gegen die Decidalo-Testumgebung mit wählbarem Aufräumen | `uv run pytest -m integration_write` legt den ersten Planeintrag anonymisiert in der Testumgebung an, prüft ihn und räumt auf |
 | 9 | **Testlauf:** Dry-Run gegen die echten Systeme (nur lesend) und offene Punkte klären. Dann der erste echte Lauf, **nur mit `--only <MA-Nummer der Testperson>`**, vorher mit denselben Optionen als Dry-Run. Voraussetzung: Die Testperson steht mit MA-Nummer, E-Mail und einem aktiven Employment (Start heute oder früher) in Personio | Go-live-Entscheidung |
@@ -686,7 +733,7 @@ den Clients), das vor AP 10 erledigt sein sollte.
 | O4 | ~~Prüft weclapp E-Mail-Adressen auf Eindeutigkeit?~~ **Erledigt durch die Regel `email_in_use`:** HR-Sync legt keinen User mit einer E-Mail an, die in weclapp schon vergeben ist | – | [#5](https://github.com/Hochfrequenz/HR-Sync/issues/5), Abschnitt 4.2 |
 | O5 | Welche weiteren Felder braucht ein neuer Decidalo-User (Berechtigungsrolle, Team, Standort, Land, …)? Bekommt er bei `hasLogin=true` eine Mail? Laut Spec ist kein Feld Pflicht, und `includeInResourceManagement` ist beim Anlegen `true`. Die Mail lässt sich in der Testumgebung nicht prüfen, weil dort `hasLogin=false` gilt: also im ersten echten Lauf mit der Testperson oder beim Decidalo-Support | vor AP 9 | Brainstorming |
 | O6 | ~~Woran erkennt der Decidalo-Import bestehende User?~~ **Erledigt durch die Regel `email_in_use`:** HR-Sync schickt nur MA-Nummern, die in Decidalo fehlen, und keine E-Mail, die dort schon vergeben ist. Damit trifft `ImportSync` keinen bestehenden User, egal wie es zuordnet | – | R3, Abschnitt 4.2 |
-| O7 | **Teilweise geklärt:** Ohne `top` liefert `GET /importapi/User` alle User, Grenzen sind nicht dokumentiert. Wir laden alle User mit einem Aufruf und schicken höchstens 100 Personen pro `ImportSync`-Aufruf. Offen sind die tatsächlichen Grenzen und Timeouts, die wir in der Testumgebung prüfen | AP 8 | Abschnitt 3.3 |
+| O7 | **Teilweise geklärt:** Ohne `top` liefert `GET /importapi/User` alle User, Grenzen sind nicht dokumentiert. Wir laden alle User mit einem Aufruf und schicken höchstens 100 Personen pro `ImportSync`-Aufruf (`MAX_BATCH_SIZE`, größere Werte lehnt `execute_decidalo` ab). Offen sind die tatsächlichen Grenzen und Timeouts sowie die Frage, ob `rowIndex` bei 0 oder 1 beginnt. HR-Sync ordnet die Zeilen deshalb über die `employeeID` zu. Beides prüfen wir in der Testumgebung | AP 8 | Abschnitt 3.3 |
 | O8 | ~~Personio-Person ohne Employment oder Startdatum: ohne Eintrittsdatum anlegen oder überspringen?~~ **Erledigt:** Ohne aktives Employment mit Startdatum heute oder früher ist ein Mitarbeiter nicht relevant. Ein aktives Employment ohne Startdatum ist ein Datenproblem | – | Abschnitt 3.1, 5 |
 | O9 | **Richtung geklärt:** zeitgesteuert auf einem internen Server (Cron, Task Scheduler oder Container-Job), Secrets dort in einer `.env`. Offen: welcher Server, welches Intervall, wer bei Warnungen oder Fehlern benachrichtigt wird | vor dem Go-live | [#9](https://github.com/Hochfrequenz/HR-Sync/issues/9) |
 | O10 | Brauchen wir eine Ignore-Liste für technische User ohne MA-Nummer (Admins, API-User), damit die Warnungen nicht jedes Mal kommen? Wir entscheiden nach dem ersten Dry-Run, wenn die Zahl der Warnungen bekannt ist | nach dem ersten Dry-Run (AP 9) | Risiko R5 |

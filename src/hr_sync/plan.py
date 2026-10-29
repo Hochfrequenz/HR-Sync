@@ -68,3 +68,28 @@ class SyncPlan(BaseModel):
         True if there is nothing to execute. Deviations don't count, because they are only logged.
         """
         return not any(employee.operations for employee in self.employees)
+
+
+class Outcome(StrEnum):
+    """How the execution of an operation ended."""
+
+    SUCCESS = "success"
+    ERROR = "error"
+    SKIPPED = "skipped"
+    """not attempted, because an error affected the whole target system before"""
+    DRY_RUN = "dry_run"
+
+
+class OperationResult(BaseModel):
+    """The result of executing one operation, without personal data besides the employee number."""
+
+    model_config = ConfigDict(frozen=True)
+
+    operation: Operation
+    outcome: Outcome
+    target_id: str | None = None
+    """the id of the employee in the target system, if known"""
+    detail: str | None = None
+    """a reason from the target system, e.g. the status of a Decidalo import row"""
+    error: dict[str, object] | None = None
+    """the :func:`hr_sync.events.error_fields` of the exception that ended the operation"""
