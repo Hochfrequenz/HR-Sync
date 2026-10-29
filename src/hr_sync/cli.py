@@ -8,7 +8,7 @@ from importlib.metadata import version
 from pathlib import Path
 from typing import get_args
 
-from hr_sync.config import ConfigurationError, load_settings
+from hr_sync.config import load_settings
 from hr_sync.events import LogFormat, configure_logging
 from hr_sync.model import TargetSystem
 from hr_sync.sync import RunOptions, abort, run
@@ -77,7 +77,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     try:
         settings = load_settings(args.env_file)
-    except ConfigurationError as error:
+    except Exception as error:  # as in run(): any error ends the run with an event, e.g. an unreadable .env file
         # the log format of the settings is unknown, so the events use the one from the command line or the default
         configure_logging(args.log_format or "pretty")
         return abort(options, error)

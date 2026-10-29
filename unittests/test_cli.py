@@ -2,6 +2,7 @@ import json
 import runpy
 import sys
 from pathlib import Path
+from unittest.mock import ANY
 
 import pytest
 
@@ -172,6 +173,21 @@ class TestMain:
         output = capsys.readouterr().out
         assert "| ERROR   | sync.run " in output
         assert "error.problem=invalid_variables" in output
+
+    def test_unreadable_env_file(self, capsys: pytest.CaptureFixture[str]) -> None:
+        # not UTF-8: reading it fails before the settings are validated
+        Path(".env").write_bytes("PERSONIO_APP_ID=Müller\n".encode("cp1252"))
+        assert main(["--log-format", "json"]) == ExitCode.ABORTED
+        output = capsys.readouterr().out
+        (event,) = _json_events(output)
+        assert event["event"] == "sync.run"
+        assert event["error"] == {
+            "type": "UnicodeDecodeError",
+            "module": "hr_sync.config",
+            "function": "load_settings",
+            "line": ANY,
+        }
+        assert event["exit_code"] == ExitCode.ABORTED
 
     def test_env_file_not_found(self, capsys: pytest.CaptureFixture[str], tmp_path: Path) -> None:
         assert main(["--env-file", str(tmp_path / "missing.env"), "--log-format", "json"]) == ExitCode.ABORTED

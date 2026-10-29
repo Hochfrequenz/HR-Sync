@@ -563,7 +563,8 @@ Umgesetzt in [`config.py`](../../src/hr_sync/config.py), [`sync.py`](../../src/h
   - `execute_plan` führt den Plan aus, erst weclapp, dann Decidalo. Im Dry-Run gibt es je Operation ein
     `sync.operation` mit `outcome=dry_run`.
   - `run` macht alles zusammen, fängt jeden Fehler ab und loggt `sync.run` mit dem Exit-Code. Lässt sich schon die
-    Konfiguration nicht lesen, loggt `abort` das `sync.run`.
+    Konfiguration nicht lesen, loggt `abort` das `sync.run`, auch bei einer `.env`, die sich nicht lesen oder nicht
+    als UTF-8 dekodieren lässt (dann `error.type=PermissionError`, `UnicodeDecodeError` o. Ä.).
 - **CLI:** `--only` und `--target` nehmen mehrere Werte auf einmal (`--only 00165 00200`) und lassen sich
   wiederholen. Die Hilfe nennt die Exit-Codes.
 
