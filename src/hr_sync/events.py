@@ -37,7 +37,8 @@ def configure_logging(log_format: LogFormat = "pretty", *, stream: TextIO | None
     logger.remove()
     # no backtrace and no diagnose: tracebacks could show variable values, i.e. personal data
     logger.add(_sink(target, render), level="DEBUG", backtrace=False, diagnose=False)
-    logging.basicConfig(handlers=[_InterceptHandler()], level=CLIENT_LOG_LEVEL, force=True)
+    # the level of the handler itself, because the root level doesn't filter loggers with an explicit lower level
+    logging.basicConfig(handlers=[_InterceptHandler(CLIENT_LOG_LEVEL)], level=CLIENT_LOG_LEVEL, force=True)
 
 
 @contextmanager
@@ -104,14 +105,23 @@ def error_fields(error: BaseException) -> dict[str, object]:
 
 
 class _InterceptHandler(logging.Handler):
-    """Passes records of the standard logging on to loguru, as an event ``log``."""
+    """
+    Passes records of the standard logging on to loguru, as an event ``log``.
+
+    The message of a record is not passed on: client libraries may format API errors or request data into it, i.e.
+    personal data. The event only names the logger and the code location, and reduces an exception attached to the
+    record to its :func:`error_fields`.
+    """
 
     def emit(self, record: logging.LogRecord) -> None:
         try:
             level: str | int = logger.level(record.levelname).name
         except ValueError:
             level = record.levelno
-        emit("log", level=level, logger=record.name, message=record.getMessage())
+        fields: dict[str, object] = {"logger": record.name, "function": record.funcName, "line": record.lineno}
+        if record.exc_info and record.exc_info[1] is not None:
+            fields["error"] = error_fields(record.exc_info[1])
+        emit("log", level=level, **fields)
 
 
 def _sink(stream: TextIO, render: Callable[["Record"], str]) -> Callable[["Message"], None]:
@@ -139,7 +149,9 @@ def _render_json(record: "Record") -> str:
 def _render_pretty(record: "Record") -> str:
     fields = " ".join(f"{key}={value}" for key, value in _flatten(record["extra"]))
     time_ = record["time"].strftime("%Y-%m-%d %H:%M:%S")
-    return f"{time_} | {record['level'].name:<7} | {record['message']} {fields}".rstrip()
+    line = f"{time_} | {record['level'].name:<7} | {record['message']} {fields}".rstrip()
+    # one line per event, even if a value contains a line break
+    return line.replace("\r", "\\r").replace("\n", "\\n")
 
 
 def _flatten(fields: Mapping[str, object], prefix: str = "") -> Iterator[tuple[str, object]]:

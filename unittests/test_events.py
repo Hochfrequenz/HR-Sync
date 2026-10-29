@@ -218,15 +218,50 @@ class TestConfigureLogging:
         client_logger.info("GET /user 200")
         client_logger.warning("GET /user 429, retrying")
         lines = [json.loads(line) for line in stream.getvalue().splitlines()]
-        assert lines == [
-            {
-                "timestamp": lines[0]["timestamp"],
-                "level": "WARNING",
-                "event": "log",
-                "logger": "weclapp_client",
-                "message": "GET /user 429, retrying",
-            }
-        ]
+        assert len(lines) == 1
+        assert {key: value for key, value in lines[0].items() if key not in ("timestamp", "line")} == {
+            "level": "WARNING",
+            "event": "log",
+            "logger": "weclapp_client",
+            "function": "test_client_logs_from_warning",
+        }
+        assert isinstance(lines[0]["line"], int)
+
+    def test_client_log_messages_are_not_forwarded(self) -> None:
+        stream = io.StringIO()
+        configure_logging("json", stream=stream)
+        client_logger = logging.getLogger("personio_client")
+        error = ValueError("Erika Musterfrau <erika.musterfrau@example.com>")
+        client_logger.warning("API failed: %s", error)
+        try:
+            raise error
+        except ValueError:
+            client_logger.exception("API failed for Erika Musterfrau")
+        output = stream.getvalue()
+        assert "Erika" not in output
+        assert "erika.musterfrau@example.com" not in output
+        assert "API failed" not in output
+        assert [json.loads(line).get("error") for line in output.splitlines()] == [None, {"type": "ValueError"}]
+
+    def test_client_logger_with_a_lower_level_is_filtered_too(self) -> None:
+        stream = io.StringIO()
+        configure_logging("json", stream=stream)
+        client_logger = logging.getLogger("decidalo_client.verbose")
+        client_logger.setLevel(logging.DEBUG)
+        try:
+            client_logger.debug("POST /importapi/User/ImportSync")
+            client_logger.info("200 OK")
+        finally:
+            client_logger.setLevel(logging.NOTSET)
+        assert stream.getvalue() == ""
+
+    def test_pretty_keeps_one_line_per_event(self) -> None:
+        stream = io.StringIO()
+        configure_logging("pretty", stream=stream)
+        emit("sync.notice", detail="first\r\nsecond")
+        output = stream.getvalue()
+        assert output.count("\n") == 1
+        assert "detail=first\\r\\nsecond" in output
 
     def test_client_logs_with_custom_level(self) -> None:
         stream = io.StringIO()
