@@ -3,15 +3,11 @@ import json
 import logging
 import sys
 from collections.abc import Iterator
-from typing import TYPE_CHECKING
 
 import pytest
 from loguru import logger
 
 from hr_sync.events import configure_logging, emit, error_fields, run_context, wide_event
-
-if TYPE_CHECKING:
-    from loguru import Message
 
 
 class _ApiError(Exception):
@@ -34,20 +30,6 @@ class _ValidationError(Exception):
         self.status_code = 400
         self.problem_type = "/webapp/view/api/errors.html#validation"
         self.validation_errors = (_Issue("lastName"), _Issue("email"))
-
-
-@pytest.fixture
-def events() -> Iterator[list[dict[str, object]]]:
-    """Collects the events logged during a test."""
-    captured: list[dict[str, object]] = []
-
-    def sink(message: "Message") -> None:
-        record = message.record
-        captured.append({"event": record["message"], "level": record["level"].name, **record["extra"]})
-
-    handler_id = logger.add(sink, level="DEBUG")
-    yield captured
-    logger.remove(handler_id)
 
 
 @pytest.fixture
