@@ -41,17 +41,16 @@ async def load_personio(
     custom attribute with the id ``employee_number_attribute``. ``today`` is the day of the run, i.e. ``date.today()``:
     dates are compared by the day only, without time zones, because all employees are in Germany. Logs one event
     ``sync.load``.
+
+    Raises:
+        ValueError: if ``concurrency`` is not positive.
     """
+    if concurrency < 1:
+        raise ValueError(f"concurrency must be at least 1, got {concurrency}")
     with wide_event("sync.load", system=System.PERSONIO) as event:
         persons = [person async for person in client.iter_persons(status="ACTIVE")]
         with_id = [(person.id, person) for person in persons if person.id is not None]
-        semaphore = asyncio.Semaphore(concurrency)
-
-        async def employments_of(person_id: str) -> list[Employment]:
-            async with semaphore:
-                return [employment async for employment in client.iter_employments(person_id)]
-
-        all_employments = await asyncio.gather(*(employments_of(person_id) for person_id, _ in with_id))
+        all_employments = await _load_employments(client, [person_id for person_id, _ in with_id], concurrency)
         builder = SnapshotBuilder(System.PERSONIO, require_email=True)
         not_relevant: Counter[ExclusionReason] = Counter()
         for (person_id, person), employments in zip(with_id, all_employments, strict=True):
@@ -72,6 +71,30 @@ async def load_personio(
         event["notices"] = len(snapshot.notices)
         event["not_relevant"] = {reason.value: count for reason, count in sorted(not_relevant.items())}
         return snapshot
+
+
+async def _load_employments(client: PersonioSource, person_ids: list[str], concurrency: int) -> list[list[Employment]]:
+    """
+    Loads the employments of the persons, at most ``concurrency`` at the same time.
+
+    If a request fails, the other requests are cancelled and awaited before the error is re-raised, so that no request
+    outlives the client. Unlike ``asyncio.TaskGroup``, this keeps the original exception instead of an exception
+    group, so that the event names the actual error.
+    """
+    semaphore = asyncio.Semaphore(concurrency)
+
+    async def employments_of(person_id: str) -> list[Employment]:
+        async with semaphore:
+            return [employment async for employment in client.iter_employments(person_id)]
+
+    tasks = [asyncio.ensure_future(employments_of(person_id)) for person_id in person_ids]
+    try:
+        return await asyncio.gather(*tasks)
+    except BaseException:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        raise
 
 
 def relevant_employment(employments: Sequence[Employment], today: date) -> Employment | ExclusionReason:

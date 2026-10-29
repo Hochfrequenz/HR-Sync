@@ -36,13 +36,20 @@ def _person(
 class _FakePersonio:
     """A Personio client that returns the given persons and employments and records how it is used."""
 
-    def __init__(self, entries: list[tuple[Person, list[Employment]]], fail_for: str | None = None) -> None:
+    def __init__(
+        self,
+        entries: list[tuple[Person, list[Employment]]],
+        fail_for: str | None = None,
+        slow_for: str | None = None,
+    ) -> None:
         self._persons = [person for person, _ in entries]
         self._employments = {person.id: employments for person, employments in entries}
         self._fail_for = fail_for
+        self._slow_for = slow_for
         self.status_filters: list[str | None] = []
         self.running = 0
         self.max_running = 0
+        self.cancelled: list[str] = []
 
     async def iter_persons(self, *, status: Literal["ACTIVE", "INACTIVE"] | None = None) -> AsyncIterator[Person]:
         self.status_filters.append(status)
@@ -56,8 +63,13 @@ class _FakePersonio:
             await asyncio.sleep(0)
             if person_id == self._fail_for:
                 raise ConnectionError("Personio is not reachable")
+            if person_id == self._slow_for:
+                await asyncio.sleep(60)
             for employment in self._employments[person_id]:
                 yield employment
+        except asyncio.CancelledError:
+            self.cancelled.append(person_id)
+            raise
         finally:
             self.running -= 1
 
@@ -235,6 +247,31 @@ class TestLoadPersonio:
             asyncio.run(load_personio(client, employee_number_attribute=ATTRIBUTE, today=TODAY))
         assert events[0]["outcome"] == "error"
         assert events[0]["error"] == {"type": "ConnectionError"}
+
+    def test_error_cancels_the_other_requests(self) -> None:
+        client = _FakePersonio(
+            [(_person("1", "00100"), [_employment()]), (_person("2", "00200"), [_employment()])],
+            fail_for="1",
+            slow_for="2",
+        )
+
+        async def load_and_check() -> list[str]:
+            with pytest.raises(ConnectionError):
+                await load_personio(client, employee_number_attribute=ATTRIBUTE, today=TODAY)
+            # checked right after the error, before asyncio.run() cancels whatever is still running
+            return list(client.cancelled)
+
+        assert asyncio.run(load_and_check()) == ["2"]
+        assert client.running == 0
+
+    @pytest.mark.parametrize("concurrency", [0, -1])
+    def test_concurrency_must_be_positive(self, concurrency: int) -> None:
+        client = _FakePersonio([(_person(), [_employment()])])
+        with pytest.raises(ValueError, match="concurrency"):
+            asyncio.run(
+                load_personio(client, employee_number_attribute=ATTRIBUTE, today=TODAY, concurrency=concurrency)
+            )
+        assert client.status_filters == []
 
     def test_personio_client_is_a_source(self) -> None:
         # mypy checks that the real client fits the protocol the loader expects
