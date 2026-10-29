@@ -23,7 +23,15 @@ from decidalo_client import DecidaloClient
 from personio_client import PersonioClient
 from pydantic import SecretStr
 
-from hr_sync.config import ConfigurationError, ConfigurationProblem, Settings, check_settings
+from hr_sync.anonymize import anonymize
+from hr_sync.config import (
+    DECIDALO_PRODUCTION_URL,
+    ConfigurationError,
+    ConfigurationProblem,
+    Settings,
+    check_settings,
+    decidalo_test_url,
+)
 from hr_sync.events import emit, emit_operation, error_fields, run_context, wide_event
 from hr_sync.model import Notice, Snapshot, TargetSystem
 from hr_sync.plan import Operation, OperationResult, Outcome, SyncPlan
@@ -127,11 +135,15 @@ def abort(options: RunOptions, error: Exception) -> ExitCode:
 
 def connect(settings: Settings, targets: Collection[TargetSystem]) -> Systems:
     """
-    Creates the clients of Personio and the selected target systems, without IO. Decidalo is always the production
-    system: its URL is the default of the client and can't be configured.
+    Creates the clients of Personio and the selected target systems, without IO.
+
+    Personio is always the production system, HR-Sync only reads from it. Decidalo is the production system in the
+    production mode, which can't be configured, and the test environment in the test mode, which must not be the
+    production system (see :func:`hr_sync.config.decidalo_test_url`).
 
     Raises:
-        ConfigurationError: if a credential is missing, which :func:`check_settings` reports beforehand.
+        ConfigurationError: if a credential is missing or the test mode would write to production, which
+            :func:`check_settings` reports beforehand.
     """
     personio = PersonioClient(
         client_id=_secret(settings.personio_client_id, "PERSONIO_CLIENT_ID"),
@@ -139,14 +151,22 @@ def connect(settings: Settings, targets: Collection[TargetSystem]) -> Systems:
         app_id=settings.personio_app_id,
     )
     decidalo = None
-    if TargetSystem.DECIDALO in targets:
-        decidalo = DecidaloClient(api_key=_secret(settings.decidalo_api_key, "DECIDALO_API_KEY"))
+    if TargetSystem.DECIDALO in targets and settings.test_mode:
+        decidalo = DecidaloClient(
+            api_key=_secret(settings.decidalo_test_api_key, "DECIDALO_TEST_API_KEY"),
+            base_url=decidalo_test_url(settings),
+        )
+    elif TargetSystem.DECIDALO in targets:
+        decidalo = DecidaloClient(
+            api_key=_secret(settings.decidalo_api_key, "DECIDALO_API_KEY"), base_url=DECIDALO_PRODUCTION_URL
+        )
     return Systems(personio=personio, decidalo=decidalo)
 
 
 def load_snapshots(systems: Systems, settings: Settings, targets: Collection[TargetSystem], today: date) -> Snapshots:
     """
-    Loads Personio and the selected target systems, one after the other, and logs the notices of each snapshot.
+    Loads Personio and the selected target systems, one after the other, and logs the notices of each snapshot. In the
+    test mode, the snapshot of Personio is anonymized right away (see :func:`hr_sync.anonymize.anonymize`).
 
     An error while loading is raised, so that the run ends before planning: on incomplete data, existing employees
     would be created again.
@@ -154,6 +174,9 @@ def load_snapshots(systems: Systems, settings: Settings, targets: Collection[Tar
     source = load_personio(
         systems.personio, employee_number_attribute=settings.personio_employee_number_attribute, today=today
     )
+    if settings.test_mode:
+        # right after loading, so that planning and executing only see substitutes
+        source = anonymize(source)
     _emit_notices(source.notices)
     loaded: dict[TargetSystem, Snapshot] = {}
     for target in TargetSystem:
@@ -220,7 +243,8 @@ def execute_plan(systems: Systems, sync_plan: SyncPlan, settings: Settings, *, d
                     _decidalo(systems),
                     operations,
                     employee_type_name=settings.decidalo_employee_type_name,
-                    has_login=settings.decidalo_has_login,
+                    # the anonymized test users must not be able to log in
+                    has_login=False if settings.test_mode else settings.decidalo_has_login,
                 )
             )
         else:

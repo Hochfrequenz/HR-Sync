@@ -1,0 +1,4 @@
+# coverage runs in this directory (see .github/workflows/coverage.yml) and only reads its configuration from here
+[run]
+# the integration tests only run when selected explicitly (see addopts in pyproject.toml)
+omit = */unittests/integration/*

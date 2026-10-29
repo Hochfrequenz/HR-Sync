@@ -59,6 +59,15 @@ dev = [
 # one group they need (e.g. `uv run --group linting ...`) without also installing every other tool.
 default-groups = []
 
+[tool.pytest.ini_options]
+testpaths = ["unittests"]
+markers = [
+    "integration: reads Personio (production) and the Decidalo test environment; needs credentials, runs only locally",
+    "integration_write: additionally writes one anonymized employee to the Decidalo test environment",
+]
+# the integration tests only run when selected explicitly, e.g. with `-m integration`
+addopts = "-m 'not integration and not integration_write'"
+
 [tool.ruff]
 line-length = 120
 extend-exclude = ["*.md"]

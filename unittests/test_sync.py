@@ -4,11 +4,12 @@ from unittest.mock import ANY
 
 import pytest
 from decidalo_client import DecidaloClient
+from decidalo_client.client import DEFAULT_BASE_URL
 from decidalo_client.models import ImportItemStatusType, UserImportResults
 from personio_client import Employment, Person, PersonioClient
 from pydantic import SecretStr
 
-from hr_sync.config import ConfigurationError, ConfigurationProblem, Environment, Settings
+from hr_sync.config import DECIDALO_PRODUCTION_URL, ConfigurationError, ConfigurationProblem, Environment, Settings
 from hr_sync.model import EmployeeRecord, System, TargetSystem
 from hr_sync.plan import EmployeePlan, Operation, OperationType, Outcome, SyncPlan
 from hr_sync.sync import (
@@ -52,6 +53,18 @@ def _settings(**changes: object) -> Settings:
         "decidalo_api_key": SecretStr("decidalo-key"),
     }
     return Settings.model_validate(values | changes)
+
+
+def _test_settings(**changes: object) -> Settings:
+    """settings of the test mode, with a login for new users that the test mode must ignore"""
+    values: dict[str, object] = {
+        "hr_sync_environment": Environment.TEST,
+        "decidalo_api_key": None,
+        "decidalo_test_base_url": "https://test.decidalo.example",
+        "decidalo_test_api_key": SecretStr("test-key"),
+        "decidalo_has_login": True,
+    }
+    return _settings(**(values | changes))
 
 
 def _personio(*persons: Person, employments: list[Employment] | None = None) -> FakePersonio:
@@ -151,6 +164,35 @@ class TestRun:
         assert plan_event["limit_reached"] is True
         assert _run_event(events)["max_employees"] == 1
 
+    def test_test_mode(self, events: list[dict[str, object]]) -> None:
+        decidalo = FakeDecidalo()
+        assert _run(_personio(ERIKA, MAX), decidalo, settings=_test_settings()) == ExitCode.SUCCESS
+        payload = [user.model_dump(exclude_none=True) for batch in decidalo.batches for user in batch]
+        assert payload == [
+            {
+                "employeeID": number,
+                "displayName": f"Test Person-{number}",
+                "email": f"test-{number}@example.com",
+                "entryDate": START,
+                "hasLogin": False,
+                "employeeTypeName": "Internal",
+                "delete": False,
+            }
+            for number in ("00165", "00200")
+        ]
+        real = ("Erika", "Musterfrau", "Max", "Mustermann", "erika.musterfrau", "max.mustermann")
+        assert [value for value in real if value in f"{payload} {events}"] == []
+        assert {event["environment"] for event in events} == {Environment.TEST}
+
+    def test_second_run_in_the_test_mode_writes_nothing(self, events: list[dict[str, object]]) -> None:
+        personio, decidalo = _personio(ERIKA, MAX), FakeDecidalo()
+        assert _run(personio, decidalo, settings=_test_settings()) == ExitCode.SUCCESS
+        events.clear()
+        assert _run(personio, decidalo, settings=_test_settings()) == ExitCode.SUCCESS
+        assert len(decidalo.batches) == 1
+        # the substitutes only depend on the employee number, so they don't deviate
+        assert _named(events, "sync.deviation") == []
+
     def test_notices_and_deviations(self, events: list[dict[str, object]]) -> None:
         without_email = personio_person("3", "00300", email=None)
         renamed = decidalo_user(8, "00165", display_name="Erika Mustermann", entry_date=START)
@@ -204,10 +246,20 @@ class TestRun:
                 id="weclapp",
             ),
             pytest.param(
+                RunOptions(),
+                _test_settings,
+                {"problem": "target_not_allowed_in_test_mode"},
+                id="weclapp in the test mode",
+            ),
+            pytest.param(
                 DECIDALO,
-                lambda: _settings(hr_sync_environment=Environment.TEST),
-                {"problem": "test_mode_not_available"},
-                id="test mode",
+                lambda: _test_settings(decidalo_test_base_url="https://import.decidalo.dev"),
+                {
+                    "function": "decidalo_test_url",
+                    "problem": "production_url_in_test_mode",
+                    "variables": ["DECIDALO_TEST_BASE_URL"],
+                },
+                id="production in the test mode",
             ),
             pytest.param(
                 DECIDALO,
@@ -274,6 +326,27 @@ class TestConnect:
         assert isinstance(systems.decidalo, DecidaloClient)
         # the production system, which can't be configured
         assert systems.decidalo._base_url == "https://import.decidalo.dev"
+
+    def test_production_url_is_the_one_of_the_client(self) -> None:
+        assert DECIDALO_PRODUCTION_URL == DEFAULT_BASE_URL
+
+    def test_production_mode_ignores_the_test_environment(self) -> None:
+        systems = connect(_settings(decidalo_test_base_url="https://test.decidalo.example"), [TargetSystem.DECIDALO])
+        assert isinstance(systems.decidalo, DecidaloClient)
+        assert systems.decidalo._base_url == "https://import.decidalo.dev"
+
+    def test_test_environment_in_the_test_mode(self) -> None:
+        systems = connect(_test_settings(), [TargetSystem.DECIDALO])
+        assert isinstance(systems.decidalo, DecidaloClient)
+        assert systems.decidalo._base_url == "https://test.decidalo.example"
+        assert systems.decidalo._api_key == "test-key"
+
+    def test_test_mode_never_connects_to_production(self) -> None:
+        # also when connect is called without check_settings, e.g. by a test
+        settings = _test_settings(decidalo_test_base_url="https://import.decidalo.dev/")
+        with pytest.raises(ConfigurationError) as error_info:
+            connect(settings, [TargetSystem.DECIDALO])
+        assert error_info.value.problem == ConfigurationProblem.PRODUCTION_URL_IN_TEST_MODE
 
     def test_only_selected_targets_get_a_client(self) -> None:
         assert connect(_settings(decidalo_api_key=None), []).decidalo is None

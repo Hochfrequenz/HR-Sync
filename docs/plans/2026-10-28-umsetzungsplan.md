@@ -52,7 +52,10 @@ HR-Sync überträgt beim Onboarding die Stammdaten neuer Mitarbeiter aus **Perso
 | Decidalo im Test-Modus | eigene URL und eigener Key (`DECIDALO_TEST_BASE_URL`, `DECIDALO_TEST_API_KEY`), `hasLogin=false`. Die Testumgebung ist nur im Test-Modus erreichbar |
 | Integrationstest | Personio produktiv lesen, nur den ersten Planeintrag in die Decidalo-Testumgebung schreiben. Danach die Testperson wahlweise automatisch löschen (erst nachdem geprüft ist, dass sie angelegt wurde) oder zum Ansehen liegen lassen. Läuft nur lokal |
 | weclapp vor AP 5 | `--target weclapp` ist wählbar und gehört zum Standard. Solange der weclapp-Adapter fehlt, bricht ein Lauf mit weclapp als Ziel mit Exit-Code 2 ab (`problem=target_not_available`). Bis AP 5 braucht jeder Lauf also `--target decidalo`. CLI und Standard ändern sich mit AP 5 nicht mehr |
-| Test-Modus vor AP 8 | `HR_SYNC_ENVIRONMENT=test` bricht mit Exit-Code 2 ab (`problem=test_mode_not_available`), bis der Test-Modus steht. So glaubt niemand, er laufe anonymisiert |
+| Test-Modus vor AP 8 | ~~`HR_SYNC_ENVIRONMENT=test` bricht mit Exit-Code 2 ab, bis der Test-Modus steht~~ **Erledigt mit AP 8:** Der Test-Modus steht (Abschnitt 8) |
+| Integrationstests im normalen Testlauf | nein: `uv run pytest` lässt sie immer aus, auch mit gefüllter `.env`. Sie laufen nur mit `-m integration` bzw. `-m integration_write`. Ein normaler Testlauf liest so nie Personio produktiv und braucht kein Netz |
+| Test-Modus ohne `--max-employees` | keine Sonderregel: Ohne Option legt ein Lauf im Test-Modus alle fehlenden Mitarbeiter anonymisiert in der Testumgebung an. Für einen kleinen Lauf setzt man `--max-employees 1` selbst |
+| Aufräumen in der Testumgebung | nur der Integrationstest löscht, und nur seine eigene Testperson. User aus einem Testlauf über die CLI bleiben liegen (anonymisiert, ohne Login), bei Bedarf löscht man sie in Decidalo. HR-Sync selbst bleibt „nur anlegen“ |
 | Unerwartete Fehler | Jeder Fehler beendet den Lauf mit einem `sync.run` mit `outcome=error` und Exit-Code 2, auch ein Programmierfehler. Geloggt werden Fehlertyp und Codestelle (Modul, Funktion, Zeile), nie Meldung, Traceback oder Dateipfad (siehe Abschnitt 6). Ein Abbruch mit Strg+C erscheint als `sync.run` mit `outcome=error` und `error.type=KeyboardInterrupt` und beendet den Prozess wie üblich |
 | Begrenzung des Plans | `--max-employees N` (N ≥ 1): Die Planung bricht ab, sobald N Mitarbeiter mit Operationen im Plan stehen, z. B. `--max-employees 1` für einen überschaubaren Testlauf. Gilt in jedem Modus, mit und ohne Dry-Run, und lässt sich mit `--only` kombinieren. Geladen und geprüft wird trotzdem alles: Hinweise aus dem Laden erscheinen für alle Mitarbeiter, Hinweise und Abweichungen aus der Planung nur bis zum Abbruch |
 
@@ -503,7 +506,7 @@ Tabelle mit *(HF)* markiert und werden im README als solche dokumentiert, damit 
 | `WECLAPP_EMPLOYEE_NUMBER_ATTRIBUTE_ID` | ID der Custom-Attribute-Definition für die MA-Nummer am User. Pflicht, wenn weclapp Ziel ist; ohne Standardwert, weil die ID nur im eigenen Tenant gilt. Bei Hochfrequenz `7621` *(HF)* |
 | `WECLAPP_NEW_USER_STATUS` | Standard `ACTIVE` *(HF)* |
 | `DECIDALO_API_KEY` | Decidalo-Import-API |
-| `DECIDALO_TEST_BASE_URL`, `DECIDALO_TEST_API_KEY` | Decidalo-Testumgebung. Werden nur im Test-Modus gelesen und sind dort Pflicht (siehe [Abschnitt 8](#8-testumgebungen-und-anonymisierung)) |
+| `DECIDALO_TEST_BASE_URL`, `DECIDALO_TEST_API_KEY` | Decidalo-Testumgebung. Werden nur im Test-Modus genutzt und sind dort Pflicht (siehe [Abschnitt 8](#8-testumgebungen-und-anonymisierung)). `DECIDALO_TEST_BASE_URL` muss eine http(s)-URL sein |
 | `DECIDALO_EMPLOYEE_TYPE_NAME` | Standard `Internal` *(HF)* |
 | `DECIDALO_HAS_LOGIN` | Standard `true` *(HF)*; im Test-Modus wirkungslos (immer `false`) |
 | `HR_SYNC_ENVIRONMENT` | `production` (Standard) oder `test`, siehe [Abschnitt 8](#8-testumgebungen-und-anonymisierung) |
@@ -559,17 +562,20 @@ Umgesetzt in [`config.py`](../../src/hr_sync/config.py), [`sync.py`](../../src/h
   - `Settings` liest jede Variable über das gleichnamige Feld in Kleinbuchstaben, z. B. `personio_client_id`.
   - Umgebungsvariablen haben Vorrang vor der `.env`. Leere Werte gelten als nicht gesetzt, eine aus `.env.example`
     kopierte `.env` behält also die Standardwerte. Andere Variablen werden ignoriert.
-  - Die weclapp-Variablen liest HR-Sync erst ab AP 5, die `DECIDALO_TEST_*`-Variablen erst ab AP 8.
+  - Die weclapp-Variablen liest HR-Sync erst ab AP 5. Die `DECIDALO_TEST_*`-Variablen nutzt es nur im Test-Modus
+    (AP 8).
   - `load_settings(env_file)` bricht ab, wenn die Datei aus `--env-file` fehlt (`problem=env_file_not_found`) oder
     eine Variable einen ungültigen Wert hat (`problem=invalid_variables`). Im Event stehen nur die Namen der
     Variablen, nie ihre Werte.
   - `check_settings(settings, targets)` prüft vor jedem Zugriff auf ein System:
-    - Test-Modus: `test_mode_not_available` (bis AP 8)
+    - weclapp als Ziel im Test-Modus: `target_not_allowed_in_test_mode` (siehe 8.1)
     - weclapp als Ziel: `target_not_available` (bis AP 5)
-    - fehlende Zugangsdaten: `missing_variables`. Die von Personio sind immer nötig, `DECIDALO_API_KEY` nur mit
-      Decidalo als Ziel.
+    - fehlende Zugangsdaten: `missing_variables`. Die von Personio sind immer nötig. Mit Decidalo als Ziel braucht
+      der Produktionsmodus `DECIDALO_API_KEY`, der Test-Modus `DECIDALO_TEST_BASE_URL` und `DECIDALO_TEST_API_KEY`.
+    - Test-URL zeigt auf die Produktion: `production_url_in_test_mode` (siehe 8.1)
 - **Orchestrierung:** Die Schritte lassen sich einzeln aufrufen, z. B. vom Integrationstest in AP 8:
-  - `connect` erzeugt die Clients ohne IO. Decidalo nutzt immer die Standard-URL des Clients, also die Produktion.
+  - `connect` erzeugt die Clients ohne IO. Decidalo ist im Produktionsmodus fest die Produktion
+    (`DECIDALO_PRODUCTION_URL`), im Test-Modus die Testumgebung (siehe 8.1).
   - `load_snapshots` lädt nacheinander und loggt die Hinweise jedes Snapshots, auch mit `--only`.
   - `create_plan` erstellt den Plan und loggt Hinweise, Abweichungen und `sync.plan`.
   - `execute_plan` führt den Plan aus, erst weclapp, dann Decidalo. Im Dry-Run gibt es je Operation ein
@@ -608,6 +614,21 @@ wir direkt in der Produktion, abgesichert durch Dry-Run und `--only` (AP 9).
 
 Kommt später ein weclapp-Testtenant dazu, gilt dasselbe Muster mit `WECLAPP_TEST_*`.
 
+Umgesetzt in [`config.py`](../../src/hr_sync/config.py) und [`sync.py`](../../src/hr_sync/sync.py) (AP 8):
+
+- `check_settings` bricht im Test-Modus vor jedem Zugriff ab:
+  - weclapp als Ziel: `problem=target_not_allowed_in_test_mode`. Ohne `--target` sind beide Ziele gewählt, ein Lauf
+    im Test-Modus braucht also `--target decidalo`.
+  - fehlende `DECIDALO_TEST_*`: `problem=missing_variables`. `DECIDALO_API_KEY` braucht der Test-Modus nicht.
+  - Test-URL zeigt auf die Produktion: `problem=production_url_in_test_mode`. Verglichen wird der Host ohne
+    Rücksicht auf Groß- und Kleinschreibung, Schema, Port und Pfad zählen nicht.
+- `connect` prüft die Test-URL noch einmal (`decidalo_test_url`). So schreibt auch ein Aufruf ohne `check_settings`,
+  z. B. aus einem Test, nie in die Produktion. Der Produktionsmodus übergibt fest `DECIDALO_PRODUCTION_URL` an den
+  Client. Ein Test prüft, dass sie der Standard-URL des Clients entspricht.
+- `load_snapshots` anonymisiert den Personio-Snapshot direkt nach `load_personio`. Das Event `sync.load` von Personio
+  enthält nur Zahlen, es entsteht vor der Anonymisierung.
+- `execute_plan` übergibt im Test-Modus `has_login=False`, egal was in `DECIDALO_HAS_LOGIN` steht.
+
 ### 8.2 Anonymisierung
 
 | Feld | im Test-Modus |
@@ -626,6 +647,14 @@ MA-Nummer steht.
 Ein Test stellt sicher, dass jedes Feld von `EmployeeRecord` eine Anonymisierungsregel hat oder ausdrücklich als
 „bleibt echt“ markiert ist. Ein neues Feld (siehe [4.3](#43-weitere-felder-ergänzen)) kann also nicht unbemerkt
 echte Werte in die Testumgebung tragen.
+
+Umgesetzt in [`anonymize.py`](../../src/hr_sync/anonymize.py) (AP 8):
+
+- `KEPT_FIELDS` (bleibt echt) und `SUBSTITUTES` (Ersatzwert je Feld aus der MA-Nummer) sind die Regeln.
+- `anonymize_record` baut den Datensatz nur aus diesen Feldern neu auf (Positivliste). Ein Feld ohne Regel wird also
+  verworfen statt echt übernommen. Der Test oben fällt dann auf.
+- `anonymize(snapshot)` ersetzt die Datensätze. `email_owners` enthält danach nur noch die Ersatzadressen, keine echte
+  Adresse bleibt übrig. IDs, Ausschlüsse und Hinweise enthalten ohnehin keine personenbezogenen Daten.
 
 ### 8.3 Integrationstest gegen die Decidalo-Testumgebung
 
@@ -662,6 +691,27 @@ Ablauf von `integration_write`:
 uv run pytest -m integration_write
 uv run pytest -m integration_write --keep-test-data
 ```
+
+Umgesetzt in [`unittests/integration`](../../unittests/integration) (AP 8):
+
+- **Auswahl:** `addopts` in `pyproject.toml` wählt beide Marker ab. Ein `-m` auf der Kommandozeile ersetzt diese
+  Auswahl. Die Coverage misst die Integrationstests nicht (`unittests/.coveragerc`), weil sie im normalen Lauf nicht
+  laufen.
+- **Konfiguration:** Gelesen werden die Umgebung und die `.env` im Wurzelverzeichnis des Repos. Der Test erzwingt den
+  Test-Modus mit dem Ziel Decidalo und prüft die Einstellungen mit `check_settings`. Fehlen Zugangsdaten, wird
+  übersprungen. `HR_SYNC_IT_ALLOW_WRITES` kann in der Umgebung oder in der `.env` stehen.
+- **`integration`:** Personio wird einmal geladen. Der Test prüft, dass keiner der echten Werte im anonymisierten
+  Snapshot und in den Events vorkommt. Dann plant er mit `max_employees=1` und führt den Plan als Dry-Run aus.
+- **Keine personenbezogenen Daten in der Testausgabe:** Die Prüfungen vergleichen nur MA-Nummern, Feldnamen, Status
+  und Ersatzwerte. Ein fehlschlagender Test gibt also keine echten Werte aus.
+- **Schritt 6** lädt nur Decidalo neu und nutzt den anonymisierten Personio-Snapshot weiter, Personio hat sich ja nicht
+  geändert.
+- **Aufräumen:** Es sucht die User mit der MA-Nummer selbst noch einmal, statt das Ergebnis aus Schritt 5 zu nutzen. So
+  räumt es auch auf, wenn Schritt 5 abbricht. Gelöscht wird weiterhin nur, wenn jeder User mit der MA-Nummer genau die
+  Ersatzadresse hat. Gelöscht wird über die interne `userID` zusammen mit MA-Nummer und Ersatzadresse. Erwartet wird
+  der Zeilenstatus `Deleted`.
+- **O13 prüfen:** den Test zweimal hintereinander laufen lassen. Nach dem Löschen ist derselbe Mitarbeiter wieder der
+  erste Planeintrag. Klappt das zweite Anlegen, lässt sich eine gelöschte `employeeID` wieder anlegen.
 
 ## 9. PyPI-Paket
 
@@ -798,7 +848,7 @@ den Clients), das vor AP 10 erledigt sein sollte.
 | O10 | Brauchen wir eine Ignore-Liste für technische User ohne MA-Nummer (Admins, API-User), damit die Warnungen nicht jedes Mal kommen? Wir entscheiden nach dem ersten Dry-Run, wenn die Zahl der Warnungen bekannt ist | nach dem ersten Dry-Run (AP 9) | Risiko R5 |
 | O11 | ~~Welche Python-Version? Laut weclapp-Plan (K3) die neueste~~ **Erledigt in AP 0:** Python 3.14 (CI 3.11–3.14), `requires-python = ">=3.11,<3.15"`, weil die Clients `aiohttp<3.14` verlangen (siehe O16) | – | AP 0 |
 | O12 | ~~URL und API-Key der Decidalo-Testumgebung~~ **Erledigt:** Sie liegen vor und kommen in die lokale `.env`. Offen ist nur noch, ob Decidalo E-Mails mit der Domain `example.com` annimmt. Das zeigt der erste Integrationstest | AP 8 | Abschnitt 8 |
-| O13 | **Teilweise geklärt:** `delete=true` löscht wirklich. Deaktivieren ist ein eigenes Flag (`deactivate`), und die Antwort unterscheidet `Deleted` und `Deactivated`. Offen: Lässt sich dieselbe `employeeID` danach wieder anlegen? Das prüfen wir in der Testumgebung | AP 8 | Abschnitt 8.3 |
+| O13 | **Teilweise geklärt:** `delete=true` löscht wirklich. Deaktivieren ist ein eigenes Flag (`deactivate`), und die Antwort unterscheidet `Deleted` und `Deactivated`. Offen: Lässt sich dieselbe `employeeID` danach wieder anlegen? Das prüfen wir in der Testumgebung, indem wir `integration_write` zweimal hintereinander laufen lassen (siehe 8.3) | AP 8 | Abschnitt 8.3 |
 | O14 | Wann erscheint das erste Pre-Release auf PyPI? Das hängt mit O9 zusammen: Wird HR-Sync auf dem Server als Paket installiert, muss es vor dem Go-live erscheinen | später | Abschnitt 9 |
 | O15 | Brauchen andere Firmen weitere Einstellungen, z. B. für das displayName-Format oder die Relevanzregel? | nach Bedarf | Abschnitt 9.1 |
 | O16 | `aiohttp`-Grenze in `personio-client` und `decidalo-client` auf `<3.15` anheben und neu releasen (`aiohttp 3.14` unterstützt Python 3.15). Danach entfällt die Obergrenze `<3.15` in HR-Sync. Stand 2026-10-28: Beide Clients verlangen weiterhin `aiohttp<3.14` (`personio-client` 0.1.0a1, `decidalo-client` 0.3.1) | vor AP 10 | Abschnitt 9.3, O11 |
