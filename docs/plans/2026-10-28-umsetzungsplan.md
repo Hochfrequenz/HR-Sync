@@ -140,6 +140,19 @@ festlegen können.
 - Eintrittsdatum: `employment_start_date` des relevanten Employments.
 - Credentials nur mit dem Scope `personio:persons:read`.
 
+Umgesetzt in [`systems/personio.py`](../../src/hr_sync/systems/personio.py) (AP 4):
+
+- `load_personio(client, employee_number_attribute=…, today=…, concurrency=5)` liefert den Snapshot. Er erzeugt ein Event
+  `sync.load` mit `persons`, `without_id`, `records`, `notices` und `not_relevant` je Grund.
+- `relevant_employment(employments, today)` setzt die Relevanzregel um. Das Ergebnis ist das relevante Employment
+  oder der Grund, warum es keines gibt.
+- `employee_number_of(person, attribute_id)` liest die MA-Nummer. Eine Zahl wird zum String, leere Werte gelten als
+  fehlend.
+- `client` ist als Protocol `PersonioSource` typisiert (`iter_persons`, `iter_employments`). Die Tests nutzen einen
+  Fake-Client, mypy prüft, dass der echte `PersonioClient` das Protocol erfüllt.
+- Personen ohne `id` (laut Spec optional) lassen sich nicht abfragen. Sie werden übersprungen und in `without_id`
+  gezählt.
+
 ### 3.2 weclapp (Ziel)
 
 **Laden:**
@@ -345,7 +358,7 @@ Umgesetzt in [`events.py`](../../src/hr_sync/events.py) (AP 3):
 | Event | Wann | Inhalt (Auswahl) | Level |
 |---|---|---|---|
 | `sync.run` | einmal, am Ende | `run_id`, `environment`, `dry_run`, `only`, `targets`, Dauer, Summen je System und Operation, Anzahl Hinweise und Fehler, `exit_code` | INFO / ERROR |
-| `sync.load` | je System | `system`, `records`, `notices`, Dauer; bei Personio zusätzlich `not_relevant` je Grund (`employment_not_active`, `start_date_in_future`) | INFO / ERROR |
+| `sync.load` | je System | `system`, `records`, `notices`, Dauer; bei Personio zusätzlich `persons`, `without_id` und `not_relevant` je Grund (`employment_not_active`, `start_date_in_future`) | INFO / ERROR |
 | `sync.notice` | je Datenproblem | `system`, `reason`, `system_id` | **WARNING** |
 | `sync.deviation` | je Person und Zielsystem mit Abweichung | `employee_number`, `system`, `fields` | INFO |
 | `sync.plan` | einmal | Operationen je System und Typ, `is_empty`, `only_in_target` je System | INFO |
@@ -601,7 +614,8 @@ unittests/
 ```
 
 Laufzeit-Abhängigkeiten: `personio-client`, `weclapp-client`, `decidalo-client`, `loguru`, `pydantic`,
-`pydantic-settings`. Für die Tests kommen `pytest-asyncio` und `aioresponses` dazu.
+`pydantic-settings`. Die async-Tests laufen mit `asyncio.run()`, ohne weiteres Test-Plugin. Für Decidalo kommt
+eventuell `aioresponses` dazu (AP 6).
 
 ## 11. Tests
 
@@ -610,7 +624,8 @@ Laufzeit-Abhängigkeiten: `personio-client`, `weclapp-client`, `decidalo-client`
 | Planner | reine Unit-Tests ohne IO, tabellengetrieben (fehlt, vorhanden, Abweichung, unvollständig, Datenprobleme, E-Mail schon vergeben); ein Datenproblem in einem Zielsystem blockiert den Mitarbeiter in allen Systemen, aber keine anderen Mitarbeiter |
 | Mapping | Unit-Tests mit Modellinstanzen der Clients |
 | Relevanz (Personio) | tabellengetrieben: alle Employment-Status inklusive abweichender Schreibweise; Startdatum gestern, heute, morgen; mehrere Employments; aktives Employment ohne Startdatum erzeugt `missing_entry_date`, auch neben einem Employment mit künftigem Start; künftiger Mitarbeiter ohne MA-Nummer erzeugt keine Warnung; `--only` meldet `not_relevant` mit Grund bzw. `unknown_employee_number` |
-| Personio, Decidalo | `aioresponses` (beide Clients nutzen aiohttp und testen selbst so) |
+| Personio | Fake-Client hinter dem Protocol `PersonioSource`; mypy prüft, dass der echte `PersonioClient` es erfüllt |
+| Decidalo | Fake-Client wie bei Personio oder `aioresponses` (der Client nutzt aiohttp), Entscheidung in AP 6 |
 | weclapp | `weclapp_client.testing.FakeWeclapp` |
 | Ende-zu-Ende | ganzer Lauf gegen die Fakes; **ein zweiter Lauf erzeugt keine Schreibzugriffe**; Dry-Run schreibt nichts |
 | Events | Loguru-Sink in eine Liste; Felder und Level prüfen; keine personenbezogenen Werte |
