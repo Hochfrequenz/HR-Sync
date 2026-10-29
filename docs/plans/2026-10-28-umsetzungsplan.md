@@ -328,9 +328,19 @@ with wide_event("sync.load", system="personio") as event:
     ...
     event["records"] = len(snapshot.records)
     event["notices"] = len(snapshot.notices)
-# beim Verlassen kommen dazu: run_id, environment, dry_run, duration_ms, outcome, bei Fehlern error.type und error.status_code
-# Ausgabe: logger.bind(**fields).log(level, "sync.load")
+# beim Verlassen kommen dazu: duration_ms, outcome und bei einer Exception error (siehe unten);
+# run_id, environment und dry_run kommen aus run_context()
 ```
+
+Umgesetzt in [`events.py`](../../src/hr_sync/events.py) (AP 3):
+
+| Funktion | Zweck |
+|---|---|
+| `wide_event(name, level="INFO", **fields)` | Kontextmanager für eine Arbeitseinheit. Gibt am Ende genau ein Event aus, mit `duration_ms` und `outcome` (`success`, sofern der Aufrufer nichts anderes setzt). Bei einer Exception (auch einem Abbruch wie Strg+C) ist `outcome=error`, das Event bekommt `error` und die Exception wird weitergereicht. Events mit `outcome=error` haben das Level ERROR |
+| `emit(name, level="INFO", **fields)` | ein Event ohne Arbeitseinheit, z. B. `sync.notice` mit WARNING |
+| `run_context(**fields)` | hängt Felder wie `run_id`, `environment`, `dry_run` an alle Events im Block (über `logger.contextualize`) |
+| `error_fields(error)` | die Felder einer Exception, die geloggt werden dürfen (siehe „Keine Fehlertexte“) |
+| `configure_logging(log_format, stream=None)` | richtet die Ausgabe ein und leitet die Logs der Client-Bibliotheken um |
 
 | Event | Wann | Inhalt (Auswahl) | Level |
 |---|---|---|---|
@@ -344,20 +354,25 @@ with wide_event("sync.load", system="personio") as event:
 - **Keine personenbezogenen Werte:** nur MA-Nummer, systeminterne IDs, Feldnamen und Zahlen. Ein Test prüft, dass
   Namen und E-Mail-Adressen der Testdaten nicht in der Log-Ausgabe auftauchen.
 - **Keine Fehlertexte:** Meldungen der APIs und `str(error)` können Namen oder E-Mail-Adressen enthalten, auch in
-  gekürzter Form. Deshalb kommen nur fest definierte Felder ins Event:
-  - immer der Fehlertyp (Klassenname) und der HTTP-Statuscode
+  gekürzter Form. Deshalb kommen nur fest definierte Felder ins Event (im Feld `error`):
+  - immer der Fehlertyp (`type`, Klassenname) und, falls vorhanden, der HTTP-Statuscode (`status_code`)
   - bei Personio die `trace_id`
-  - bei weclapp `problem_type` und die betroffenen Properties (`location` aus `validation_errors`), nicht die
-    Meldungstexte
-  - bei Decidalo der `status` der Zeile, nicht `errorMessage`
+  - bei weclapp `problem_type` und die betroffenen Properties (`locations`, aus `location` der `validation_errors`),
+    nicht die Meldungstexte
+  - bei Decidalo der `status` der Zeile, nicht `errorMessage` (setzt der Executor in AP 6)
 
   Loguru läuft mit `diagnose=False`, und die Events enthalten keine Tracebacks, weil diese Variablenwerte zeigen können.
 - **Im Dry-Run** gibt es für jede geplante Operation ein `sync.operation` mit `outcome=dry_run`. So ist pro Person
   sichtbar, was passieren würde.
-- **Ausgabe umschaltbar:** `--log-format pretty|json` bzw. `HR_SYNC_LOG_FORMAT`, Standard ist `pretty`.
-  `json` nutzt Loguru mit `serialize=True`, eine Zeile pro Event auf stdout.
-- Die Logs der Client-Bibliotheken (stdlib `logging`) leiten wir mit einem Intercept-Handler auf Loguru um, mit dem
-  Level WARNING.
+- **Ausgabe umschaltbar:** `--log-format pretty|json` bzw. `HR_SYNC_LOG_FORMAT`, Standard ist `pretty`. Die CLI-Option
+  kommt mit AP 7, `configure_logging()` steht schon. Jedes Event ist eine Zeile auf stdout:
+  - `json`: ein **flaches** JSON-Objekt mit `timestamp`, `level`, `event` und den Feldern des Events, z. B.
+    `{"timestamp": "…", "level": "INFO", "event": "sync.load", "system": "personio", "records": 12, "outcome": "success", "duration_ms": 340}`.
+    Verschachtelte Felder wie `error` bleiben Objekte. Bewusst nicht Loguru mit `serialize=True`: Das legt die Felder
+    unter `record.extra` zwischen Loguru-Interna ab, die Event-Felder sollen aber eine stabile Schnittstelle sein (9.2).
+  - `pretty`: `Zeit | Level | Event key=value …`, verschachtelte Felder mit Punkt, z. B. `error.status_code=503`.
+- Die Logs der Client-Bibliotheken (stdlib `logging`) leiten wir mit einem Intercept-Handler auf Loguru um, ab dem
+  Level WARNING. Sie erscheinen als Event `log` mit den Feldern `logger` und `message`.
 
 ## 7. Konfiguration, CLI und Fehlerbehandlung
 
