@@ -32,11 +32,30 @@ HR-Sync uses these clients for the APIs:
 
 ## Usage
 
-Copy [`.env.example`](.env.example) to `.env` and fill in the credentials. Then run:
+Copy [`.env.example`](.env.example) to `.env` and fill in the credentials. Environment variables take precedence over
+the `.env` file. Then run:
 
 ```bash
-uv run hr-sync --help
+uv run hr-sync --dry-run --target decidalo
 ```
+
+| Option | Meaning |
+|---|---|
+| `--dry-run` | load and plan, but don't write to any target system |
+| `--only EMPLOYEE_NUMBER ...` | restrict the plan to these employee numbers; all employees are loaded anyway, to find data problems |
+| `--target weclapp\|decidalo ...` | the target systems (default: all); the others are neither loaded nor written |
+| `--env-file PATH` | read the configuration from this file instead of `.env` in the current directory |
+| `--log-format pretty\|json` | the format of the events (default: `HR_SYNC_LOG_FORMAT`, otherwise `pretty`) |
+
+| Exit code | Meaning |
+|---|---|
+| 0 | success, also with an empty plan or with notices |
+| 1 | at least one operation failed or was skipped |
+| 2 | aborted, e.g. because of the configuration or an error while loading |
+
+> [!NOTE]
+> weclapp can't be a target yet, and the test mode (`HR_SYNC_ENVIRONMENT=test`) is not available yet. Both abort the
+> run with exit code 2, so for now, every run needs `--target decidalo`.
 
 ## Development
 

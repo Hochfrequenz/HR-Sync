@@ -23,7 +23,7 @@ import aiohttp
 from decidalo_client import DecidaloClientError
 from decidalo_client.models import ImportItemStatusType, UserBatchInput, UserImportResults, UserInput, UserOverview
 
-from hr_sync.events import emit, error_fields, wide_event
+from hr_sync.events import emit_operation, error_fields, wide_event
 from hr_sync.model import EmployeeRecord, Snapshot, SnapshotBuilder, System, TargetSystem
 from hr_sync.plan import Operation, OperationResult, OperationType, Outcome
 
@@ -147,7 +147,7 @@ def execute_decidalo(
     ]
     results = evaluate_batches(batches, send_batches(client, users))
     for result in results:
-        _emit_operation(result)
+        emit_operation(result)
     return results
 
 
@@ -235,20 +235,3 @@ def evaluate_batches(
                 )
             )
     return results
-
-
-def _emit_operation(result: OperationResult) -> None:
-    levels = {Outcome.ERROR: "ERROR", Outcome.SKIPPED: "WARNING"}
-    fields: dict[str, object] = {
-        "employee_number": result.operation.record.employee_number,
-        "system": result.operation.system,
-        "type": result.operation.type,
-        "outcome": result.outcome,
-    }
-    if result.target_id is not None:
-        fields["target_id"] = result.target_id
-    if result.detail is not None:
-        fields["detail"] = result.detail
-    if result.error is not None:
-        fields["error"] = result.error
-    emit("sync.operation", level=levels.get(result.outcome, "INFO"), **fields)

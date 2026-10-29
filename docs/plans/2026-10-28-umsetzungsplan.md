@@ -38,7 +38,7 @@ HR-Sync überträgt beim Onboarding die Stammdaten neuer Mitarbeiter aus **Perso
 | Relevante Personio-Mitarbeiter | **nur mit einem Employment im Status `ACTIVE`, dessen Startdatum heute oder in der Vergangenheit liegt** |
 | Eintrittsdatum | `employment_start_date` dieses Employments. Gibt es mehrere, gilt das mit dem neuesten Startdatum |
 | Datumswerte | tagesgenau als `datetime.date`, ohne Uhrzeit und ohne Zeitzonen. Alle Mitarbeiter sind in Deutschland. „Heute“ ist `date.today()` beim Start des Laufs |
-| Programmstruktur | synchron, gut wart- und debugbar. async nur gekapselt in den Adaptern für Personio und Decidalo, mit einem `asyncio.run` je Lauf und System. Anfragen nacheinander. Jeder Adapter trennt Laden (IO) und Mappen (reine Logik), siehe Abschnitt 3 |
+| Programmstruktur | synchron, gut wart- und debugbar. async nur gekapselt in den Adaptern für Personio und Decidalo, mit einem `asyncio.run` je Schritt (Laden, Ausführen) und System. Anfragen nacheinander. Jeder Adapter trennt Laden (IO) und Mappen (reine Logik), siehe Abschnitt 3 |
 | Logging | Wide Events mit Loguru. Ausgabe umschaltbar (lesbar oder JSON) |
 | Personenbezogene Daten in Logs | nein: nur MA-Nummer, systeminterne IDs, Feldnamen und Zahlen |
 | Betrieb | zeitgesteuert auf einem internen Server (Cron, Task Scheduler oder Container-Job), die Secrets liegen dort in einer `.env`. Welcher Server, welches Intervall und wer benachrichtigt wird, ist offen (O9) |
@@ -51,6 +51,9 @@ HR-Sync überträgt beim Onboarding die Stammdaten neuer Mitarbeiter aus **Perso
 | Testumgebungen | In Testumgebungen landen keine echten Namen oder E-Mails: Im Test-Modus (`HR_SYNC_ENVIRONMENT=test`) wird anonymisiert. MA-Nummer und Eintrittsdatum bleiben echt |
 | Decidalo im Test-Modus | eigene URL und eigener Key (`DECIDALO_TEST_BASE_URL`, `DECIDALO_TEST_API_KEY`), `hasLogin=false`. Die Testumgebung ist nur im Test-Modus erreichbar |
 | Integrationstest | Personio produktiv lesen, nur den ersten Planeintrag in die Decidalo-Testumgebung schreiben. Danach die Testperson wahlweise automatisch löschen (erst nachdem geprüft ist, dass sie angelegt wurde) oder zum Ansehen liegen lassen. Läuft nur lokal |
+| weclapp vor AP 5 | `--target weclapp` ist wählbar und gehört zum Standard. Solange der weclapp-Adapter fehlt, bricht ein Lauf mit weclapp als Ziel mit Exit-Code 2 ab (`problem=target_not_available`). Bis AP 5 braucht jeder Lauf also `--target decidalo`. CLI und Standard ändern sich mit AP 5 nicht mehr |
+| Test-Modus vor AP 8 | `HR_SYNC_ENVIRONMENT=test` bricht mit Exit-Code 2 ab (`problem=test_mode_not_available`), bis der Test-Modus steht. So glaubt niemand, er laufe anonymisiert |
+| Unerwartete Fehler | Jeder Fehler beendet den Lauf mit einem `sync.run` mit `outcome=error` und Exit-Code 2, auch ein Programmierfehler. Geloggt werden Fehlertyp und Codestelle (Modul, Funktion, Zeile), nie Meldung, Traceback oder Dateipfad (siehe Abschnitt 6). Ein Abbruch mit Strg+C erscheint als `sync.run` mit `outcome=error` und `error.type=KeyboardInterrupt` und beendet den Prozess wie üblich |
 
 ## 2. Ablauf
 
@@ -326,11 +329,15 @@ class EmployeePlan(BaseModel):
 class SyncPlan(BaseModel):
     employees: list[EmployeePlan]    # sortiert nach MA-Nummer, damit "der erste Eintrag" eindeutig ist
     only_in_target: dict[TargetSystem, int]  # je Zielsystem: Personen, die in Personio gar nicht vorkommen
-    notices: list[Notice]            # Hinweise aus der Planung, z. B. email_in_use
+    notices: list[Notice]            # Hinweise aus der Planung, z. B. email_in_use, und zu --only
 
     @property
     def is_empty(self) -> bool: ...   # True, wenn es keine Operationen gibt; Abweichungen zählen nicht
+
+    def operations_for(self, system: TargetSystem) -> tuple[Operation, ...]: ...  # nach MA-Nummer sortiert
 ```
+
+Mit `only` ruft `build_plan` auch `check_only` auf. Die Hinweise zu `--only` stehen also in `SyncPlan.notices` (AP 7).
 
 **Ergebnis der Ausführung:** Die Executor liefern je Operation ein
 `OperationResult(operation, outcome, target_id, detail, error)`.
@@ -422,17 +429,18 @@ Umgesetzt in [`events.py`](../../src/hr_sync/events.py) (AP 3):
 |---|---|
 | `wide_event(name, level="INFO", **fields)` | Kontextmanager für eine Arbeitseinheit. Gibt am Ende genau ein Event aus, mit `duration_ms` und `outcome` (`success`, sofern der Aufrufer nichts anderes setzt). Bei einer Exception (auch einem Abbruch wie Strg+C) ist `outcome=error`, das Event bekommt `error` und die Exception wird weitergereicht. Events mit `outcome=error` haben das Level ERROR |
 | `emit(name, level="INFO", **fields)` | ein Event ohne Arbeitseinheit, z. B. `sync.notice` mit WARNING |
+| `emit_operation(result)` | das Event `sync.operation` zu einem `OperationResult`. Die Executor und der Dry-Run nutzen es gemeinsam (AP 7) |
 | `run_context(**fields)` | hängt Felder wie `run_id`, `environment`, `dry_run` an alle Events im Block (über `logger.contextualize`) |
 | `error_fields(error)` | die Felder einer Exception, die geloggt werden dürfen (siehe „Keine Fehlertexte“) |
 | `configure_logging(log_format, stream=None)` | richtet die Ausgabe ein und leitet die Logs der Client-Bibliotheken um |
 
 | Event | Wann | Inhalt (Auswahl) | Level |
 |---|---|---|---|
-| `sync.run` | einmal, am Ende | `run_id`, `environment`, `dry_run`, `only`, `targets`, Dauer, Summen je System und Operation, Anzahl Hinweise und Fehler, `exit_code` | INFO / ERROR |
+| `sync.run` | einmal, am Ende | `run_id`, `environment`, `dry_run`, `targets`, `only` (nur wenn angegeben), Dauer, `results` (Anzahl je System, Typ und Ergebnis, z. B. `results.decidalo.create.success=3`), `notices`, `errors`, `exit_code`. Bei einem Abbruch `error`, bei Konfigurationsfehlern mit `problem` und `variables` (nur die Namen) | INFO; ERROR bei Exit-Code 1 oder 2 |
 | `sync.load` | je System | `system`, `records`, `notices`, Dauer; bei Personio zusätzlich `persons`, `without_id` und `not_relevant` je Grund (`employment_not_active`, `start_date_in_future`); bei Decidalo `users` und `deactivated` | INFO / ERROR |
-| `sync.notice` | je Datenproblem | `system`, `reason`, `system_id` | **WARNING** |
+| `sync.notice` | je Datenproblem | `system`, `reason` und, falls gesetzt, `system_id`, `employee_number`, `detail` | **WARNING** |
 | `sync.deviation` | je Person und Zielsystem mit Abweichung | `employee_number`, `system`, `fields` | INFO |
-| `sync.plan` | einmal | Operationen je System und Typ, `is_empty`, `only_in_target` je System | INFO |
+| `sync.plan` | einmal | `operations` je System und Typ, `deviations` je System, `only_in_target` je System, `notices`, `is_empty` | INFO |
 | `sync.operation` | je Operation | `employee_number`, `system`, `type`, `outcome` (`success`, `error`, `skipped`, `dry_run`), `target_id`, `detail` (z. B. Zeilenstatus), `error` | INFO; ERROR bei `error`, WARNING bei `skipped` |
 
 - **Keine personenbezogenen Werte:** nur MA-Nummer, systeminterne IDs, Feldnamen und Zahlen. Ein Test prüft, dass
@@ -444,12 +452,17 @@ Umgesetzt in [`events.py`](../../src/hr_sync/events.py) (AP 3):
   - bei weclapp `problem_type` und die betroffenen Properties (`locations`, aus `location` der `validation_errors`),
     nicht die Meldungstexte
   - bei Decidalo der `status` der Zeile, nicht `errorMessage` (setzt der Executor in AP 6)
+  - die Codestelle (AP 7): `module`, `function` und `line` des innersten Frames aus `hr_sync`. Das ist die Stelle, an
+    der HR-Sync den Fehler ausgelöst oder die Bibliothek aufgerufen hat, die ihn ausgelöst hat. Frames aus `events.py`
+    zählen nicht, sie loggen den Fehler nur. Der Dateipfad fehlt bewusst, weil er den Benutzernamen enthalten kann.
+    Ohne Frame aus `hr_sync` gibt es keine Codestelle
 
   Loguru läuft mit `diagnose=False`, und die Events enthalten keine Tracebacks, weil diese Variablenwerte zeigen können.
 - **Im Dry-Run** gibt es für jede geplante Operation ein `sync.operation` mit `outcome=dry_run`. So ist pro Person
   sichtbar, was passieren würde.
-- **Ausgabe umschaltbar:** `--log-format pretty|json` bzw. `HR_SYNC_LOG_FORMAT`, Standard ist `pretty`. Die CLI-Option
-  kommt mit AP 7, `configure_logging()` steht schon. Jedes Event ist eine Zeile auf stdout:
+- **Ausgabe umschaltbar:** `--log-format pretty|json` bzw. `HR_SYNC_LOG_FORMAT`, Standard ist `pretty`. Die Option
+  hat Vorrang vor der Variable. Lässt sich die Konfiguration nicht lesen, nutzt das Abbruch-Event die Option oder
+  `pretty`. Jedes Event ist eine Zeile auf stdout:
   - `json`: ein **flaches** JSON-Objekt mit `timestamp`, `level`, `event` und den Feldern des Events, z. B.
     `{"timestamp": "…", "level": "INFO", "event": "sync.load", "system": "personio", "records": 12, "outcome": "success", "duration_ms": 340}`.
     Verschachtelte Felder wie `error` bleiben Objekte. Bewusst nicht Loguru mit `serialize=True`: Das legt die Felder
@@ -474,7 +487,7 @@ Tabelle mit *(HF)* markiert und werden im README als solche dokumentiert, damit 
 
 | Variable | Bedeutung |
 |---|---|
-| `PERSONIO_CLIENT_ID`, `PERSONIO_CLIENT_SECRET`, `PERSONIO_APP_ID` | Personio-API |
+| `PERSONIO_CLIENT_ID`, `PERSONIO_CLIENT_SECRET`, `PERSONIO_APP_ID` | Personio-API. `PERSONIO_APP_ID` hat den Standard `HR_SYNC` |
 | `PERSONIO_EMPLOYEE_NUMBER_ATTRIBUTE` | Standard `company_employee_id` *(HF)* |
 | `WECLAPP_API_TOKEN`, `WECLAPP_BASE_URL` bzw. `WECLAPP_TENANT` | weclapp-API (wie `WeclappConfig.from_env()`) |
 | `WECLAPP_EMPLOYEE_NUMBER_ATTRIBUTE_ID` | ID der Custom-Attribute-Definition für die MA-Nummer am User. Pflicht, wenn weclapp Ziel ist; ohne Standardwert, weil die ID nur im eigenen Tenant gilt. Bei Hochfrequenz `7621` *(HF)* |
@@ -493,7 +506,8 @@ umgesetzt mit `argparse` (keine weitere Abhängigkeit).
   wenn HR-Sync als Tool installiert ist (`uv tool install`, `pipx`) und aus einem beliebigen Verzeichnis läuft.
 
 - `--target` (mehrfach angebbar) wählt die Zielsysteme. Ohne Angabe laufen beide. Systeme, die nicht gewählt sind,
-  werden weder geladen noch beschrieben, und ihre Zugangsdaten müssen nicht gesetzt sein.
+  werden weder geladen noch beschrieben, und ihre Zugangsdaten müssen nicht gesetzt sein. Bis AP 5 bricht ein Lauf
+  mit weclapp als Ziel ab (siehe 1.1).
 
 - `--only MA-NR` (mehrfach angebbar) begrenzt den Plan auf diese MA-Nummern.
   - Geladen wird trotzdem alles, damit Datenprobleme wie doppelte MA-Nummern erkannt werden.
@@ -513,8 +527,8 @@ umgesetzt mit `argparse` (keine weitere Abhängigkeit).
 | Code | Bedeutung |
 |---|---|
 | 0 | erfolgreich, auch bei leerem Plan oder Hinweisen |
-| 1 | mindestens eine Operation ist fehlgeschlagen |
-| 2 | Abbruch (Konfiguration, Authentifizierung, Fehler beim Laden, unzulässige Einstellungen im Test-Modus) |
+| 1 | mindestens eine Operation ist fehlgeschlagen oder wurde übersprungen (`skipped` folgt immer auf einen Fehler) |
+| 2 | Abbruch (Konfiguration, Authentifizierung, Fehler beim Laden, unzulässige Einstellungen im Test-Modus, unerwartete Fehler). Auch ungültige Optionen enden mit 2, wie bei `argparse` üblich |
 
 **Fehler beim Ausführen:**
 
@@ -523,6 +537,33 @@ umgesetzt mit `argparse` (keine weitere Abhängigkeit).
 - **Systemische Fehler** (Authentifizierung, Verbindung, Rate Limit nach allen Retries, 5xx): Die restlichen
   Operationen dieses Systems werden mit `outcome=skipped` übersprungen, das andere Zielsystem läuft weiter.
 - Der nächste Lauf holt alles Übersprungene nach, weil der Plan immer aus dem aktuellen Stand entsteht.
+
+Umgesetzt in [`config.py`](../../src/hr_sync/config.py), [`sync.py`](../../src/hr_sync/sync.py) und
+[`cli.py`](../../src/hr_sync/cli.py) (AP 7):
+
+- **Konfiguration:**
+  - `Settings` liest jede Variable über das gleichnamige Feld in Kleinbuchstaben, z. B. `personio_client_id`.
+  - Umgebungsvariablen haben Vorrang vor der `.env`. Leere Werte gelten als nicht gesetzt, eine aus `.env.example`
+    kopierte `.env` behält also die Standardwerte. Andere Variablen werden ignoriert.
+  - Die weclapp-Variablen liest HR-Sync erst ab AP 5, die `DECIDALO_TEST_*`-Variablen erst ab AP 8.
+  - `load_settings(env_file)` bricht ab, wenn die Datei aus `--env-file` fehlt (`problem=env_file_not_found`) oder
+    eine Variable einen ungültigen Wert hat (`problem=invalid_variables`). Im Event stehen nur die Namen der
+    Variablen, nie ihre Werte.
+  - `check_settings(settings, targets)` prüft vor jedem Zugriff auf ein System:
+    - Test-Modus: `test_mode_not_available` (bis AP 8)
+    - weclapp als Ziel: `target_not_available` (bis AP 5)
+    - fehlende Zugangsdaten: `missing_variables`. Die von Personio sind immer nötig, `DECIDALO_API_KEY` nur mit
+      Decidalo als Ziel.
+- **Orchestrierung:** Die Schritte lassen sich einzeln aufrufen, z. B. vom Integrationstest in AP 8:
+  - `connect` erzeugt die Clients ohne IO. Decidalo nutzt immer die Standard-URL des Clients, also die Produktion.
+  - `load_snapshots` lädt nacheinander und loggt die Hinweise jedes Snapshots, auch mit `--only`.
+  - `create_plan` erstellt den Plan und loggt Hinweise, Abweichungen und `sync.plan`.
+  - `execute_plan` führt den Plan aus, erst weclapp, dann Decidalo. Im Dry-Run gibt es je Operation ein
+    `sync.operation` mit `outcome=dry_run`.
+  - `run` macht alles zusammen, fängt jeden Fehler ab und loggt `sync.run` mit dem Exit-Code. Lässt sich schon die
+    Konfiguration nicht lesen, loggt `abort` das `sync.run`.
+- **CLI:** `--only` und `--target` nehmen mehrere Werte auf einmal (`--only 00165 00200`) und lassen sich
+  wiederholen. Die Hilfe nennt die Exit-Codes.
 
 ## 8. Testumgebungen und Anonymisierung
 
@@ -680,6 +721,7 @@ src/hr_sync/
     ├── weclapp.py        # fetch + map + load, dazu der Executor
     └── decidalo.py       # fetch + map + load, dazu der Executor
 unittests/
+├── fakes.py              # Fake-Clients für Personio und Decidalo, auch für die Ende-zu-Ende-Tests
 └── integration/          # gegen die Decidalo-Testumgebung, nur lokal
 ```
 
@@ -697,7 +739,7 @@ Fake-Client, `aioresponses` ist nicht nötig.
 | Personio | die Logik (`map_persons`, Relevanzregel) mit einfachen Daten ohne Client; das Laden (`fetch_persons`) mit einem kleinen Fake-Client hinter dem Protocol `PersonioSource`. mypy prüft, dass der echte `PersonioClient` es erfüllt |
 | Decidalo | dasselbe Muster: Mapping und Auswertung der Zeilen mit einfachen Daten, Laden und Senden mit einem Fake-Client hinter dem Protocol `DecidaloTarget`. mypy prüft, dass der echte `DecidaloClient` es erfüllt. Ein Test prüft, dass `errorMessage` und Fehlertexte nicht in den Events landen |
 | weclapp | `weclapp_client.testing.FakeWeclapp` |
-| Ende-zu-Ende | ganzer Lauf gegen die Fakes; **ein zweiter Lauf erzeugt keine Schreibzugriffe**; Dry-Run schreibt nichts |
+| Ende-zu-Ende | ganzer Lauf gegen die Fakes; **ein zweiter Lauf erzeugt keine Schreibzugriffe**; Dry-Run schreibt nichts. Umgesetzt in `test_sync.py` (über `run`) und `test_cli.py` (über `main`, mit der JSON-Ausgabe auf stdout). Ein Fixture in `conftest.py` entfernt die Variablen von HR-Sync aus der Umgebung und wechselt in ein leeres Verzeichnis, damit kein Test echte Zugangsdaten findet |
 | Events | Loguru-Sink in eine Liste; Felder und Level prüfen; keine personenbezogenen Werte |
 | Test-Modus | jedes Feld hat eine Anonymisierungsregel; der Payload an Decidalo enthält keine echten Namen oder E-Mails; `hasLogin=false`; Abbruch bei weclapp als Ziel, bei fehlenden `DECIDALO_TEST_*` oder bei der produktiven Decidalo-URL; der Produktionsmodus nutzt die produktive URL, auch wenn `DECIDALO_TEST_*` gesetzt sind |
 | Integration | gegen die Decidalo-Testumgebung, siehe [8.3](#83-integrationstest-gegen-die-decidalo-testumgebung) |
@@ -715,7 +757,7 @@ Die Reihenfolge baut zuerst den Kern ohne IO und hängt dann die Systeme an:
 | 4 | **Personio-Loader** mit Relevanzfilter und Mapping | Snapshot aus Personio, nur relevante Mitarbeiter |
 | 5 | **weclapp-Loader und -Executor** (`CREATE`, `COMPLETE`) | gegen `FakeWeclapp` getestet |
 | 6 | **Decidalo-Loader und -Executor** (synchroner Import über `ImportSync`, Ergebnisse pro Zeile) | mit Fake-Client und einfachen Daten getestet |
-| 7 | **Orchestrierung, CLI** (inklusive `--only`, `--target` und `--env-file`), **Dry-Run, Exit-Codes**, Ende-zu-Ende-Tests | `hr-sync --dry-run` läuft; Tests zeigen, dass `--only` alle anderen Personen aus dem Plan nimmt und `--target` die anderen Systeme nicht anfasst |
+| 7 | **Orchestrierung, CLI** (inklusive `--only`, `--target` und `--env-file`), **Dry-Run, Exit-Codes**, Ende-zu-Ende-Tests. weclapp und der Test-Modus brechen bis AP 5 bzw. AP 8 ab (siehe 1.1) | `hr-sync --dry-run --target decidalo` läuft; Tests zeigen, dass `--only` alle anderen Personen aus dem Plan nimmt und `--target` die anderen Systeme nicht anfasst |
 | 8 | **Test-Modus und Integrationstest:** Anonymisierung, Prüfungen für den Test-Modus, Integrationstests gegen die Decidalo-Testumgebung mit wählbarem Aufräumen | `uv run pytest -m integration_write` legt den ersten Planeintrag anonymisiert in der Testumgebung an, prüft ihn und räumt auf |
 | 9 | **Testlauf:** Dry-Run gegen die echten Systeme (nur lesend) und offene Punkte klären. Dann der erste echte Lauf, **nur mit `--only <MA-Nummer der Testperson>`**, vorher mit denselben Optionen als Dry-Run. Voraussetzung: Die Testperson steht mit MA-Nummer, E-Mail und einem aktiven Employment (Start heute oder früher) in Personio | Go-live-Entscheidung |
 | 10 | **PyPI-Paket** (siehe [Abschnitt 9](#9-pypi-paket)): `LICENSE`, README als Nutzerdoku, Publish-Workflow aktivieren, Trusted Publisher auf PyPI und Environment `release` einrichten, Python-Obergrenze prüfen, Release als Pre-Release oder stabil je nach Clients. Zeitpunkt offen (O14) | `hochfrequenz-hr-sync` auf PyPI |

@@ -131,6 +131,24 @@ class TestBuildPlan:
     def test_only_restricts_the_plan_to_the_given_employee_numbers(self) -> None:
         plan = build_plan(_snapshot(System.PERSONIO, ERIKA, MAX), _targets(), only={"00200"})
         assert [employee.employee_number for employee in plan.employees] == ["00200"]
+        assert plan.notices == ()
+
+    def test_only_notes_employee_numbers_that_cant_be_planned(self) -> None:
+        plan = build_plan(_snapshot(System.PERSONIO, ERIKA), _targets(), only={"00165", "00999"})
+        assert [employee.employee_number for employee in plan.employees] == ["00165"]
+        assert plan.notices == (
+            Notice(system=System.PERSONIO, reason=NoticeReason.UNKNOWN_EMPLOYEE_NUMBER, employee_number="00999"),
+        )
+
+    def test_operations_for(self) -> None:
+        plan = build_plan(_snapshot(System.PERSONIO, MAX, ERIKA), _targets(decidalo=_snapshot(System.DECIDALO, MAX)))
+        assert [operation.record.employee_number for operation in plan.operations_for(TargetSystem.WECLAPP)] == [
+            "00165",
+            "00200",
+        ]
+        assert [operation.record.employee_number for operation in plan.operations_for(TargetSystem.DECIDALO)] == [
+            "00165"
+        ]
 
     def test_employees_are_sorted_by_employee_number(self) -> None:
         plan = build_plan(_snapshot(System.PERSONIO, MAX, ERIKA), _targets())

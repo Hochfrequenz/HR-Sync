@@ -1,13 +1,22 @@
 import io
 import json
 import logging
-import sys
-from collections.abc import Iterator
+from unittest.mock import ANY
 
 import pytest
-from loguru import logger
+from pydantic import ValidationError
 
-from hr_sync.events import configure_logging, emit, error_fields, run_context, wide_event
+from hr_sync.events import configure_logging, emit, emit_operation, error_fields, run_context, wide_event
+from hr_sync.model import EmployeeRecord, TargetSystem
+from hr_sync.plan import Operation, OperationResult, OperationType, Outcome
+from hr_sync.systems.decidalo import execute_decidalo
+from unittests.fakes import FakeDecidalo
+
+_OPERATION = Operation(
+    system=TargetSystem.DECIDALO,
+    type=OperationType.CREATE,
+    record=EmployeeRecord(employee_number="00165", first_name="Erika", email="erika.musterfrau@example.com"),
+)
 
 
 class _ApiError(Exception):
@@ -30,17 +39,6 @@ class _ValidationError(Exception):
         self.status_code = 400
         self.problem_type = "/webapp/view/api/errors.html#validation"
         self.validation_errors = (_Issue("lastName"), _Issue("email"))
-
-
-@pytest.fixture
-def restore_logging() -> Iterator[None]:
-    """Restores the loguru and standard logging setup that configure_logging replaces."""
-    handlers, level = logging.root.handlers[:], logging.root.level
-    yield
-    logger.remove()
-    logger.add(sys.stderr)
-    logging.root.handlers[:] = handlers
-    logging.root.setLevel(level)
 
 
 class TestWideEvent:
@@ -141,6 +139,67 @@ class TestErrorFields:
             "problem_type": "/webapp/view/api/errors.html#validation",
             "locations": ["lastName", "email"],
         }
+
+    def test_code_location_in_hr_sync(self) -> None:
+        with pytest.raises(ValueError, match="batch_size") as error_info:
+            execute_decidalo(FakeDecidalo(), [], employee_type_name=None, has_login=None, batch_size=0)
+        assert error_fields(error_info.value) == {
+            "type": "ValueError",
+            "module": "hr_sync.systems.decidalo",
+            "function": "execute_decidalo",
+            "line": ANY,
+        }
+
+    def test_no_code_location_without_a_frame_of_hr_sync(self) -> None:
+        # pydantic raises the error, and the validators of HR-Sync have already returned
+        with pytest.raises(ValidationError) as error_info:
+            EmployeeRecord(employee_number=" ")
+        assert error_fields(error_info.value) == {"type": "ValidationError"}
+
+    def test_frames_of_the_logging_are_no_code_location(self, events: list[dict[str, object]]) -> None:
+        with pytest.raises(ValueError, match="Erika"), wide_event("sync.load"):
+            raise ValueError("Erika")
+        assert events[0]["error"] == {"type": "ValueError"}
+
+
+class TestEmitOperation:
+    """
+    Tests of the event of an executed or planned operation.
+    """
+
+    @pytest.mark.parametrize(
+        ("outcome", "level"),
+        [
+            pytest.param(Outcome.SUCCESS, "INFO", id="success"),
+            pytest.param(Outcome.DRY_RUN, "INFO", id="dry run"),
+            pytest.param(Outcome.SKIPPED, "WARNING", id="skipped"),
+            pytest.param(Outcome.ERROR, "ERROR", id="error"),
+        ],
+    )
+    def test_level(self, events: list[dict[str, object]], outcome: Outcome, level: str) -> None:
+        emit_operation(OperationResult(operation=_OPERATION, outcome=outcome))
+        assert events == [
+            {
+                "event": "sync.operation",
+                "level": level,
+                "employee_number": "00165",
+                "system": "decidalo",
+                "type": "create",
+                "outcome": outcome,
+            }
+        ]
+
+    def test_optional_fields(self, events: list[dict[str, object]]) -> None:
+        result = OperationResult(
+            operation=_OPERATION, outcome=Outcome.ERROR, target_id="42", detail="Failed", error={"type": "ValueError"}
+        )
+        emit_operation(result)
+        assert (events[0]["target_id"], events[0]["detail"], events[0]["error"]) == (
+            "42",
+            "Failed",
+            {"type": "ValueError"},
+        )
+        assert "Erika" not in str(events[0])
 
 
 @pytest.mark.usefixtures("restore_logging")

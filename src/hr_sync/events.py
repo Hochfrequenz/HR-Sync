@@ -15,6 +15,8 @@ from typing import TYPE_CHECKING, Literal, TextIO
 
 from loguru import logger
 
+from hr_sync.plan import OperationResult, Outcome
+
 if TYPE_CHECKING:
     from loguru import Message, Record
 
@@ -22,6 +24,12 @@ LogFormat = Literal["pretty", "json"]
 
 _ERROR_ATTRIBUTES = ("status_code", "trace_id", "problem_type")
 """attributes of the client exceptions that are safe to log (HTTP status, Personio trace id, weclapp problem type)"""
+
+_PACKAGE = __name__.partition(".")[0]
+"""the package of HR-Sync, whose frames name the code location of an error"""
+
+_OPERATION_LEVELS = {Outcome.ERROR: "ERROR", Outcome.SKIPPED: "WARNING"}
+"""the levels of the events ``sync.operation`` that are not INFO"""
 
 CLIENT_LOG_LEVEL = logging.WARNING
 """the level from which the standard logging of the client libraries is passed on"""
@@ -72,6 +80,26 @@ def emit(name: str, *, level: str | int = "INFO", **fields: object) -> None:
     logger.bind(**fields).log(level, name)
 
 
+def emit_operation(result: OperationResult) -> None:
+    """
+    Logs the event ``sync.operation`` of an executed or planned operation: as ERROR if it failed, as WARNING if it was
+    skipped, otherwise as INFO.
+    """
+    fields: dict[str, object] = {
+        "employee_number": result.operation.record.employee_number,
+        "system": result.operation.system,
+        "type": result.operation.type,
+        "outcome": result.outcome,
+    }
+    if result.target_id is not None:
+        fields["target_id"] = result.target_id
+    if result.detail is not None:
+        fields["detail"] = result.detail
+    if result.error is not None:
+        fields["error"] = result.error
+    emit("sync.operation", level=_OPERATION_LEVELS.get(result.outcome, "INFO"), **fields)
+
+
 @contextmanager
 def run_context(**fields: object) -> Iterator[None]:
     """
@@ -87,7 +115,7 @@ def error_fields(error: BaseException) -> dict[str, object]:
 
     The message of an exception may contain personal data (e.g. an API error that repeats a name), so it is never
     logged. Only the type and the attributes in :data:`_ERROR_ATTRIBUTES` are, plus the names of the properties that
-    a weclapp validation error refers to.
+    a weclapp validation error refers to and the code location (see :func:`_code_location`).
     """
     fields: dict[str, object] = {"type": type(error).__name__}
     for attribute in _ERROR_ATTRIBUTES:
@@ -101,7 +129,27 @@ def error_fields(error: BaseException) -> dict[str, object]:
     ]
     if locations:
         fields["locations"] = locations
+    fields.update(_code_location(error))
     return fields
+
+
+def _code_location(error: BaseException) -> dict[str, object]:
+    """
+    Returns module, function and line of the innermost frame of HR-Sync in the traceback: where HR-Sync raised the
+    error or called the library that raised it. File paths are left out, because they may contain user names.
+
+    Frames of this module are skipped, because they only log the error. Without a frame of HR-Sync, e.g. for an
+    exception that was never raised, the result is empty.
+    """
+    location: dict[str, object] = {}
+    traceback = error.__traceback__
+    while traceback is not None:
+        frame = traceback.tb_frame
+        module = frame.f_globals.get("__name__")
+        if isinstance(module, str) and module != __name__ and module.partition(".")[0] == _PACKAGE:
+            location = {"module": module, "function": frame.f_code.co_name, "line": traceback.tb_lineno}
+        traceback = traceback.tb_next
+    return location
 
 
 class _InterceptHandler(logging.Handler):
