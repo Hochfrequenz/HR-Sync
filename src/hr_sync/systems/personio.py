@@ -38,7 +38,9 @@ async def load_personio(
     Only the persons with status ``ACTIVE`` are loaded; that includes onboarding persons and persons on leave, whose
     employments :func:`relevant_employment` then sorts out. Persons that are not relevant yield no notice, so future
     employees without employee number or e-mail address don't cause warnings. The employee number is the value of the
-    custom attribute with the id ``employee_number_attribute``. Logs one event ``sync.load``.
+    custom attribute with the id ``employee_number_attribute``. ``today`` is the day of the run, i.e. ``date.today()``:
+    dates are compared by the day only, without time zones, because all employees are in Germany. Logs one event
+    ``sync.load``.
     """
     with wide_event("sync.load", system=System.PERSONIO) as event:
         persons = [person async for person in client.iter_persons(status="ACTIVE")]

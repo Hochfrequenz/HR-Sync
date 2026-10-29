@@ -34,6 +34,7 @@ HR-Sync überträgt beim Onboarding die Stammdaten neuer Mitarbeiter aus **Perso
 | Neue weclapp-User | `status=ACTIVE`. Aktive User kosten Lizenzgebühren, die Kosten sind eingeplant |
 | Relevante Personio-Mitarbeiter | **nur mit einem Employment im Status `ACTIVE`, dessen Startdatum heute oder in der Vergangenheit liegt** |
 | Eintrittsdatum | `employment_start_date` dieses Employments. Gibt es mehrere, gilt das mit dem neuesten Startdatum |
+| Datumswerte | tagesgenau als `datetime.date`, ohne Uhrzeit und ohne Zeitzonen. Alle Mitarbeiter sind in Deutschland. „Heute“ ist `date.today()` beim Start des Laufs |
 | Logging | Wide Events mit Loguru. Ausgabe umschaltbar (lesbar oder JSON) |
 | Personenbezogene Daten in Logs | nein: nur MA-Nummer, systeminterne IDs, Feldnamen und Zahlen |
 | Betrieb | zeitgesteuert auf einem internen Server (Cron, Task Scheduler oder Container-Job), die Secrets liegen dort in einer `.env`. Welcher Server, welches Intervall und wer benachrichtigt wird, ist offen (O9) |
@@ -122,8 +123,8 @@ Die Prüfung läuft pro Mitarbeiter in dieser Reihenfolge:
 2. Sonst: Gibt es ein Employment mit `ACTIVE` ohne Startdatum? Dann gibt es ein Warn-Event `missing_entry_date`.
 3. Sonst ist der Mitarbeiter nicht relevant, mit dem Grund `employment_not_active` oder `start_date_in_future`.
 
-„Heute“ ist das Datum beim Start des Laufs in der Zeitzone aus `HR_SYNC_TIMEZONE` (Standard `Europe/Berlin`). Der Loader bekommt es als Parameter, damit Tests es
-festlegen können.
+„Heute“ ist `date.today()` beim Start des Laufs. Es zählt nur der Tag, Zeitzonen spielen keine Rolle, weil alle
+Mitarbeiter in Deutschland sind. Der Loader bekommt das Datum als Parameter, damit Tests es festlegen können.
 
 **Laden und mappen:**
 
@@ -413,7 +414,6 @@ Tabelle mit *(HF)* markiert und werden im README als solche dokumentiert, damit 
 | `DECIDALO_EMPLOYEE_TYPE_NAME` | Standard `Internal` *(HF)* |
 | `DECIDALO_HAS_LOGIN` | Standard `true` *(HF)*; im Test-Modus wirkungslos (immer `false`) |
 | `HR_SYNC_ENVIRONMENT` | `production` (Standard) oder `test`, siehe [Abschnitt 8](#8-testumgebungen-und-anonymisierung) |
-| `HR_SYNC_TIMEZONE` | Zeitzone für „heute“ in der Relevanzregel, Standard `Europe/Berlin` *(HF)* |
 | `HR_SYNC_LOG_FORMAT` | `pretty` oder `json` |
 
 **CLI:** `hr-sync [--dry-run] [--only MA-NR ...] [--target weclapp|decidalo ...] [--env-file PFAD] [--log-format pretty|json]`,
@@ -553,7 +553,7 @@ und/oder Decidalo verbinden.
 ### 9.1 Nutzbar für andere Firmen
 
 - **Firmenspezifisches ist konfigurierbar** (Abschnitt 7): das Attribut der MA-Nummer in Personio, die ID des Custom
-  Attributes in weclapp, der Status neuer weclapp-User, Mitarbeitertyp und Login in Decidalo und die Zeitzone. Die
+  Attributes in weclapp, der Status neuer weclapp-User sowie Mitarbeitertyp und Login in Decidalo. Die
   Standardwerte von Hochfrequenz sind im README als solche gekennzeichnet.
 - **Zielsysteme sind wählbar** mit `--target`. Wer nur weclapp oder nur Decidalo nutzt, braucht nur dessen
   Zugangsdaten.
