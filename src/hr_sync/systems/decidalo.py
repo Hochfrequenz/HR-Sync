@@ -27,8 +27,11 @@ from hr_sync.events import emit, error_fields, wide_event
 from hr_sync.model import EmployeeRecord, Snapshot, SnapshotBuilder, System, TargetSystem
 from hr_sync.plan import Operation, OperationResult, OperationType, Outcome
 
-DEFAULT_BATCH_SIZE = 100
-"""the number of users per ImportSync request; the API documents no limit (O7)"""
+MAX_BATCH_SIZE = 100
+"""
+the most users per ImportSync request; the API documents no limit, so this is a safety limit until the real limits
+and timeouts are checked in the test environment (O7)
+"""
 
 _REQUEST_ERRORS = (DecidaloClientError, aiohttp.ClientError, TimeoutError)
 """errors of a whole request; after one of them, the remaining batches are skipped"""
@@ -112,7 +115,7 @@ def execute_decidalo(
     *,
     employee_type_name: str | None,
     has_login: bool | None,
-    batch_size: int = DEFAULT_BATCH_SIZE,
+    batch_size: int = MAX_BATCH_SIZE,
 ) -> list[OperationResult]:
     """
     Creates the employees of the operations in Decidalo, in batches of at most ``batch_size`` users.
@@ -124,10 +127,11 @@ def execute_decidalo(
     data.
 
     Raises:
-        ValueError: if ``batch_size`` is not positive or an operation is not a Decidalo ``CREATE``.
+        ValueError: if ``batch_size`` is not between 1 and :data:`MAX_BATCH_SIZE` or an operation is not a Decidalo
+            ``CREATE``.
     """
-    if batch_size < 1:
-        raise ValueError(f"batch_size must be at least 1, got {batch_size}")
+    if not 1 <= batch_size <= MAX_BATCH_SIZE:
+        raise ValueError(f"batch_size must be between 1 and {MAX_BATCH_SIZE}, got {batch_size}")
     for operation in operations:
         if operation.system != TargetSystem.DECIDALO or operation.type != OperationType.CREATE:
             raise ValueError(f"Decidalo can only execute CREATE operations for Decidalo, got {operation.type}")

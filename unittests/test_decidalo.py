@@ -16,6 +16,7 @@ from decidalo_client.models import (
 from hr_sync.model import EmployeeRecord, Notice, NoticeReason, System, TargetSystem
 from hr_sync.plan import Operation, OperationResult, OperationType, Outcome
 from hr_sync.systems.decidalo import (
+    MAX_BATCH_SIZE,
     DecidaloTarget,
     execute_decidalo,
     fetch_users,
@@ -341,6 +342,19 @@ class TestExecuteDecidalo:
             _execute(client, [operation])
         assert client.batches == []
 
-    def test_batch_size_must_be_positive(self) -> None:
+    @pytest.mark.parametrize("batch_size", [0, -1, MAX_BATCH_SIZE + 1])
+    def test_batch_size_is_limited(self, batch_size: int) -> None:
+        client = _FakeDecidalo()
         with pytest.raises(ValueError, match="batch_size"):
-            _execute(_FakeDecidalo(), [_create()], batch_size=0)
+            _execute(client, [_create(f"{i:05}") for i in range(MAX_BATCH_SIZE + 1)], batch_size=batch_size)
+        assert client.batches == []
+
+    def test_default_batch_size_is_the_limit(self) -> None:
+        client = _FakeDecidalo()
+        execute_decidalo(
+            client,
+            [_create(f"{i:05}") for i in range(MAX_BATCH_SIZE + 1)],
+            employee_type_name="Internal",
+            has_login=True,
+        )
+        assert [len(batch) for batch in client.batches] == [MAX_BATCH_SIZE, 1]
