@@ -27,7 +27,8 @@ def build_plan(
     Creates the plan for the employees from the source (Personio) and the given target systems.
 
     Employees missing in a target system are created. Existing employees are only compared; their deviations are part
-    of the plan, but not changed. With ``only``, the plan is restricted to these employee numbers.
+    of the plan, but not changed. With ``only``, the plan is restricted to these employee numbers, and the employee
+    numbers that can't be part of it get a notice (see :func:`check_only`).
 
     If there is a data problem with an employee in any target system, nothing happens with this employee, in no
     target system: an employee is only created if everything about them is consistent. The problems are logged as
@@ -87,6 +88,8 @@ def build_plan(
                     employee_number=employee_number, operations=tuple(operations), deviations=tuple(deviations)
                 )
             )
+    if only is not None:
+        notices.extend(check_only(source, only))
     known = source.records.keys() | source.excluded.keys()
     return SyncPlan(
         employees=tuple(employees),

@@ -1,8 +1,5 @@
-import asyncio
-from collections.abc import AsyncIterator
 from datetime import date
-from types import TracebackType
-from typing import Literal
+from unittest.mock import ANY
 
 import pytest
 from personio_client import Employment, Person, PersonioClient
@@ -19,28 +16,11 @@ from hr_sync.systems.personio import (
     map_persons,
     relevant_employment,
 )
+from unittests.fakes import ATTRIBUTE, FakePersonio, personio_employment, personio_person
 
-ATTRIBUTE = "company_employee_id"
 EARLIER = date(2026, 9, 1)
 TODAY = date(2026, 10, 29)
 LATER = date(2026, 11, 1)
-
-
-def _employment(status: str | None = "ACTIVE", start: date | None = EARLIER) -> Employment:
-    return Employment(status=status, employment_start_date=start)
-
-
-def _person(
-    person_id: str | None = "1",
-    employee_number: str | None = "00165",
-    email: str | None = "erika.musterfrau@example.com",
-    first_name: str = "Erika",
-    last_name: str = "Musterfrau",
-) -> Person:
-    attributes = [PersonCustomAttribute(id="dynamic_4711", type="string", value="something else")]
-    if employee_number is not None:
-        attributes.append(PersonCustomAttribute(id=ATTRIBUTE, type="string", value=employee_number))
-    return Person(id=person_id, first_name=first_name, last_name=last_name, email=email, custom_attributes=attributes)
 
 
 def _loaded(person: Person, *employments: Employment) -> LoadedPerson:
@@ -49,51 +29,6 @@ def _loaded(person: Person, *employments: Employment) -> LoadedPerson:
 
 def _map(*persons: LoadedPerson) -> MappedPersons:
     return map_persons(persons, employee_number_attribute=ATTRIBUTE, today=TODAY)
-
-
-class _FakePersonio:
-    """An async Personio client that returns the given persons and employments and records how it is used."""
-
-    def __init__(self, entries: list[tuple[Person, list[Employment]]], fail_for: str | None = None) -> None:
-        self._persons = [person for person, _ in entries]
-        self._employments = {person.id: employments for person, employments in entries}
-        self._fail_for = fail_for
-        self.status_filters: list[str | None] = []
-        self.requested: list[str] = []
-        self.running = 0
-        self.max_running = 0
-        self.opened = False
-        self.closed = False
-
-    async def __aenter__(self) -> "_FakePersonio":
-        self.opened = True
-        return self
-
-    async def __aexit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc_value: BaseException | None,
-        traceback: TracebackType | None,
-    ) -> None:
-        self.closed = True
-
-    async def iter_persons(self, *, status: Literal["ACTIVE", "INACTIVE"] | None = None) -> AsyncIterator[Person]:
-        self.status_filters.append(status)
-        for person in self._persons:
-            yield person
-
-    async def iter_employments(self, person_id: str) -> AsyncIterator[Employment]:
-        self.requested.append(person_id)
-        self.running += 1
-        self.max_running = max(self.max_running, self.running)
-        try:
-            await asyncio.sleep(0)
-            if person_id == self._fail_for:
-                raise ConnectionError("Personio is not reachable")
-            for employment in self._employments[person_id]:
-                yield employment
-        finally:
-            self.running -= 1
 
 
 class TestRelevantEmployment:
@@ -130,7 +65,7 @@ class TestRelevantEmployment:
     def test_relevant_employment(
         self, employments: list[tuple[str | None, date | None]], expected: int | ExclusionReason
     ) -> None:
-        candidates = [_employment(status, start) for status, start in employments]
+        candidates = [personio_employment(status, start) for status, start in employments]
         result = relevant_employment(candidates, TODAY)
         if isinstance(expected, ExclusionReason):
             assert result == expected
@@ -160,7 +95,7 @@ class TestEmployeeNumberOf:
         assert employee_number_of(person, ATTRIBUTE) == expected
 
     def test_attribute_missing(self) -> None:
-        assert employee_number_of(_person(employee_number=None), ATTRIBUTE) is None
+        assert employee_number_of(personio_person(employee_number=None), ATTRIBUTE) is None
 
     def test_no_custom_attributes(self) -> None:
         assert employee_number_of(Person(id="1"), ATTRIBUTE) is None
@@ -172,7 +107,7 @@ class TestMapPersons:
     """
 
     def test_relevant_person(self) -> None:
-        mapped = _map(_loaded(_person(), _employment()))
+        mapped = _map(_loaded(personio_person(), personio_employment()))
         assert mapped.snapshot.records == {
             "00165": EmployeeRecord(
                 employee_number="00165",
@@ -189,15 +124,21 @@ class TestMapPersons:
         assert mapped.not_relevant == {}
 
     def test_entry_date_is_the_start_of_the_relevant_employment(self) -> None:
-        mapped = _map(_loaded(_person(), _employment("INACTIVE", date(2020, 1, 1)), _employment("ACTIVE", TODAY)))
+        mapped = _map(
+            _loaded(
+                personio_person(),
+                personio_employment("INACTIVE", date(2020, 1, 1)),
+                personio_employment("ACTIVE", TODAY),
+            )
+        )
         assert mapped.snapshot.records["00165"].entry_date == TODAY
 
     def test_not_relevant_persons_yield_no_notices(self) -> None:
         mapped = _map(
-            _loaded(_person("1", "00300", email=None), _employment("ONBOARDING", LATER)),
-            _loaded(_person("2", None, email=None), _employment("ACTIVE", LATER)),
-            _loaded(_person("3", "00400"), _employment("ACTIVE", LATER)),
-            _loaded(_person("4", "00500"), _employment("LEAVE", EARLIER)),
+            _loaded(personio_person("1", "00300", email=None), personio_employment("ONBOARDING", LATER)),
+            _loaded(personio_person("2", None, email=None), personio_employment("ACTIVE", LATER)),
+            _loaded(personio_person("3", "00400"), personio_employment("ACTIVE", LATER)),
+            _loaded(personio_person("4", "00500"), personio_employment("LEAVE", EARLIER)),
         )
         assert mapped.snapshot.records == {}
         assert mapped.snapshot.notices == []
@@ -213,12 +154,12 @@ class TestMapPersons:
 
     def test_data_problems_of_relevant_persons(self) -> None:
         mapped = _map(
-            _loaded(_person("1", "00100"), _employment("ACTIVE", None)),
-            _loaded(_person("2", None, email="max.mustermann@example.com"), _employment()),
-            _loaded(_person("3", "00300", email=None), _employment()),
-            _loaded(_person("4", "00400", email="shared@example.com"), _employment()),
-            _loaded(_person("5", "00500", email="Shared@example.com"), _employment()),
-            _loaded(_person("6", "00600", email="valid@example.com"), _employment()),
+            _loaded(personio_person("1", "00100"), personio_employment("ACTIVE", None)),
+            _loaded(personio_person("2", None, email="max.mustermann@example.com"), personio_employment()),
+            _loaded(personio_person("3", "00300", email=None), personio_employment()),
+            _loaded(personio_person("4", "00400", email="shared@example.com"), personio_employment()),
+            _loaded(personio_person("5", "00500", email="Shared@example.com"), personio_employment()),
+            _loaded(personio_person("6", "00600", email="valid@example.com"), personio_employment()),
         )
         assert set(mapped.snapshot.records) == {"00600"}
         assert sorted((notice.reason, notice.system_id) for notice in mapped.snapshot.notices) == [
@@ -232,7 +173,9 @@ class TestMapPersons:
         assert mapped.not_relevant == {}
 
     def test_person_without_id_is_skipped(self) -> None:
-        mapped = _map(_loaded(_person(None, "00165")), _loaded(_person("2", "00200"), _employment()))
+        mapped = _map(
+            _loaded(personio_person(None, "00165")), _loaded(personio_person("2", "00200"), personio_employment())
+        )
         assert set(mapped.snapshot.records) == {"00200"}
         assert mapped.without_id == 1
 
@@ -243,31 +186,33 @@ class TestFetchPersons:
     """
 
     def test_loads_the_active_persons_with_their_employments(self) -> None:
-        erika, max_ = _person("1", "00165"), _person("2", "00200")
-        client = _FakePersonio([(erika, [_employment()]), (max_, [_employment("INACTIVE"), _employment()])])
+        erika, max_ = personio_person("1", "00165"), personio_person("2", "00200")
+        client = FakePersonio(
+            [(erika, [personio_employment()]), (max_, [personio_employment("INACTIVE"), personio_employment()])]
+        )
         assert fetch_persons(client) == [
-            _loaded(erika, _employment()),
-            _loaded(max_, _employment("INACTIVE"), _employment()),
+            _loaded(erika, personio_employment()),
+            _loaded(max_, personio_employment("INACTIVE"), personio_employment()),
         ]
         assert client.status_filters == ["ACTIVE"]
         assert client.opened
         assert client.closed
 
     def test_requests_one_after_the_other(self) -> None:
-        client = _FakePersonio([(_person(str(i), f"00{i}00"), [_employment()]) for i in range(1, 6)])
+        client = FakePersonio([(personio_person(str(i), f"00{i}00"), [personio_employment()]) for i in range(1, 6)])
         fetch_persons(client)
         assert client.requested == ["1", "2", "3", "4", "5"]
         assert client.max_running == 1
 
     def test_person_without_id_gets_no_request(self) -> None:
-        without_id = _person(None, "00165")
-        client = _FakePersonio([(without_id, []), (_person("2", "00200"), [_employment()])])
+        without_id = personio_person(None, "00165")
+        client = FakePersonio([(without_id, []), (personio_person("2", "00200"), [personio_employment()])])
         persons = fetch_persons(client)
         assert persons[0] == _loaded(without_id)
         assert client.requested == ["2"]
 
     def test_client_is_closed_after_an_error(self) -> None:
-        client = _FakePersonio([(_person("1", "00100"), [_employment()])], fail_for="1")
+        client = FakePersonio([(personio_person("1", "00100"), [personio_employment()])], fail_for="1")
         with pytest.raises(ConnectionError):
             fetch_persons(client)
         assert client.closed
@@ -279,14 +224,14 @@ class TestLoadPersonio:
     """
 
     def test_event(self, events: list[dict[str, object]]) -> None:
-        client = _FakePersonio(
+        client = FakePersonio(
             [
-                (_person("1", "00100"), [_employment()]),
-                (_person("2", "00200", email=None), [_employment()]),
-                (_person("3", "00300"), [_employment("ONBOARDING", LATER)]),
-                (_person("4", "00400"), [_employment("ACTIVE", LATER)]),
-                (_person("5", "00500"), [_employment("LEAVE", EARLIER)]),
-                (_person(None, "00600"), []),
+                (personio_person("1", "00100"), [personio_employment()]),
+                (personio_person("2", "00200", email=None), [personio_employment()]),
+                (personio_person("3", "00300"), [personio_employment("ONBOARDING", LATER)]),
+                (personio_person("4", "00400"), [personio_employment("ACTIVE", LATER)]),
+                (personio_person("5", "00500"), [personio_employment("LEAVE", EARLIER)]),
+                (personio_person(None, "00600"), []),
             ]
         )
         snapshot = load_personio(client, employee_number_attribute=ATTRIBUTE, today=TODAY)
@@ -303,11 +248,19 @@ class TestLoadPersonio:
         assert event["not_relevant"] == {"employment_not_active": 2, "start_date_in_future": 1}
 
     def test_error_aborts_the_load(self, events: list[dict[str, object]]) -> None:
-        client = _FakePersonio([(_person("1", "00100"), [_employment()]), (_person("2", "00200"), [])], fail_for="2")
+        client = FakePersonio(
+            [(personio_person("1", "00100"), [personio_employment()]), (personio_person("2", "00200"), [])],
+            fail_for="2",
+        )
         with pytest.raises(ConnectionError):
             load_personio(client, employee_number_attribute=ATTRIBUTE, today=TODAY)
         assert events[0]["outcome"] == "error"
-        assert events[0]["error"] == {"type": "ConnectionError"}
+        assert events[0]["error"] == {
+            "type": "ConnectionError",
+            "module": "hr_sync.systems.personio",
+            "function": "_fetch_persons",
+            "line": ANY,
+        }
 
     def test_personio_client_is_a_source(self) -> None:
         # mypy checks that the real client fits the protocol the adapter expects

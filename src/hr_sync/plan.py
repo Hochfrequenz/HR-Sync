@@ -60,7 +60,10 @@ class SyncPlan(BaseModel):
     only_in_target: dict[TargetSystem, int]
     """the number of employees per target system that are not loaded from Personio at all"""
     notices: tuple[Notice, ...] = ()
-    """hints found while planning, e.g. :attr:`NoticeReason.EMAIL_IN_USE`"""
+    """
+    hints found while planning, e.g. :attr:`NoticeReason.EMAIL_IN_USE` or employee numbers passed with ``--only`` that
+    can't be part of the plan
+    """
 
     @property
     def is_empty(self) -> bool:
@@ -68,6 +71,14 @@ class SyncPlan(BaseModel):
         True if there is nothing to execute. Deviations don't count, because they are only logged.
         """
         return not any(employee.operations for employee in self.employees)
+
+    def operations_for(self, system: TargetSystem) -> tuple[Operation, ...]:
+        """
+        Returns the operations in the given target system, sorted by employee number.
+        """
+        return tuple(
+            operation for employee in self.employees for operation in employee.operations if operation.system == system
+        )
 
 
 class Outcome(StrEnum):
