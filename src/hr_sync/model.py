@@ -1,0 +1,236 @@
+"""
+The common data model. Every system is mapped onto it, so that the planner can compare the systems.
+"""
+
+from collections import defaultdict
+from datetime import date
+from enum import StrEnum
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+
+class System(StrEnum):
+    """The systems HR-Sync reads from."""
+
+    PERSONIO = "personio"
+    WECLAPP = "weclapp"
+    DECIDALO = "decidalo"
+
+
+class TargetSystem(StrEnum):
+    """The systems HR-Sync writes to, in the order in which the plan is executed."""
+
+    WECLAPP = "weclapp"
+    DECIDALO = "decidalo"
+
+
+class EmployeeRecord(BaseModel):
+    """
+    The master data of an employee in one system.
+
+    Strings are stripped, and empty strings become ``None``, so that the systems can be compared directly.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    employee_number: str = Field(min_length=1)
+    """the key; always a string, so that leading zeros are kept"""
+    first_name: str | None = None
+    last_name: str | None = None
+    display_name: str | None = None
+    """Decidalo only has a display name; for Personio, it's derived with :func:`display_name_of`"""
+    email: str | None = None
+    entry_date: date | None = None
+
+    @field_validator("employee_number", mode="before")
+    @classmethod
+    def _strip_employee_number(cls, value: object) -> object:
+        return value.strip() if isinstance(value, str) else value
+
+    @field_validator("first_name", "last_name", "display_name", "email", mode="before")
+    @classmethod
+    def _strip_or_none(cls, value: object) -> object:
+        if isinstance(value, str):
+            return value.strip() or None
+        return value
+
+
+def display_name_of(first_name: str | None, last_name: str | None) -> str | None:
+    """
+    Returns the display name used in Decidalo: first and last name, separated by a space.
+    """
+    parts = [part.strip() for part in (first_name, last_name) if part and part.strip()]
+    return " ".join(parts) or None
+
+
+class NoticeReason(StrEnum):
+    """Why HR-Sync logs a notice."""
+
+    MISSING_EMPLOYEE_NUMBER = "missing_employee_number"
+    DUPLICATE_EMPLOYEE_NUMBER = "duplicate_employee_number"
+    MISSING_EMAIL = "missing_email"
+    MISSING_ENTRY_DATE = "missing_entry_date"
+    NOT_RELEVANT = "not_relevant"
+    """an employee number passed with ``--only`` belongs to an employee that is not relevant"""
+    UNKNOWN_EMPLOYEE_NUMBER = "unknown_employee_number"
+    """an employee number passed with ``--only`` doesn't belong to any loaded employee"""
+    EMAIL_IN_USE = "email_in_use"
+    """the e-mail address of an employee belongs to another user of the target system"""
+    DUPLICATE_EMAIL = "duplicate_email"
+    """several employees of the source share an e-mail address"""
+
+
+class ExclusionReason(StrEnum):
+    """Why a loaded employee with employee number is not part of a snapshot."""
+
+    EMPLOYMENT_NOT_ACTIVE = "employment_not_active"
+    START_DATE_IN_FUTURE = "start_date_in_future"
+    MISSING_ENTRY_DATE = "missing_entry_date"
+    MISSING_EMAIL = "missing_email"
+    DUPLICATE_EMAIL = "duplicate_email"
+    DUPLICATE_EMPLOYEE_NUMBER = "duplicate_employee_number"
+
+    @property
+    def is_data_problem(self) -> bool:
+        """
+        True for data problems, which are logged as notices; False if the employee is just not relevant (yet).
+        """
+        return self not in (ExclusionReason.EMPLOYMENT_NOT_ACTIVE, ExclusionReason.START_DATE_IN_FUTURE)
+
+
+class Notice(BaseModel):
+    """
+    A data problem or a hint, which is logged as a warning.
+
+    It contains no personal data besides the employee number and the id of the record in its system.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    system: System
+    reason: NoticeReason
+    system_id: str | None = None
+    """the id of the record in its system, which identifies records without employee number"""
+    employee_number: str | None = None
+    detail: str | None = None
+
+
+class Snapshot(BaseModel):
+    """
+    The employees of one system after mapping, without the records that have data problems.
+    """
+
+    system: System
+    records: dict[str, EmployeeRecord] = Field(default_factory=dict)
+    """the valid records by employee number"""
+    system_ids: dict[str, str] = Field(default_factory=dict)
+    """the ids of the valid records in their system by employee number"""
+    incomplete: frozenset[str] = frozenset()
+    """weclapp only: the employee numbers of users without employee record"""
+    excluded: dict[str, ExclusionReason] = Field(default_factory=dict)
+    """
+    why loaded employees with employee number are not part of :attr:`records`; in the target systems, these are
+    duplicate employee numbers, which the planner must not treat as missing
+    """
+    email_owners: dict[str, tuple[str, ...]] = Field(default_factory=dict)
+    """
+    the ids of all loaded records that use an e-mail address, by :func:`email_key`, including the records with data
+    problems; the planner uses it to find e-mail addresses that belong to another user
+    """
+    notices: list[Notice] = Field(default_factory=list)
+
+
+def email_key(email: str) -> str:
+    """
+    Returns the e-mail address in the form in which addresses are compared: stripped and case-insensitive.
+    """
+    return email.strip().casefold()
+
+
+class SnapshotBuilder:
+    """
+    Collects the mapped records of one system and sorts out the records with data problems.
+
+    Records without employee number and records with duplicate employee numbers are not part of the snapshot. With
+    ``require_email``, every employee needs an e-mail address of its own: records without e-mail address and records
+    whose address another loaded record uses as well are not part of the snapshot either. Each of them yields a notice.
+    """
+
+    def __init__(self, system: System, *, require_email: bool = False) -> None:
+        self._system = system
+        self._require_email = require_email
+        self._candidates: dict[str, list[tuple[str, EmployeeRecord]]] = defaultdict(list)
+        self._incomplete: set[str] = set()
+        self._excluded: dict[str, ExclusionReason] = {}
+        self._email_owners: dict[str, list[str]] = defaultdict(list)
+        self._notices: list[Notice] = []
+
+    def add(self, system_id: str, record: EmployeeRecord, *, incomplete: bool = False) -> None:
+        """
+        Adds a mapped record. Duplicate employee numbers and e-mail addresses are checked in :meth:`build`.
+        """
+        self._candidates[record.employee_number].append((system_id, record))
+        if incomplete:
+            self._incomplete.add(record.employee_number)
+        self._note_email(system_id, record.email)
+
+    def add_without_employee_number(self, system_id: str, email: str | None = None) -> None:
+        """
+        Notes a record without employee number. It can't be part of the plan, because the key is missing, but its
+        e-mail address is still in use.
+        """
+        self._notices.append(self._notice(NoticeReason.MISSING_EMPLOYEE_NUMBER, system_id))
+        self._note_email(system_id, email)
+
+    def exclude(self, system_id: str, employee_number: str | None, reason: ExclusionReason) -> None:
+        """
+        Notes a loaded employee that is not part of the snapshot. Data problems yield a notice.
+        """
+        if employee_number is not None:
+            self._excluded[employee_number] = reason
+        if reason.is_data_problem:
+            self._notices.append(self._notice(NoticeReason(reason.value), system_id, employee_number))
+
+    def build(self) -> Snapshot:
+        """
+        Returns the snapshot of the records added so far.
+        """
+        records: dict[str, EmployeeRecord] = {}
+        system_ids: dict[str, str] = {}
+        excluded = dict(self._excluded)
+        notices = list(self._notices)
+        for employee_number, candidates in self._candidates.items():
+            first_id, record = candidates[0]
+            if len(candidates) > 1:
+                reason = ExclusionReason.DUPLICATE_EMPLOYEE_NUMBER
+            elif self._require_email and record.email is None:
+                reason = ExclusionReason.MISSING_EMAIL
+            elif self._require_email and self._shares_email(record):
+                reason = ExclusionReason.DUPLICATE_EMAIL
+            else:
+                records[employee_number] = record
+                system_ids[employee_number] = first_id
+                continue
+            excluded[employee_number] = reason
+            notices.extend(
+                self._notice(NoticeReason(reason.value), system_id, employee_number) for system_id, _ in candidates
+            )
+        return Snapshot(
+            system=self._system,
+            records=records,
+            system_ids=system_ids,
+            incomplete=frozenset(self._incomplete & records.keys()),
+            excluded={number: reason for number, reason in excluded.items() if number not in records},
+            email_owners={email: tuple(owners) for email, owners in self._email_owners.items()},
+            notices=notices,
+        )
+
+    def _note_email(self, system_id: str, email: str | None) -> None:
+        if email and email.strip():
+            self._email_owners[email_key(email)].append(system_id)
+
+    def _shares_email(self, record: EmployeeRecord) -> bool:
+        return record.email is not None and len(self._email_owners.get(email_key(record.email), [])) > 1
+
+    def _notice(self, reason: NoticeReason, system_id: str, employee_number: str | None = None) -> Notice:
+        return Notice(system=self._system, reason=reason, system_id=system_id, employee_number=employee_number)
