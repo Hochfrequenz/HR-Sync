@@ -64,6 +64,8 @@ class SyncPlan(BaseModel):
     hints found while planning, e.g. :attr:`NoticeReason.EMAIL_IN_USE` or employee numbers passed with ``--only`` that
     can't be part of the plan
     """
+    limit_reached: bool = False
+    """true if planning stopped at ``max_employees``, before all employees were looked at"""
 
     @property
     def is_empty(self) -> bool:

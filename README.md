@@ -43,6 +43,7 @@ uv run hr-sync --dry-run --target decidalo
 |---|---|
 | `--dry-run` | load and plan, but don't write to any target system |
 | `--only EMPLOYEE_NUMBER ...` | restrict the plan to these employee numbers; all employees are loaded anyway, to find data problems |
+| `--max-employees N` | stop planning as soon as N employees have operations, e.g. `1` for a small test run; the employees after them are not planned |
 | `--target weclapp\|decidalo ...` | the target systems (default: all); the others are neither loaded nor written |
 | `--env-file PATH` | read the configuration from this file instead of `.env` in the current directory |
 | `--log-format pretty\|json` | the format of the events (default: `HR_SYNC_LOG_FORMAT`, otherwise `pretty`) |

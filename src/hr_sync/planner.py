@@ -22,6 +22,7 @@ def build_plan(
     targets: Mapping[TargetSystem, Snapshot],
     *,
     only: Collection[str] | None = None,
+    max_employees: int | None = None,
 ) -> SyncPlan:
     """
     Creates the plan for the employees from the source (Personio) and the given target systems.
@@ -30,17 +31,31 @@ def build_plan(
     of the plan, but not changed. With ``only``, the plan is restricted to these employee numbers, and the employee
     numbers that can't be part of it get a notice (see :func:`check_only`).
 
+    With ``max_employees``, planning stops as soon as the plan contains that many employees with operations, e.g. to
+    keep a test run small. The employees after them are not looked at: they get no operations, deviations or notices
+    of the plan, and :attr:`SyncPlan.limit_reached` is true.
+
     If there is a data problem with an employee in any target system, nothing happens with this employee, in no
     target system: an employee is only created if everything about them is consistent. The problems are logged as
     notices: duplicate employee numbers by the target's snapshot; e-mail addresses that belong to another user
     (:attr:`NoticeReason.EMAIL_IN_USE`) and deactivated users (:attr:`NoticeReason.DEACTIVATED_IN_TARGET`) by the
     plan, because they are only a problem for a relevant employee.
+
+    Raises:
+        ValueError: if ``max_employees`` is less than 1.
     """
+    if max_employees is not None and max_employees < 1:
+        raise ValueError(f"max_employees must be at least 1, got {max_employees}")
     employees: list[EmployeePlan] = []
     notices: list[Notice] = []
+    with_operations = 0
+    limit_reached = False
     for employee_number in sorted(source.records):
         if only is not None and employee_number not in only:
             continue
+        if max_employees is not None and with_operations >= max_employees:
+            limit_reached = True
+            break
         desired = source.records[employee_number]
         operations: list[Operation] = []
         deviations: list[Deviation] = []
@@ -88,6 +103,8 @@ def build_plan(
                     employee_number=employee_number, operations=tuple(operations), deviations=tuple(deviations)
                 )
             )
+        if operations:
+            with_operations += 1
     if only is not None:
         notices.extend(check_only(source, only))
     known = source.records.keys() | source.excluded.keys()
@@ -95,6 +112,7 @@ def build_plan(
         employees=tuple(employees),
         only_in_target={system: len(target.records.keys() - known) for system, target in targets.items()},
         notices=tuple(notices),
+        limit_reached=limit_reached,
     )
 
 

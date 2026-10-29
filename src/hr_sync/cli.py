@@ -27,6 +27,16 @@ def _employee_number(value: str) -> str:
     return value.strip()
 
 
+def _positive_number(value: str) -> int:
+    try:
+        number = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"not a number: {value!r}") from None
+    if number < 1:
+        raise argparse.ArgumentTypeError("the number must be at least 1")
+    return number
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="hr-sync",
@@ -42,6 +52,13 @@ def _build_parser() -> argparse.ArgumentParser:
         type=_employee_number,
         metavar="EMPLOYEE_NUMBER",
         help="restrict the plan to these employee numbers; all employees are loaded anyway, to find data problems",
+    )
+    parser.add_argument(
+        "--max-employees",
+        type=_positive_number,
+        metavar="N",
+        help="stop planning as soon as N employees have operations, e.g. 1 for a small test run; the employees after "
+        "them are not planned",
     )
     parser.add_argument(
         "--target",
@@ -73,6 +90,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     options = RunOptions(
         targets=tuple(target for target in TargetSystem if args.target is None or target in args.target),
         only=frozenset(args.only) if args.only is not None else None,
+        max_employees=args.max_employees,
         dry_run=args.dry_run,
     )
     try:

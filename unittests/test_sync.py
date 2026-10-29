@@ -140,6 +140,17 @@ class TestRun:
         assert run_event["only"] == ["00200", "00999"]
         assert run_event["notices"] == 1
 
+    @pytest.mark.parametrize("dry_run", [False, True])
+    def test_max_employees(self, events: list[dict[str, object]], dry_run: bool) -> None:
+        decidalo = FakeDecidalo()
+        options = RunOptions(targets=(TargetSystem.DECIDALO,), max_employees=1, dry_run=dry_run)
+        assert _run(_personio(ERIKA, MAX), decidalo, options) == ExitCode.SUCCESS
+        assert [event["employee_number"] for event in _named(events, "sync.operation")] == ["00165"]
+        assert len(decidalo.batches) == (0 if dry_run else 1)
+        (plan_event,) = _named(events, "sync.plan")
+        assert plan_event["limit_reached"] is True
+        assert _run_event(events)["max_employees"] == 1
+
     def test_notices_and_deviations(self, events: list[dict[str, object]]) -> None:
         without_email = personio_person("3", "00300", email=None)
         renamed = decidalo_user(8, "00165", display_name="Erika Mustermann", entry_date=START)
@@ -293,7 +304,7 @@ class TestSteps:
         assert plan_event["operations"] == {"decidalo": {"create": 1}}
         assert plan_event["deviations"] == {"decidalo": 0}
         assert plan_event["only_in_target"] == {"decidalo": 0}
-        assert (plan_event["notices"], plan_event["is_empty"]) == (0, False)
+        assert (plan_event["notices"], plan_event["is_empty"], plan_event["limit_reached"]) == (0, False, False)
 
     def test_weclapp_can_not_be_loaded_yet(self) -> None:
         with pytest.raises(NotImplementedError):
