@@ -75,7 +75,9 @@ class NoticeReason(StrEnum):
     UNKNOWN_EMPLOYEE_NUMBER = "unknown_employee_number"
     """an employee number passed with ``--only`` doesn't belong to any loaded employee"""
     EMAIL_IN_USE = "email_in_use"
-    """the e-mail address of an employee to create already belongs to another user of the target system"""
+    """the e-mail address of an employee belongs to another user of the target system"""
+    DUPLICATE_EMAIL = "duplicate_email"
+    """several employees of the source share an e-mail address"""
 
 
 class ExclusionReason(StrEnum):
@@ -85,6 +87,7 @@ class ExclusionReason(StrEnum):
     START_DATE_IN_FUTURE = "start_date_in_future"
     MISSING_ENTRY_DATE = "missing_entry_date"
     MISSING_EMAIL = "missing_email"
+    DUPLICATE_EMAIL = "duplicate_email"
     DUPLICATE_EMPLOYEE_NUMBER = "duplicate_employee_number"
 
     @property
@@ -120,6 +123,8 @@ class Snapshot(BaseModel):
     system: System
     records: dict[str, EmployeeRecord] = Field(default_factory=dict)
     """the valid records by employee number"""
+    system_ids: dict[str, str] = Field(default_factory=dict)
+    """the ids of the valid records in their system by employee number"""
     incomplete: frozenset[str] = frozenset()
     """weclapp only: the employee numbers of users without employee record"""
     excluded: dict[str, ExclusionReason] = Field(default_factory=dict)
@@ -127,10 +132,10 @@ class Snapshot(BaseModel):
     why loaded employees with employee number are not part of :attr:`records`; in the target systems, these are
     duplicate employee numbers, which the planner must not treat as missing
     """
-    email_owners: dict[str, str] = Field(default_factory=dict)
+    email_owners: dict[str, tuple[str, ...]] = Field(default_factory=dict)
     """
-    the ids of all loaded records by :func:`email_key`, including the records with data problems; the planner uses it
-    to not create an employee whose e-mail address already belongs to another user
+    the ids of all loaded records that use an e-mail address, by :func:`email_key`, including the records with data
+    problems; the planner uses it to find e-mail addresses that belong to another user
     """
     notices: list[Notice] = Field(default_factory=list)
 
@@ -146,8 +151,9 @@ class SnapshotBuilder:
     """
     Collects the mapped records of one system and sorts out the records with data problems.
 
-    Records without employee number, records with duplicate employee numbers and (if required) records without e-mail
-    address are not part of the snapshot. Each of them yields a notice.
+    Records without employee number and records with duplicate employee numbers are not part of the snapshot. With
+    ``require_email``, every employee needs an e-mail address of its own: records without e-mail address and records
+    whose address another loaded record uses as well are not part of the snapshot either. Each of them yields a notice.
     """
 
     def __init__(self, system: System, *, require_email: bool = False) -> None:
@@ -156,12 +162,12 @@ class SnapshotBuilder:
         self._candidates: dict[str, list[tuple[str, EmployeeRecord]]] = defaultdict(list)
         self._incomplete: set[str] = set()
         self._excluded: dict[str, ExclusionReason] = {}
-        self._email_owners: dict[str, str] = {}
+        self._email_owners: dict[str, list[str]] = defaultdict(list)
         self._notices: list[Notice] = []
 
     def add(self, system_id: str, record: EmployeeRecord, *, incomplete: bool = False) -> None:
         """
-        Adds a mapped record. Duplicate employee numbers and missing e-mail addresses are checked in :meth:`build`.
+        Adds a mapped record. Duplicate employee numbers and e-mail addresses are checked in :meth:`build`.
         """
         self._candidates[record.employee_number].append((system_id, record))
         if incomplete:
@@ -190,15 +196,20 @@ class SnapshotBuilder:
         Returns the snapshot of the records added so far.
         """
         records: dict[str, EmployeeRecord] = {}
+        system_ids: dict[str, str] = {}
         excluded = dict(self._excluded)
         notices = list(self._notices)
         for employee_number, candidates in self._candidates.items():
+            first_id, record = candidates[0]
             if len(candidates) > 1:
                 reason = ExclusionReason.DUPLICATE_EMPLOYEE_NUMBER
-            elif self._require_email and candidates[0][1].email is None:
+            elif self._require_email and record.email is None:
                 reason = ExclusionReason.MISSING_EMAIL
+            elif self._require_email and self._shares_email(record):
+                reason = ExclusionReason.DUPLICATE_EMAIL
             else:
-                records[employee_number] = candidates[0][1]
+                records[employee_number] = record
+                system_ids[employee_number] = first_id
                 continue
             excluded[employee_number] = reason
             notices.extend(
@@ -207,15 +218,19 @@ class SnapshotBuilder:
         return Snapshot(
             system=self._system,
             records=records,
+            system_ids=system_ids,
             incomplete=frozenset(self._incomplete & records.keys()),
             excluded={number: reason for number, reason in excluded.items() if number not in records},
-            email_owners=dict(self._email_owners),
+            email_owners={email: tuple(owners) for email, owners in self._email_owners.items()},
             notices=notices,
         )
 
     def _note_email(self, system_id: str, email: str | None) -> None:
         if email and email.strip():
-            self._email_owners.setdefault(email_key(email), system_id)
+            self._email_owners[email_key(email)].append(system_id)
+
+    def _shares_email(self, record: EmployeeRecord) -> bool:
+        return record.email is not None and len(self._email_owners.get(email_key(record.email), [])) > 1
 
     def _notice(self, reason: NoticeReason, system_id: str, employee_number: str | None = None) -> Notice:
         return Notice(system=self._system, reason=reason, system_id=system_id, employee_number=employee_number)

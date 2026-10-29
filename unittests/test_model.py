@@ -226,17 +226,51 @@ class TestSnapshotBuilder:
         builder.add_without_employee_number("user-6", "  ")
         builder.add_without_employee_number("user-7")
         assert builder.build().email_owners == {
-            "erika.musterfrau@example.com": "user-1",
-            "max.mustermann@example.com": "user-2",
-            "max.m@example.com": "user-3",
-            "admin@example.com": "user-5",
+            "erika.musterfrau@example.com": ("user-1",),
+            "max.mustermann@example.com": ("user-2",),
+            "max.m@example.com": ("user-3",),
+            "admin@example.com": ("user-5",),
         }
 
-    def test_first_record_owns_a_shared_email(self) -> None:
+    def test_shared_email_has_all_owners(self) -> None:
         builder = SnapshotBuilder(System.DECIDALO)
         builder.add_without_employee_number("1", "shared@example.com")
         builder.add("2", _record("00165", email="Shared@example.com"))
-        assert builder.build().email_owners == {"shared@example.com": "1"}
+        snapshot = builder.build()
+        assert snapshot.email_owners == {"shared@example.com": ("1", "2")}
+        # in a target system, a shared e-mail address is not a reason to sort out the record
+        assert set(snapshot.records) == {"00165"}
+
+    def test_shared_email_is_a_data_problem_if_required(self) -> None:
+        builder = SnapshotBuilder(System.PERSONIO, require_email=True)
+        builder.add("1", _record("00165"))
+        builder.add("2", _record("00200", email="Erika.Musterfrau@Example.com"))
+        builder.add("3", _record("00300", email="max.mustermann@example.com"))
+        builder.add_without_employee_number("4", "max.mustermann@example.com")
+        builder.add("5", _record("00400", email="someone.else@example.com"))
+        snapshot = builder.build()
+        assert set(snapshot.records) == {"00400"}
+        assert snapshot.excluded == {
+            "00165": ExclusionReason.DUPLICATE_EMAIL,
+            "00200": ExclusionReason.DUPLICATE_EMAIL,
+            "00300": ExclusionReason.DUPLICATE_EMAIL,
+        }
+        assert [
+            (notice.reason, notice.employee_number)
+            for notice in snapshot.notices
+            if notice.reason == NoticeReason.DUPLICATE_EMAIL
+        ] == [
+            (NoticeReason.DUPLICATE_EMAIL, "00165"),
+            (NoticeReason.DUPLICATE_EMAIL, "00200"),
+            (NoticeReason.DUPLICATE_EMAIL, "00300"),
+        ]
+
+    def test_system_ids_of_valid_records(self) -> None:
+        builder = SnapshotBuilder(System.WECLAPP)
+        builder.add("user-1", _record("00165"))
+        builder.add("user-2", _record("00200"))
+        builder.add("user-3", _record("00200"))
+        assert builder.build().system_ids == {"00165": "user-1"}
 
 
 class TestEmailKey:

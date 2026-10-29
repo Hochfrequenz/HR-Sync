@@ -26,9 +26,13 @@ def build_plan(
     """
     Creates the plan for the employees from the source (Personio) and the given target systems.
 
-    Employees missing in a target system are created, unless their e-mail address already belongs to another user
-    there. Existing employees are only compared; their deviations are part of the plan, but not changed. With
-    ``only``, the plan is restricted to these employee numbers.
+    Employees missing in a target system are created. Existing employees are only compared; their deviations are part
+    of the plan, but not changed. With ``only``, the plan is restricted to these employee numbers.
+
+    If there is a data problem with an employee in any target system, nothing happens with this employee, in no
+    target system: an employee is only created if everything about them is consistent. The problems are logged as
+    notices: duplicate employee numbers by the target's snapshot, e-mail addresses that belong to another user
+    (:attr:`NoticeReason.EMAIL_IN_USE`) by the plan.
     """
     employees: list[EmployeePlan] = []
     notices: list[Notice] = []
@@ -38,29 +42,23 @@ def build_plan(
         desired = source.records[employee_number]
         operations: list[Operation] = []
         deviations: list[Deviation] = []
+        has_problem = False
         for system in TargetSystem:
             if system not in targets:
                 continue
             target = targets[system]
             if employee_number in target.excluded:
-                # e.g. a duplicate employee number: creating the employee would add yet another duplicate,
-                # and the target's notices already name the problem
+                # e.g. a duplicate employee number, which the target's notices already name
+                has_problem = True
                 continue
+            conflicts = _email_conflicts(employee_number, desired, target)
+            if conflicts:
+                # creating the employee would yield a duplicate (weclapp) or change a foreign user (Decidalo)
+                notices.extend(conflicts)
+                has_problem = True
             existing = target.records.get(employee_number)
             if existing is None:
-                owner = target.email_owners.get(email_key(desired.email)) if desired.email else None
-                if owner is None:
-                    operations.append(Operation(system=system, type=OperationType.CREATE, record=desired))
-                else:
-                    # creating the employee would yield a duplicate (weclapp) or change a foreign user (Decidalo)
-                    notices.append(
-                        Notice(
-                            system=target.system,
-                            reason=NoticeReason.EMAIL_IN_USE,
-                            system_id=owner,
-                            employee_number=employee_number,
-                        )
-                    )
+                operations.append(Operation(system=system, type=OperationType.CREATE, record=desired))
                 continue
             fields = COMPARED_FIELDS[system]
             if employee_number in target.incomplete:
@@ -69,6 +67,8 @@ def build_plan(
             differing = _differing_fields(desired, existing, fields)
             if differing:
                 deviations.append(Deviation(system=system, fields=differing))
+        if has_problem:
+            operations = []
         if operations or deviations:
             employees.append(
                 EmployeePlan(
@@ -112,6 +112,25 @@ def check_only(source: Snapshot, only: Collection[str]) -> list[Notice]:
                 )
             )
     return notices
+
+
+def _email_conflicts(employee_number: str, desired: EmployeeRecord, target: Snapshot) -> list[Notice]:
+    """
+    Returns a notice for every user of the target that uses the employee's e-mail address but is not the employee.
+    """
+    if desired.email is None:
+        return []
+    own_id = target.system_ids.get(employee_number)
+    return [
+        Notice(
+            system=target.system,
+            reason=NoticeReason.EMAIL_IN_USE,
+            system_id=owner,
+            employee_number=employee_number,
+        )
+        for owner in target.email_owners.get(email_key(desired.email), ())
+        if owner != own_id
+    ]
 
 
 def _differing_fields(desired: EmployeeRecord, existing: EmployeeRecord, fields: tuple[str, ...]) -> tuple[str, ...]:

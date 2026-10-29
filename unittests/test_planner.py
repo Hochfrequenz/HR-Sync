@@ -146,35 +146,26 @@ class TestBuildPlan:
         assert plan.only_in_target == {TargetSystem.WECLAPP: 1, TargetSystem.DECIDALO: 0}
 
     @pytest.mark.parametrize("duplicated_in", list(TargetSystem))
-    def test_duplicate_employee_number_in_a_target_is_not_created_again(self, duplicated_in: TargetSystem) -> None:
+    def test_duplicate_employee_number_in_a_target_blocks_the_employee(self, duplicated_in: TargetSystem) -> None:
         builder = SnapshotBuilder(System(duplicated_in.value))
         builder.add("1", ERIKA)
         builder.add("2", ERIKA)
         targets = _targets()
         targets[duplicated_in] = builder.build()
         plan = build_plan(_snapshot(System.PERSONIO, ERIKA), targets)
-        other = next(system for system in TargetSystem if system != duplicated_in)
-        assert plan.employees == (
-            EmployeePlan(
-                employee_number="00165",
-                operations=(Operation(system=other, type=OperationType.CREATE, record=ERIKA),),
-            ),
-        )
+        # nothing happens with the employee, not even in the other target; the target's snapshot names the problem
+        assert plan.employees == ()
+        assert plan.notices == ()
 
     @pytest.mark.parametrize("in_use_in", list(TargetSystem))
-    def test_employee_is_not_created_if_the_email_is_in_use(self, in_use_in: TargetSystem) -> None:
+    def test_email_in_use_blocks_the_employee(self, in_use_in: TargetSystem) -> None:
         builder = SnapshotBuilder(System(in_use_in.value))
         builder.add_without_employee_number("42", "ERIKA.Musterfrau@example.com")
         targets = _targets()
         targets[in_use_in] = builder.build()
         plan = build_plan(_snapshot(System.PERSONIO, ERIKA), targets)
-        other = next(system for system in TargetSystem if system != in_use_in)
-        assert plan.employees == (
-            EmployeePlan(
-                employee_number="00165",
-                operations=(Operation(system=other, type=OperationType.CREATE, record=ERIKA),),
-            ),
-        )
+        # nothing happens with the employee, not even in the other target
+        assert plan.employees == ()
         assert plan.notices == (
             Notice(
                 system=System(in_use_in.value),
@@ -198,6 +189,60 @@ class TestBuildPlan:
         plan = build_plan(_snapshot(System.PERSONIO, ERIKA), {TargetSystem.WECLAPP: builder.build()})
         assert plan.employees == ()
         assert plan.notices == ()
+
+    def test_employee_without_email_has_no_email_conflict(self) -> None:
+        without_email = ERIKA.model_copy(update={"email": None})
+        builder = SnapshotBuilder(System.WECLAPP)
+        builder.add_without_employee_number("user-9", "erika.musterfrau@example.com")
+        plan = build_plan(_snapshot(System.PERSONIO, without_email), {TargetSystem.WECLAPP: builder.build()})
+        assert [operation.type for operation in plan.employees[0].operations] == [OperationType.CREATE]
+        assert plan.notices == ()
+
+    def test_email_in_use_blocks_an_employee_that_exists_in_the_target(self) -> None:
+        weclapp = SnapshotBuilder(System.WECLAPP)
+        weclapp.add("user-1", ERIKA)
+        weclapp.add_without_employee_number("user-9", "erika.musterfrau@example.com")
+        plan = build_plan(
+            _snapshot(System.PERSONIO, ERIKA), _targets(weclapp=weclapp.build(), decidalo=_snapshot(System.DECIDALO))
+        )
+        assert plan.employees == ()
+        assert plan.notices == (
+            Notice(
+                system=System.WECLAPP,
+                reason=NoticeReason.EMAIL_IN_USE,
+                system_id="user-9",
+                employee_number="00165",
+            ),
+        )
+
+    def test_a_problem_only_blocks_the_affected_employee(self) -> None:
+        weclapp = SnapshotBuilder(System.WECLAPP)
+        weclapp.add_without_employee_number("user-9", "erika.musterfrau@example.com")
+        plan = build_plan(_snapshot(System.PERSONIO, ERIKA, MAX), _targets(weclapp=weclapp.build()))
+        assert plan.employees == (
+            EmployeePlan(
+                employee_number="00200",
+                operations=(
+                    Operation(system=TargetSystem.WECLAPP, type=OperationType.CREATE, record=MAX),
+                    Operation(system=TargetSystem.DECIDALO, type=OperationType.CREATE, record=MAX),
+                ),
+            ),
+        )
+        assert [notice.employee_number for notice in plan.notices] == ["00165"]
+
+    def test_blocked_employee_keeps_its_deviations(self) -> None:
+        in_weclapp = ERIKA.model_copy(update={"last_name": "Schmidt"})
+        builder = SnapshotBuilder(System.WECLAPP)
+        builder.add("user-1", in_weclapp)
+        builder.add_without_employee_number("user-9", "erika.musterfrau@example.com")
+        plan = build_plan(_snapshot(System.PERSONIO, ERIKA), _targets(weclapp=builder.build()))
+        assert plan.employees == (
+            EmployeePlan(
+                employee_number="00165",
+                deviations=(Deviation(system=TargetSystem.WECLAPP, fields=("last_name",)),),
+            ),
+        )
+        assert plan.is_empty
 
 
 class TestCheckOnly:

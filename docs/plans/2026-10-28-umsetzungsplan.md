@@ -25,6 +25,8 @@ HR-Sync überträgt beim Onboarding die Stammdaten neuer Mitarbeiter aus **Perso
 | Abweichungen bei bestehenden Personen | nicht überschreiben, nur loggen |
 | Person ohne MA-Nummer (in jedem System) | Warn-Event, Person wird für den Plan nicht betrachtet |
 | Personio-Person ohne E-Mail | Warn-Event, Person wird für den Plan nicht betrachtet |
+| Personio-E-Mail bei mehreren Mitarbeitern | Warn-Event `duplicate_email` für jeden Betroffenen, keiner wird für den Plan betrachtet |
+| **Grundsatz bei Datenproblemen** | Gibt es zu einem Mitarbeiter ein Datenproblem, in Personio oder in einem Zielsystem, passiert mit ihm nichts: in keinem Zielsystem, und es gilt auch kein „der Erste gewinnt“. Angelegt wird nur, wer überall stimmig ist. Das Problem wird als Warnung geloggt |
 | E-Mail | wird nach weclapp und Decidalo übertragen (weclapp braucht sie zum Anlegen) |
 | Decidalo-displayName | `"Vorname Nachname"` |
 | Anlegen in Decidalo | über den **synchronen Import-Endpunkt** `POST /importapi/User/ImportSync` (Client: `import_users_sync`), nicht über `ImportAsync`. Die Ergebnisse pro Zeile kommen direkt in der Antwort, ohne Polling und ohne Callback |
@@ -38,7 +40,7 @@ HR-Sync überträgt beim Onboarding die Stammdaten neuer Mitarbeiter aus **Perso
 | PyPI-Paket | `hochfrequenz-hr-sync`, Befehl `hr-sync`, Import-Paket `hr_sync`, Lizenz MIT wie die Clients. Der Zeitpunkt des ersten Releases ist offen (O14) |
 | Zielgruppe des Pakets | auch andere Firmen: Alles Firmenspezifische ist konfigurierbar und dokumentiert. CLI, Umgebungsvariablen, Exit-Codes und Event-Felder sind eine stabile Schnittstelle |
 | Stabile Version | erst, wenn auch die Clients stabil sind. Bis dahin erscheint HR-Sync nur als Pre-Release |
-| E-Mail im Zielsystem schon vergeben | Gehört die E-Mail einer neuen Person im Zielsystem schon einem anderen User (ohne oder mit anderer MA-Nummer), wird die Person dort nicht angelegt. Es gibt ein Warn-Event `email_in_use` |
+| E-Mail im Zielsystem schon vergeben | Gehört die E-Mail eines Mitarbeiters im Zielsystem einem anderen User (ohne oder mit anderer MA-Nummer), ist das ein Datenproblem: Es gibt ein Warn-Event `email_in_use`, und nach dem Grundsatz passiert mit dem Mitarbeiter nichts, in keinem System |
 | weclapp-Umgebung | Es gibt keinen Test-Tenant, wir arbeiten in der Produktion. Das Feld für die Personalnummer gibt es dort schon, ein späterer Test-Tenant bekommt es auch |
 | Zielsysteme | wählbar mit `--target weclapp` bzw. `--target decidalo`, Standard sind beide |
 | Testumgebungen | In Testumgebungen landen keine echten Namen oder E-Mails: Im Test-Modus (`HR_SYNC_ENVIRONMENT=test`) wird anonymisiert. MA-Nummer und Eintrittsdatum bleiben echt |
@@ -75,6 +77,8 @@ flowchart TD
    angegebenen MA-Nummern, siehe [Abschnitt 7](#7-konfiguration-cli-und-fehlerbehandlung)) und jedes Zielsystem gilt:
    - Die Person fehlt: Operation `CREATE`.
    - Die Person ist vorhanden: Felder vergleichen und Abweichungen festhalten (nur die Feldnamen).
+   - Gibt es in einem Zielsystem ein Datenproblem zu der Person, z. B. eine doppelte MA-Nummer oder ihre E-Mail an
+     einem anderen User, plant der Planner für sie keine Operation, in keinem Zielsystem (siehe 4.2).
 5. Hat der Plan keine Operationen, endet der Lauf. Im Dry-Run wird der Plan nur geloggt.
 6. Plan ausführen, erst weclapp, dann Decidalo.
 7. Abschluss-Event mit Summen und Exit-Code.
@@ -208,9 +212,10 @@ class EmployeeRecord(BaseModel, frozen=True):
 class Snapshot(BaseModel):
     system: System                         # PERSONIO | WECLAPP | DECIDALO
     records: dict[str, EmployeeRecord]     # nach MA-Nummer, nur gültige Datensätze
+    system_ids: dict[str, str] = {}        # MA-Nummer → ID des gültigen Datensatzes im System
     incomplete: set[str] = set()           # nur weclapp: User ohne Personalakte
     excluded: dict[str, ExclusionReason] = {}  # MA-Nummer → Grund des Ausschlusses (in den Zielen: Dubletten)
-    email_owners: dict[str, str] = {}      # Zielsysteme: E-Mail (ohne Groß-/Kleinschreibung) → system_id des Users
+    email_owners: dict[str, tuple[str, ...]] = {}  # E-Mail (ohne Groß-/Kleinschreibung) → IDs aller User damit
     notices: list[Notice]                  # Datenprobleme, siehe Abschnitt 5
 ```
 
@@ -263,10 +268,17 @@ damit die Vergleichsregeln an einer Stelle liegen.
 Vor dem Vergleich werden Leerzeichen am Anfang und Ende entfernt. E-Mails werden ohne Rücksicht auf Groß- und
 Kleinschreibung verglichen.
 
-**E-Mail schon vergeben:** Fehlt eine Person in einem Zielsystem, prüft der Planner vor dem `CREATE`, ob ihre E-Mail dort
-schon einem User gehört (`email_owners`, ohne Rücksicht auf Groß- und Kleinschreibung). Dann plant er für dieses System
-keine Operation und erzeugt ein Warn-Event `email_in_use` mit der MA-Nummer und der `system_id` des belegenden Users.
-Das verhindert Dubletten in weclapp (R2) und dass `ImportSync` einen fremden Decidalo-User ändert (R3).
+**Datenprobleme in den Zielsystemen:** Bevor der Planner für einen Mitarbeiter etwas plant, prüft er jedes gewählte
+Zielsystem auf zwei Probleme:
+
+- Die MA-Nummer kommt dort mehrfach vor (sie steht in `excluded`). Das meldet bereits der Snapshot.
+- Die E-Mail des Mitarbeiters gehört dort einem anderen User (`email_owners`, ohne Rücksicht auf Groß- und
+  Kleinschreibung). Der eigene Datensatz des Mitarbeiters (`system_ids`) zählt nicht. Für jeden anderen User erzeugt
+  der Planner ein Warn-Event `email_in_use` mit der MA-Nummer und der `system_id` dieses Users.
+
+Findet er eines davon, gilt der Grundsatz aus 1.1: Für den Mitarbeiter plant er keine Operation, **in keinem
+Zielsystem**. Abweichungen bleiben im Plan, weil sie ohnehin nur geloggt werden. So entstehen keine Dubletten in weclapp
+(R2), `ImportSync` ändert keinen fremden Decidalo-User (R3), und ein Mitarbeiter steht nie nur halb in den Systemen.
 
 ### 4.3 Weitere Felder ergänzen
 
@@ -287,14 +299,18 @@ den neuen Operationstyp. Das Datenmodell und die Loader bleiben dabei unverände
 | Fall | System | Folge |
 |---|---|---|
 | MA-Nummer fehlt oder ist leer | alle | Warn-Event `sync.notice` (`reason=missing_employee_number`), Person nicht im Plan |
-| MA-Nummer kommt mehrfach vor | alle | Warn-Event (`reason=duplicate_employee_number`), alle Datensätze mit dieser Nummer nicht im Plan *(Vorschlag, ergänzt)* |
+| MA-Nummer kommt mehrfach vor | alle | Warn-Event (`reason=duplicate_employee_number`), alle Datensätze mit dieser Nummer nicht im Plan. Kommt sie in einem Zielsystem mehrfach vor, passiert mit dem Mitarbeiter in keinem System etwas |
 | E-Mail fehlt | Personio | Warn-Event (`reason=missing_email`), Person nicht im Plan |
+| E-Mail kommt bei mehreren Mitarbeitern vor (auch bei einem ohne MA-Nummer) | Personio | Warn-Event (`reason=duplicate_email`) für jeden Betroffenen; keiner von ihnen kommt in den Plan, auch nicht „der Erste“ |
 | Employment `ACTIVE`, aber ohne Startdatum, und kein anderes Employment erfüllt die Bedingungen | Personio | Warn-Event (`reason=missing_entry_date`), Person nicht im Plan. Geprüft wird vor dem Datumsfilter (siehe [3.1](#31-personio-quelle)) |
 | Nicht relevant (kein aktives Employment oder Start in der Zukunft) | Personio | kein Warn-Event, weil das der Normalfall ist. Nur die Anzahl je Grund im `sync.load` |
 | Person steht nur im Zielsystem | weclapp, Decidalo | nur die Anzahl im Plan-Event (Offboarding kommt später) |
-| E-Mail der neuen Person ist im Zielsystem schon vergeben | weclapp, Decidalo | Warn-Event (`reason=email_in_use`) mit MA-Nummer und `system_id` des belegenden Users; die Person wird in diesem System nicht angelegt (siehe 4.2) |
+| E-Mail des Mitarbeiters gehört im Zielsystem einem anderen User | weclapp, Decidalo | Warn-Event (`reason=email_in_use`) mit MA-Nummer und `system_id` des anderen Users; mit dem Mitarbeiter passiert in keinem System etwas (siehe 4.2) |
 
-In Personio werden MA-Nummer, E-Mail und doppelte MA-Nummern nur bei relevanten Mitarbeitern geprüft. Einzige
+Für alle Fälle gilt der **Grundsatz** aus 1.1: Mit einem Mitarbeiter, zu dem es ein Datenproblem gibt, passiert nichts,
+in keinem System. Angelegt wird nur, wer überall stimmig ist.
+
+In Personio werden MA-Nummer, E-Mail, doppelte MA-Nummern und doppelte E-Mails nur bei relevanten Mitarbeitern geprüft. Einzige
 Ausnahme ist das fehlende Startdatum eines aktiven Employments: Das prüfen wir vor dem Datumsfilter (siehe
 [3.1](#31-personio-quelle)).
 
@@ -571,7 +587,7 @@ Laufzeit-Abhängigkeiten: `personio-client`, `weclapp-client`, `decidalo-client`
 
 | Ebene | Wie |
 |---|---|
-| Planner | reine Unit-Tests ohne IO, tabellengetrieben (fehlt, vorhanden, Abweichung, unvollständig, Datenprobleme, E-Mail schon vergeben) |
+| Planner | reine Unit-Tests ohne IO, tabellengetrieben (fehlt, vorhanden, Abweichung, unvollständig, Datenprobleme, E-Mail schon vergeben); ein Datenproblem in einem Zielsystem blockiert den Mitarbeiter in allen Systemen, aber keine anderen Mitarbeiter |
 | Mapping | Unit-Tests mit Modellinstanzen der Clients |
 | Relevanz (Personio) | tabellengetrieben: alle Employment-Status inklusive abweichender Schreibweise; Startdatum gestern, heute, morgen; mehrere Employments; aktives Employment ohne Startdatum erzeugt `missing_entry_date`, auch neben einem Employment mit künftigem Start; künftiger Mitarbeiter ohne MA-Nummer erzeugt keine Warnung; `--only` meldet `not_relevant` mit Grund bzw. `unknown_employee_number` |
 | Personio, Decidalo | `aioresponses` (beide Clients nutzen aiohttp und testen selbst so) |
