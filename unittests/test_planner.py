@@ -140,6 +140,51 @@ class TestBuildPlan:
             Notice(system=System.PERSONIO, reason=NoticeReason.UNKNOWN_EMPLOYEE_NUMBER, employee_number="00999"),
         )
 
+    def test_max_employees_stops_planning(self) -> None:
+        plan = build_plan(_snapshot(System.PERSONIO, ERIKA, MAX), _targets(), max_employees=1)
+        assert [employee.employee_number for employee in plan.employees] == ["00165"]
+        assert plan.limit_reached
+
+    @pytest.mark.parametrize("max_employees", [2, None])
+    def test_max_employees_not_reached(self, max_employees: int | None) -> None:
+        plan = build_plan(_snapshot(System.PERSONIO, ERIKA, MAX), _targets(), max_employees=max_employees)
+        assert [employee.employee_number for employee in plan.employees] == ["00165", "00200"]
+        assert not plan.limit_reached
+
+    def test_only_employees_with_operations_count_for_max_employees(self) -> None:
+        renamed = ERIKA.model_copy(update={"employee_number": "00100", "email": "erika.renamed@example.com"})
+        later = MAX.model_copy(update={"employee_number": "00300", "email": "later@example.com"})
+        decidalo = _snapshot(System.DECIDALO, renamed.model_copy(update={"first_name": None})).model_copy(
+            update={"email_owners": {"erika.musterfrau@example.com": ("98",), "later@example.com": ("99",)}}
+        )
+        weclapp = _snapshot(System.WECLAPP, renamed.model_copy(update={"first_name": "Rika"}))
+        plan = build_plan(
+            _snapshot(System.PERSONIO, renamed, ERIKA, MAX, later),
+            _targets(weclapp=weclapp, decidalo=decidalo),
+            max_employees=1,
+        )
+        # 00100 only has a deviation, 00165 a data problem: neither counts, so 00200 is planned
+        assert [(employee.employee_number, bool(employee.operations)) for employee in plan.employees] == [
+            ("00100", False),
+            ("00200", True),
+        ]
+        # 00300 is not looked at, so its e-mail address in use yields no notice
+        assert [(notice.reason, notice.employee_number) for notice in plan.notices] == [
+            (NoticeReason.EMAIL_IN_USE, "00165")
+        ]
+        assert plan.limit_reached
+
+    def test_max_employees_with_only(self) -> None:
+        plan = build_plan(_snapshot(System.PERSONIO, ERIKA, MAX), _targets(), only={"00200"}, max_employees=1)
+        assert [employee.employee_number for employee in plan.employees] == ["00200"]
+        # no other employee is left to look at
+        assert not plan.limit_reached
+
+    @pytest.mark.parametrize("max_employees", [0, -1])
+    def test_max_employees_must_be_positive(self, max_employees: int) -> None:
+        with pytest.raises(ValueError, match="max_employees"):
+            build_plan(_snapshot(System.PERSONIO, ERIKA), _targets(), max_employees=max_employees)
+
     def test_operations_for(self) -> None:
         plan = build_plan(_snapshot(System.PERSONIO, MAX, ERIKA), _targets(decidalo=_snapshot(System.DECIDALO, MAX)))
         assert [operation.record.employee_number for operation in plan.operations_for(TargetSystem.WECLAPP)] == [

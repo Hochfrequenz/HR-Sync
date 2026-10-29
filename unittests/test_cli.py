@@ -63,10 +63,14 @@ class TestOptions:
 
     @pytest.mark.usefixtures("log_formats")
     def test_options(self, runs: _Runs) -> None:
-        assert main(["--dry-run", "--only", "00165", " 00200 ", "--only", "00300", "--target", "decidalo"]) == 0
+        argv = ["--dry-run", "--only", "00165", " 00200 ", "--only", "00300", "--target", "decidalo"]
+        assert main([*argv, "--max-employees", "1"]) == 0
         ((_, options),) = runs.calls
         assert options == RunOptions(
-            targets=(TargetSystem.DECIDALO,), only=frozenset({"00165", "00200", "00300"}), dry_run=True
+            targets=(TargetSystem.DECIDALO,),
+            only=frozenset({"00165", "00200", "00300"}),
+            max_employees=1,
+            dry_run=True,
         )
 
     @pytest.mark.usefixtures("log_formats")
@@ -79,6 +83,9 @@ class TestOptions:
         "argv",
         [
             pytest.param(["--only", " "], id="empty employee number"),
+            pytest.param(["--max-employees", "0"], id="no employee"),
+            pytest.param(["--max-employees", "-1"], id="negative number of employees"),
+            pytest.param(["--max-employees", "one"], id="number of employees is not a number"),
             pytest.param(["--target", "sap"], id="unknown target"),
             pytest.param(["--log-format", "xml"], id="unknown log format"),
         ],

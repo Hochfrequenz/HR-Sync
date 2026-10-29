@@ -54,6 +54,7 @@ HR-Sync überträgt beim Onboarding die Stammdaten neuer Mitarbeiter aus **Perso
 | weclapp vor AP 5 | `--target weclapp` ist wählbar und gehört zum Standard. Solange der weclapp-Adapter fehlt, bricht ein Lauf mit weclapp als Ziel mit Exit-Code 2 ab (`problem=target_not_available`). Bis AP 5 braucht jeder Lauf also `--target decidalo`. CLI und Standard ändern sich mit AP 5 nicht mehr |
 | Test-Modus vor AP 8 | `HR_SYNC_ENVIRONMENT=test` bricht mit Exit-Code 2 ab (`problem=test_mode_not_available`), bis der Test-Modus steht. So glaubt niemand, er laufe anonymisiert |
 | Unerwartete Fehler | Jeder Fehler beendet den Lauf mit einem `sync.run` mit `outcome=error` und Exit-Code 2, auch ein Programmierfehler. Geloggt werden Fehlertyp und Codestelle (Modul, Funktion, Zeile), nie Meldung, Traceback oder Dateipfad (siehe Abschnitt 6). Ein Abbruch mit Strg+C erscheint als `sync.run` mit `outcome=error` und `error.type=KeyboardInterrupt` und beendet den Prozess wie üblich |
+| Begrenzung des Plans | `--max-employees N` (N ≥ 1): Die Planung bricht ab, sobald N Mitarbeiter mit Operationen im Plan stehen, z. B. `--max-employees 1` für einen überschaubaren Testlauf. Gilt in jedem Modus, mit und ohne Dry-Run, und lässt sich mit `--only` kombinieren. Geladen und geprüft wird trotzdem alles: Hinweise aus dem Laden erscheinen für alle Mitarbeiter, Hinweise und Abweichungen aus der Planung nur bis zum Abbruch |
 
 ## 2. Ablauf
 
@@ -330,6 +331,7 @@ class SyncPlan(BaseModel):
     employees: list[EmployeePlan]    # sortiert nach MA-Nummer, damit "der erste Eintrag" eindeutig ist
     only_in_target: dict[TargetSystem, int]  # je Zielsystem: Personen, die in Personio gar nicht vorkommen
     notices: list[Notice]            # Hinweise aus der Planung, z. B. email_in_use, und zu --only
+    limit_reached: bool = False      # die Planung hat bei max_employees abgebrochen
 
     @property
     def is_empty(self) -> bool: ...   # True, wenn es keine Operationen gibt; Abweichungen zählen nicht
@@ -338,6 +340,12 @@ class SyncPlan(BaseModel):
 ```
 
 Mit `only` ruft `build_plan` auch `check_only` auf. Die Hinweise zu `--only` stehen also in `SyncPlan.notices` (AP 7).
+
+Mit `max_employees` (`--max-employees`) geht `build_plan` die Mitarbeiter wie immer nach MA-Nummer durch und bricht
+ab, sobald so viele Mitarbeiter mit Operationen im Plan stehen. Mitarbeiter ohne Operation zählen nicht, also solche
+mit nur Abweichungen oder mit einem Datenproblem. Sie bleiben im Plan bzw. bekommen ihren Hinweis, wenn sie vor dem
+Abbruch an der Reihe sind. Die Mitarbeiter danach sieht der Planner nicht mehr an: keine Operationen, keine
+Abweichungen, keine Hinweise aus der Planung. `limit_reached` ist nur wahr, wenn danach noch Mitarbeiter übrig waren.
 
 **Ergebnis der Ausführung:** Die Executor liefern je Operation ein
 `OperationResult(operation, outcome, target_id, detail, error)`.
@@ -436,11 +444,11 @@ Umgesetzt in [`events.py`](../../src/hr_sync/events.py) (AP 3):
 
 | Event | Wann | Inhalt (Auswahl) | Level |
 |---|---|---|---|
-| `sync.run` | einmal, am Ende | `run_id`, `environment`, `dry_run`, `targets`, `only` (nur wenn angegeben), Dauer, `results` (Anzahl je System, Typ und Ergebnis, z. B. `results.decidalo.create.success=3`), `notices`, `errors`, `exit_code`. Bei einem Abbruch `error`, bei Konfigurationsfehlern mit `problem` und `variables` (nur die Namen) | INFO; ERROR bei Exit-Code 1 oder 2 |
+| `sync.run` | einmal, am Ende | `run_id`, `environment`, `dry_run`, `targets`, `only` und `max_employees` (nur wenn angegeben), Dauer, `results` (Anzahl je System, Typ und Ergebnis, z. B. `results.decidalo.create.success=3`), `notices`, `errors`, `exit_code`. Bei einem Abbruch `error`, bei Konfigurationsfehlern mit `problem` und `variables` (nur die Namen) | INFO; ERROR bei Exit-Code 1 oder 2 |
 | `sync.load` | je System | `system`, `records`, `notices`, Dauer; bei Personio zusätzlich `persons`, `without_id` und `not_relevant` je Grund (`employment_not_active`, `start_date_in_future`); bei Decidalo `users` und `deactivated` | INFO / ERROR |
 | `sync.notice` | je Datenproblem | `system`, `reason` und, falls gesetzt, `system_id`, `employee_number`, `detail` | **WARNING** |
 | `sync.deviation` | je Person und Zielsystem mit Abweichung | `employee_number`, `system`, `fields` | INFO |
-| `sync.plan` | einmal | `operations` je System und Typ, `deviations` je System, `only_in_target` je System, `notices`, `is_empty` | INFO |
+| `sync.plan` | einmal | `operations` je System und Typ, `deviations` je System, `only_in_target` je System, `notices`, `is_empty`, `limit_reached` | INFO |
 | `sync.operation` | je Operation | `employee_number`, `system`, `type`, `outcome` (`success`, `error`, `skipped`, `dry_run`), `target_id`, `detail` (z. B. Zeilenstatus), `error` | INFO; ERROR bei `error`, WARNING bei `skipped` |
 
 - **Keine personenbezogenen Werte:** nur MA-Nummer, systeminterne IDs, Feldnamen und Zahlen. Ein Test prüft, dass
@@ -501,7 +509,7 @@ Tabelle mit *(HF)* markiert und werden im README als solche dokumentiert, damit 
 | `HR_SYNC_ENVIRONMENT` | `production` (Standard) oder `test`, siehe [Abschnitt 8](#8-testumgebungen-und-anonymisierung) |
 | `HR_SYNC_LOG_FORMAT` | `pretty` oder `json` |
 
-**CLI:** `hr-sync [--dry-run] [--only MA-NR ...] [--target weclapp|decidalo ...] [--env-file PFAD] [--log-format pretty|json]`,
+**CLI:** `hr-sync [--dry-run] [--only MA-NR ...] [--max-employees N] [--target weclapp|decidalo ...] [--env-file PFAD] [--log-format pretty|json]`,
 umgesetzt mit `argparse` (keine weitere Abhängigkeit).
 
 - `--env-file PFAD` liest die Konfiguration aus dieser Datei statt aus `.env` im aktuellen Verzeichnis. Das ist wichtig,
@@ -523,6 +531,10 @@ umgesetzt mit `argparse` (keine weitere Abhängigkeit).
       dem Personenstatus `ACTIVE` laden, kann das eine unbekannte Nummer oder ein ausgeschiedener Mitarbeiter sein.
       Wir unterscheiden das bewusst nicht, sonst müssten wir für diese Meldung alle ehemaligen Mitarbeiter laden.
   - Der erste echte Lauf läuft verbindlich mit `--only` und der MA-Nummer einer Testperson (AP 9).
+
+- `--max-employees N` bricht die Planung ab, sobald N Mitarbeiter mit Operationen im Plan stehen (siehe 1.1 und 4.2).
+  Mit `--only` zusammen wirkt erst `--only`, dann die Begrenzung. N muss mindestens 1 sein, sonst endet der Lauf wie
+  bei jeder ungültigen Option mit Exit-Code 2.
 
 **Exit-Codes:**
 
@@ -630,9 +642,10 @@ Ablauf von `integration_write`:
 
 1. Der Test setzt den Test-Modus mit dem Ziel Decidalo.
 2. Laden, anonymisieren, Plan erstellen.
-3. Den ersten Eintrag des Plans nehmen, der eine Operation hat. Gibt es keinen, wird der Test übersprungen.
+3. Den Plan mit `max_employees=1` erstellen (siehe 4.2): Er enthält dann nur den ersten Mitarbeiter mit Operation.
+   Gibt es keinen, wird der Test übersprungen.
 4. Nur diesen Eintrag ausführen. Dafür lassen sich die Schritte in `sync.py` (laden, planen, ausführen) einzeln
-   aufrufen, und der Test übergibt einen Plan, der nur diesen Eintrag enthält.
+   aufrufen.
 5. Prüfen, ob der User angelegt wurde: `get_users(employee_id=...)` findet genau einen User mit den anonymisierten
    Werten, dem echten Eintrittsdatum und ohne Login.
 6. Prüfen, dass ein neuer Plan für diese MA-Nummer keine Operation mehr enthält.
@@ -761,6 +774,7 @@ Die Reihenfolge baut zuerst den Kern ohne IO und hängt dann die Systeme an:
 | 5 | **weclapp-Loader und -Executor** (`CREATE`, `COMPLETE`) | gegen `FakeWeclapp` getestet |
 | 6 | **Decidalo-Loader und -Executor** (synchroner Import über `ImportSync`, Ergebnisse pro Zeile) | mit Fake-Client und einfachen Daten getestet |
 | 7 | **Orchestrierung, CLI** (inklusive `--only`, `--target` und `--env-file`), **Dry-Run, Exit-Codes**, Ende-zu-Ende-Tests. weclapp und der Test-Modus brechen bis AP 5 bzw. AP 8 ab (siehe 1.1) | `hr-sync --dry-run --target decidalo` läuft; Tests zeigen, dass `--only` alle anderen Personen aus dem Plan nimmt und `--target` die anderen Systeme nicht anfasst |
+| 7a | **Begrenzung des Plans** mit `--max-employees N` für überschaubare Testläufe (siehe 1.1 und 4.2) | `hr-sync --dry-run --target decidalo --max-employees 1` plant höchstens einen Mitarbeiter |
 | 8 | **Test-Modus und Integrationstest:** Anonymisierung, Prüfungen für den Test-Modus, Integrationstests gegen die Decidalo-Testumgebung mit wählbarem Aufräumen | `uv run pytest -m integration_write` legt den ersten Planeintrag anonymisiert in der Testumgebung an, prüft ihn und räumt auf |
 | 9 | **Testlauf:** Dry-Run gegen die echten Systeme (nur lesend) und offene Punkte klären. Dann der erste echte Lauf, **nur mit `--only <MA-Nummer der Testperson>`**, vorher mit denselben Optionen als Dry-Run. Voraussetzung: Die Testperson steht mit MA-Nummer, E-Mail und einem aktiven Employment (Start heute oder früher) in Personio | Go-live-Entscheidung |
 | 10 | **PyPI-Paket** (siehe [Abschnitt 9](#9-pypi-paket)): `LICENSE`, README als Nutzerdoku, Publish-Workflow aktivieren, Trusted Publisher auf PyPI und Environment `release` einrichten, Python-Obergrenze prüfen, Release als Pre-Release oder stabil je nach Clients. Zeitpunkt offen (O14) | `hochfrequenz-hr-sync` auf PyPI |

@@ -51,6 +51,8 @@ class RunOptions:
     """the selected target systems; the others are neither loaded nor written"""
     only: frozenset[str] | None = None
     """restricts the plan to these employee numbers; all employees are loaded anyway, to find data problems"""
+    max_employees: int | None = None
+    """stops planning as soon as this many employees have operations, e.g. to keep a test run small"""
     dry_run: bool = False
 
 
@@ -96,7 +98,7 @@ def run(
             if systems is None:
                 systems = connect(settings, options.targets)
             snapshots = load_snapshots(systems, settings, options.targets, today or date.today())
-            sync_plan = create_plan(snapshots, options.only)
+            sync_plan = create_plan(snapshots, options.only, options.max_employees)
             results = execute_plan(systems, sync_plan, settings, dry_run=options.dry_run)
         except Exception as error:  # any error ends the run with an event, but without its message
             return _aborted(event, error)
@@ -165,13 +167,15 @@ def load_snapshots(systems: Systems, settings: Settings, targets: Collection[Tar
     return Snapshots(source=source, targets=loaded)
 
 
-def create_plan(snapshots: Snapshots, only: Collection[str] | None = None) -> SyncPlan:
+def create_plan(
+    snapshots: Snapshots, only: Collection[str] | None = None, max_employees: int | None = None
+) -> SyncPlan:
     """
     Creates the plan (see :func:`hr_sync.planner.build_plan`) and logs its notices, one event ``sync.deviation`` per
     employee and target system with deviations, and the event ``sync.plan``.
     """
     with wide_event("sync.plan") as event:
-        sync_plan = build_plan(snapshots.source, snapshots.targets, only=only)
+        sync_plan = build_plan(snapshots.source, snapshots.targets, only=only, max_employees=max_employees)
         _emit_notices(sync_plan.notices)
         deviations: Counter[TargetSystem] = Counter()
         for employee in sync_plan.employees:
@@ -191,6 +195,7 @@ def create_plan(snapshots: Snapshots, only: Collection[str] | None = None) -> Sy
         event["only_in_target"] = {target.value: count for target, count in sync_plan.only_in_target.items()}
         event["notices"] = len(sync_plan.notices)
         event["is_empty"] = sync_plan.is_empty
+        event["limit_reached"] = sync_plan.limit_reached
     return sync_plan
 
 
@@ -251,6 +256,8 @@ def _option_fields(options: RunOptions) -> dict[str, object]:
     fields: dict[str, object] = {"targets": [target.value for target in options.targets]}
     if options.only is not None:
         fields["only"] = sorted(options.only)
+    if options.max_employees is not None:
+        fields["max_employees"] = options.max_employees
     return fields
 
 
