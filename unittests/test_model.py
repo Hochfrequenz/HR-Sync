@@ -112,6 +112,7 @@ class TestExclusionReason:
             (ExclusionReason.MISSING_FIELD, True),
             (ExclusionReason.UNMAPPED_VALUE, True),
             (ExclusionReason.INVALID_PHONE_NUMBER, True),
+            (ExclusionReason.VALUE_TOO_LONG, True),
         ],
     )
     def test_is_data_problem(self, reason: ExclusionReason, is_data_problem: bool) -> None:

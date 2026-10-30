@@ -246,6 +246,20 @@ class TestMapPerson:
                 personio_person(last_name=None), None, ExclusionReason.MISSING_FIELD, "last_name", id="no last name"
             ),
             pytest.param(
+                personio_person(first_name="E" * 51),
+                None,
+                ExclusionReason.VALUE_TOO_LONG,
+                "first_name",
+                id="first name too long for weclapp",
+            ),
+            pytest.param(
+                personio_person(last_name="M" * 51),
+                None,
+                ExclusionReason.VALUE_TOO_LONG,
+                "last_name",
+                id="last name too long for weclapp",
+            ),
+            pytest.param(
                 personio_person(career_level=None),
                 None,
                 ExclusionReason.MISSING_FIELD,

@@ -1,13 +1,15 @@
 """
-The fixed mappings of the fields of phase 2: career level, office and weekly hours.
+The fixed mappings of the fields of phase 2: career level, office and weekly hours, and the fixed values of new weclapp
+users.
 
 They are rules of Hochfrequenz and no settings (see section 4.4 of the plan). Only the values in these mappings are
 allowed: any other value is a data problem, so that an employee is only created once the mappings know all of their
-values.
+values. The ids in weclapp only exist in the tenant of Hochfrequenz.
 """
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from decimal import Decimal
 
 
 @dataclass(frozen=True)
@@ -77,3 +79,37 @@ def work_schedule_profile(weekly_hours: float) -> str | None:
     if not float(weekly_hours).is_integer():
         return None
     return WORK_SCHEDULE_PROFILES.get(int(weekly_hours))
+
+
+WECLAPP_NAME_MAX_LENGTH = 50
+"""weclapp rejects longer first and last names"""
+WECLAPP_LICENSES = ("WECLAPP_PROJECT", "ADDON_HUMAN_RESOURCES")
+"""the licenses of new weclapp users"""
+WECLAPP_USER_ROLE_IDS = ("7166", "4329")
+"""the roles of new weclapp users: time recording and weclapp project (all permissions)"""
+WECLAPP_COST_RATE = Decimal(59)
+"""the cost rate of new weclapp users in EUR/h, preliminary until the real rules are known (O20)"""
+WECLAPP_COST_RATE_REASON = "Erstanlage (weclapp)"
+"""the reason of the cost rate of new weclapp users"""
+
+
+@dataclass(frozen=True)
+class WeclappAttributeIds:
+    """The ids of the definitions of the custom attributes at weclapp users that HR-Sync writes besides the number."""
+
+    cost_rate: str
+    """number, EUR/h"""
+    cost_rate_reason: str
+    """string"""
+    vacation_days: str
+    """number, days per year"""
+    state: str
+    """list: the federal state, which defines the public holidays"""
+    career_level: str
+    """string"""
+
+
+WECLAPP_ATTRIBUTE_IDS = WeclappAttributeIds(
+    cost_rate="8211", cost_rate_reason="8217", vacation_days="9795", state="9902", career_level="14175"
+)
+"""the custom attributes of new weclapp users"""

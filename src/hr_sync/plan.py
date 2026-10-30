@@ -27,6 +27,8 @@ class Operation(BaseModel):
     type: OperationType
     record: EmployeeRecord
     """the desired state from Personio"""
+    target_id: str | None = None
+    """the id of the existing record in the target system, for :attr:`OperationType.COMPLETE`"""
 
 
 class Deviation(BaseModel):

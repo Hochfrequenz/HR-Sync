@@ -7,6 +7,9 @@ from decidalo_client import DecidaloClient
 from decidalo_client.models import ImportItemStatusType, UserImportResults
 from personio_client import Employment, Person, PersonioClient
 from pydantic import SecretStr
+from weclapp_client import WeclappClient
+from weclapp_client.models import UserStatus
+from weclapp_client.testing import FakeWeclapp
 
 from hr_sync.config import ConfigurationError, ConfigurationProblem, Environment, Settings
 from hr_sync.model import EmployeeRecord, NoticeReason, System, TargetSystem
@@ -21,8 +24,10 @@ from hr_sync.sync import (
     load_snapshots,
     new_decidalo_users,
     run,
+    weclapp_setup,
 )
 from hr_sync.systems.decidalo import NewUserDefaults
+from hr_sync.systems.weclapp import WeclappSetup, new_employee
 from unittests.fakes import (
     ATTRIBUTE,
     PHONE,
@@ -32,6 +37,7 @@ from unittests.fakes import (
     import_row,
     personio_employment,
     personio_person,
+    weclapp_fake,
 )
 
 TODAY = date(2026, 10, 29)
@@ -55,6 +61,15 @@ def _settings(**changes: object) -> Settings:
         "decidalo_api_key": SecretStr("decidalo-key"),
     }
     return Settings.model_validate(values | changes)
+
+
+def _weclapp_settings(**changes: object) -> Settings:
+    values: dict[str, object] = {
+        "weclapp_api_token": SecretStr("weclapp-token"),
+        "weclapp_tenant": "hf",
+        "weclapp_employee_number_attribute_id": "7621",
+    }
+    return _settings(**(values | changes))
 
 
 def _test_settings(**changes: object) -> Settings:
@@ -317,6 +332,15 @@ class TestRun:
         }
         assert run_event["exit_code"] == 2
 
+    def test_weclapp_without_client_is_a_programming_error(self, events: list[dict[str, object]]) -> None:
+        options = RunOptions(targets=(TargetSystem.WECLAPP,), dry_run=True)
+        assert run(_weclapp_settings(), options, systems=Systems(personio=_personio(ERIKA)), today=TODAY) == (
+            ExitCode.ABORTED
+        )
+        error = _run_event(events)["error"]
+        assert isinstance(error, dict)
+        assert (error["type"], error["function"]) == ("ValueError", "_weclapp")
+
     def test_unexpected_error_is_logged_with_its_code_location(self, events: list[dict[str, object]]) -> None:
         # a programming error: Decidalo is selected, but has no client
         systems = Systems(personio=_personio(ERIKA))
@@ -340,6 +364,125 @@ class TestRun:
         assert run(_settings(), DECIDALO) == ExitCode.SUCCESS
         assert connected == [(TargetSystem.DECIDALO,)]
         assert len(decidalo.batches) == 1
+
+
+class TestRunWithWeclapp:
+    """
+    Tests of whole runs with weclapp as target, against the fake of the weclapp-client. Until the client can send the
+    phone number, weclapp only runs as a dry run.
+    """
+
+    @pytest.fixture
+    def fake(self, monkeypatch: pytest.MonkeyPatch) -> tuple[FakeWeclapp, WeclappSetup]:
+        fake, setup = weclapp_fake()
+        # the fake assigns its own ids instead of the ids of Hochfrequenz
+        monkeypatch.setattr("hr_sync.sync.weclapp_setup", lambda settings: setup)
+        return fake, setup
+
+    def _run(
+        self,
+        fake: FakeWeclapp,
+        *persons: Person,
+        dry_run: bool = True,
+        targets: tuple[TargetSystem, ...] = (TargetSystem.WECLAPP,),
+    ) -> ExitCode:
+        with fake.client() as client:
+            systems = Systems(personio=_personio(*persons), decidalo=FakeDecidalo(), weclapp=client)
+            options = RunOptions(targets=targets, dry_run=dry_run)
+            return run(_weclapp_settings(), options, systems=systems, today=TODAY)
+
+    def test_dry_run(self, fake: tuple[FakeWeclapp, WeclappSetup], events: list[dict[str, object]]) -> None:
+        weclapp, _ = fake
+        assert self._run(weclapp, ERIKA, MAX) == ExitCode.SUCCESS
+        assert weclapp.write_requests == []
+        operations = _named(events, "sync.operation")
+        assert [(event["system"], event["type"], event["outcome"]) for event in operations] == [
+            ("weclapp", "create", "dry_run"),
+            ("weclapp", "create", "dry_run"),
+        ]
+        assert [value for value in PERSONAL_DATA if value in str(events)] == []
+
+    def test_real_run_is_not_available_yet(
+        self, fake: tuple[FakeWeclapp, WeclappSetup], events: list[dict[str, object]]
+    ) -> None:
+        weclapp, _ = fake
+        assert self._run(weclapp, ERIKA, dry_run=False) == ExitCode.ABORTED
+        assert weclapp.requests == []
+        error = _run_event(events)["error"]
+        assert isinstance(error, dict)
+        assert error["problem"] == "target_not_available"
+
+    def test_user_without_employee_record_is_completed(
+        self, fake: tuple[FakeWeclapp, WeclappSetup], events: list[dict[str, object]]
+    ) -> None:
+        weclapp, setup = fake
+        record = load_snapshots(Systems(personio=_personio(ERIKA)), _settings(), [], TODAY).source.records["00165"]
+        operation = Operation(system=TargetSystem.WECLAPP, type=OperationType.CREATE, record=record)
+        with weclapp.client() as client:
+            user = client.users.create(new_employee(operation, setup).user)  # type: ignore[arg-type]
+        assert self._run(weclapp, ERIKA) == ExitCode.SUCCESS
+        # the entry date and the weekly hours come with the employee record, so they are not compared
+        operations = _named(events, "sync.operation")
+        assert [(event["type"], event["target_id"]) for event in operations] == [("complete", user.id)]
+        assert _named(events, "sync.deviation") == []
+
+    def test_deactivated_user_blocks_the_employee(
+        self, fake: tuple[FakeWeclapp, WeclappSetup], events: list[dict[str, object]]
+    ) -> None:
+        weclapp, setup = fake
+        weclapp.add_user(
+            email="erika.musterfrau@example.com",
+            status=UserStatus.DEPARTURE,
+            custom_attributes={setup.employee_number_attribute_id: "00165"},
+        )
+        targets = (TargetSystem.WECLAPP, TargetSystem.DECIDALO)
+        assert self._run(weclapp, ERIKA, targets=targets) == ExitCode.SUCCESS
+        assert _named(events, "sync.operation") == []
+        notices = _named(events, "sync.notice")
+        assert [(event["system"], event["reason"]) for event in notices] == [("weclapp", "deactivated_in_target")]
+
+    def test_setup_that_doesnt_fit_aborts(
+        self, monkeypatch: pytest.MonkeyPatch, events: list[dict[str, object]]
+    ) -> None:
+        setup = WeclappSetup(employee_number_attribute_id="7621")
+        monkeypatch.setattr("hr_sync.sync.weclapp_setup", lambda settings: setup)
+        assert self._run(FakeWeclapp(), ERIKA) == ExitCode.ABORTED
+        error = _run_event(events)["error"]
+        assert isinstance(error, dict)
+        assert error["problem"] == "weclapp_setup_mismatch"
+        assert error["variables"] == ["WECLAPP_EMPLOYEE_NUMBER_ATTRIBUTE_ID"]
+        assert isinstance(error["ids"], list)
+        assert "8211" in error["ids"]
+
+    def test_connected_weclapp_is_closed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        closed: list[bool] = []
+        client = FakeWeclapp().client()
+        monkeypatch.setattr(client, "close", lambda: closed.append(True))
+        systems = Systems(personio=_personio(), weclapp=client)
+        monkeypatch.setattr("hr_sync.sync.connect", lambda settings, targets: systems)
+        monkeypatch.setattr("hr_sync.sync.load_snapshots", _fail)
+        options = RunOptions(targets=(TargetSystem.WECLAPP,), dry_run=True)
+        assert run(_weclapp_settings(), options) == ExitCode.ABORTED
+        assert closed == [True]
+
+
+def _fail(*args: object) -> None:
+    raise ConnectionError("not reachable")
+
+
+class TestWeclappSetup:
+    """
+    Tests of the ids in weclapp from the settings.
+    """
+
+    def test_from_the_settings(self) -> None:
+        setup = weclapp_setup(_weclapp_settings(weclapp_new_user_status=UserStatus.NOT_ACTIVE))
+        assert setup == WeclappSetup(employee_number_attribute_id="7621", new_user_status=UserStatus.NOT_ACTIVE)
+
+    def test_attribute_of_the_employee_number_is_required(self) -> None:
+        with pytest.raises(ConfigurationError) as error_info:
+            weclapp_setup(_settings())
+        assert error_info.value.variables == ("WECLAPP_EMPLOYEE_NUMBER_ATTRIBUTE_ID",)
 
 
 class TestNewDecidaloUsers:
@@ -405,7 +548,36 @@ class TestConnect:
         assert error_info.value.problem == ConfigurationProblem.PRODUCTION_URL_IN_TEST_MODE
 
     def test_only_selected_targets_get_a_client(self) -> None:
-        assert connect(_settings(decidalo_api_key=None), []).decidalo is None
+        systems = connect(_settings(decidalo_api_key=None), [])
+        assert (systems.decidalo, systems.weclapp) == (None, None)
+
+    @pytest.mark.parametrize(
+        ("changes", "base_url"),
+        [
+            pytest.param({}, "https://hf.weclapp.com/webapp/api/v2/", id="tenant"),
+            pytest.param(
+                {"weclapp_base_url": "https://weclapp.example/webapp/api/v2"},
+                "https://weclapp.example/webapp/api/v2/",
+                id="base URL wins",
+            ),
+        ],
+    )
+    def test_weclapp(self, changes: dict[str, object], base_url: str) -> None:
+        systems = connect(_weclapp_settings(**changes), [TargetSystem.WECLAPP])
+        assert isinstance(systems.weclapp, WeclappClient)
+        assert systems.weclapp._transport._config.base_url == base_url
+        systems.close()
+
+    def test_weclapp_without_tenant(self) -> None:
+        with pytest.raises(ConfigurationError) as error_info:
+            connect(_weclapp_settings(weclapp_tenant=None), [TargetSystem.WECLAPP])
+        assert error_info.value.variables == ("WECLAPP_TENANT", "WECLAPP_BASE_URL")
+
+    def test_weclapp_never_in_the_test_mode(self) -> None:
+        # also when connect is called without check_settings: there is no weclapp test tenant
+        with pytest.raises(ConfigurationError) as error_info:
+            connect(_weclapp_settings(hr_sync_environment=Environment.TEST), [TargetSystem.WECLAPP])
+        assert error_info.value.problem == ConfigurationProblem.TARGET_NOT_ALLOWED_IN_TEST_MODE
 
     def test_missing_credential(self) -> None:
         with pytest.raises(ConfigurationError) as error_info:
@@ -435,11 +607,20 @@ class TestSteps:
         assert plan_event["only_in_target"] == {"decidalo": 0}
         assert (plan_event["notices"], plan_event["is_empty"], plan_event["limit_reached"]) == (0, False, False)
 
-    def test_weclapp_can_not_be_loaded_yet(self) -> None:
-        with pytest.raises(NotImplementedError):
-            load_snapshots(Systems(personio=_personio(ERIKA)), _settings(), [TargetSystem.WECLAPP], TODAY)
+    def test_load_weclapp(self, monkeypatch: pytest.MonkeyPatch, events: list[dict[str, object]]) -> None:
+        fake, setup = weclapp_fake()
+        monkeypatch.setattr("hr_sync.sync.weclapp_setup", lambda settings: setup)
+        with fake.client() as client:
+            snapshots = load_snapshots(
+                Systems(personio=_personio(ERIKA), weclapp=client), _settings(), [TargetSystem.WECLAPP], TODAY
+            )
+        assert list(snapshots.targets) == [TargetSystem.WECLAPP]
+        assert [(event["event"], event["system"]) for event in events] == [
+            ("sync.load", "personio"),
+            ("sync.load", "weclapp"),
+        ]
 
-    def test_weclapp_can_only_be_planned_yet(self, events: list[dict[str, object]]) -> None:
+    def test_weclapp_only_in_a_dry_run_yet(self, events: list[dict[str, object]]) -> None:
         record = EmployeeRecord(employee_number="00165", first_name="Erika")
         operation = Operation(system=TargetSystem.WECLAPP, type=OperationType.CREATE, record=record)
         sync_plan = SyncPlan(
@@ -449,8 +630,10 @@ class TestSteps:
         systems = Systems(personio=_personio())
         results = execute_plan(systems, sync_plan, _settings(), dry_run=True)
         assert [result.outcome for result in results] == [Outcome.DRY_RUN]
-        with pytest.raises(NotImplementedError):
+        # like check_settings, also when the steps are called on their own
+        with pytest.raises(ConfigurationError) as error_info:
             execute_plan(systems, sync_plan, _settings(), dry_run=False)
+        assert error_info.value.problem == ConfigurationProblem.TARGET_NOT_AVAILABLE
 
     def test_personio_attribute_from_the_settings(self) -> None:
         settings = _settings(personio_employee_number_attribute=ATTRIBUTE)

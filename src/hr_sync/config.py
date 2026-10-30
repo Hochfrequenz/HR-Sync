@@ -11,6 +11,7 @@ from urllib.parse import urlsplit
 
 from pydantic import AnyHttpUrl, SecretStr, ValidationError
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from weclapp_client.models import UserStatus
 
 from hr_sync.events import LogFormat
 from hr_sync.model import TargetSystem
@@ -57,6 +58,18 @@ class Settings(BaseSettings):
     """the id of the custom attribute that holds the career level"""
     personio_mobile_phone_attribute: str = "dynamic_6239d4b55575b2.63567609"
     """the id of the custom attribute that holds the mobile phone number"""
+    weclapp_api_token: SecretStr | None = None
+    weclapp_tenant: str | None = None
+    """the tenant ``<tenant>.weclapp.com``; alternatively :attr:`weclapp_base_url`"""
+    weclapp_base_url: str | None = None
+    """the base URL of the REST API v2; it wins over :attr:`weclapp_tenant`"""
+    weclapp_employee_number_attribute_id: str | None = None
+    """
+    the id of the custom attribute definition that holds the employee number; required if weclapp is a target, without
+    default, because the id only exists in one tenant (Hochfrequenz: 7621)
+    """
+    weclapp_new_user_status: UserStatus = UserStatus.ACTIVE
+    """the status of new users; a user with another status counts as deactivated"""
     decidalo_api_key: SecretStr | None = None
     decidalo_employee_type_id: int = 2
     """the employee type of new users, by id; it wins over the name if the name doesn't exist"""
@@ -90,11 +103,16 @@ class ConfigurationProblem(StrEnum):
     INVALID_VARIABLES = "invalid_variables"
     MISSING_VARIABLES = "missing_variables"
     TARGET_NOT_AVAILABLE = "target_not_available"
-    """weclapp is selected, but its adapter doesn't exist yet (AP 5)"""
+    """
+    weclapp is selected without ``--dry-run``: until the weclapp-client can send the phone number (0.1.0a3), new users
+    would lack it for good, because HR-Sync never updates
+    """
     TARGET_NOT_ALLOWED_IN_TEST_MODE = "target_not_allowed_in_test_mode"
     """weclapp is selected in the test mode, but has no test tenant"""
     PRODUCTION_URL_IN_TEST_MODE = "production_url_in_test_mode"
     """``DECIDALO_TEST_BASE_URL`` points to the production system"""
+    WECLAPP_SETUP_MISMATCH = "weclapp_setup_mismatch"
+    """a custom attribute definition or a work schedule profile in weclapp is missing or doesn't fit, by id"""
 
 
 class ConfigurationError(Exception):
@@ -103,10 +121,13 @@ class ConfigurationError(Exception):
     are never part of the error.
     """
 
-    def __init__(self, problem: ConfigurationProblem, variables: Iterable[str] = ()) -> None:
+    def __init__(self, problem: ConfigurationProblem, variables: Iterable[str] = (), ids: Iterable[str] = ()) -> None:
         self.problem = problem
         self.variables = tuple(variables)
-        super().__init__(f"{problem}: {', '.join(self.variables)}" if self.variables else str(problem))
+        self.ids = tuple(ids)
+        """the ids of the objects in a system that don't fit, e.g. of custom attribute definitions in weclapp"""
+        names = ", ".join((*self.variables, *self.ids))
+        super().__init__(f"{problem}: {names}" if names else str(problem))
 
     @property
     def fields(self) -> dict[str, object]:
@@ -116,6 +137,8 @@ class ConfigurationError(Exception):
         fields: dict[str, object] = {"problem": self.problem}
         if self.variables:
             fields["variables"] = list(self.variables)
+        if self.ids:
+            fields["ids"] = list(self.ids)
         return fields
 
 
@@ -136,28 +159,35 @@ def load_settings(env_file: Path | None = None) -> Settings:
         raise ConfigurationError(ConfigurationProblem.INVALID_VARIABLES, variables) from None
 
 
-def check_settings(settings: Settings, targets: Collection[TargetSystem]) -> None:
+def check_settings(settings: Settings, targets: Collection[TargetSystem], *, dry_run: bool = False) -> None:
     """
     Checks that the settings allow a run with the given target systems, before any system is called.
 
     The production mode needs the credentials of the production systems, the test mode those of the test
-    environments: ``DECIDALO_TEST_BASE_URL`` and ``DECIDALO_TEST_API_KEY`` instead of ``DECIDALO_API_KEY``.
+    environments: ``DECIDALO_TEST_BASE_URL`` and ``DECIDALO_TEST_API_KEY`` instead of ``DECIDALO_API_KEY``. weclapp
+    needs ``WECLAPP_API_TOKEN``, ``WECLAPP_EMPLOYEE_NUMBER_ATTRIBUTE_ID`` and either ``WECLAPP_TENANT`` or
+    ``WECLAPP_BASE_URL``.
 
     Raises:
-        ConfigurationError: if weclapp is selected, which is not available yet and never in the test mode, if a
-            credential of Personio or a selected target system is missing, or if the test mode would write to the
-            production system of Decidalo.
+        ConfigurationError: if weclapp is selected in the test mode, where it's never allowed, or without ``dry_run``,
+            which is not available yet (see :attr:`ConfigurationProblem.TARGET_NOT_AVAILABLE`), if a credential of
+            Personio or a selected target system is missing, or if the test mode would write to the production system
+            of Decidalo.
     """
     if settings.test_mode and TargetSystem.WECLAPP in targets:
         raise ConfigurationError(ConfigurationProblem.TARGET_NOT_ALLOWED_IN_TEST_MODE)
-    if TargetSystem.WECLAPP in targets:
+    if TargetSystem.WECLAPP in targets and not dry_run:
         raise ConfigurationError(ConfigurationProblem.TARGET_NOT_AVAILABLE)
     required = ["personio_client_id", "personio_client_secret"]
     if TargetSystem.DECIDALO in targets:
         required.extend(
             ["decidalo_test_base_url", "decidalo_test_api_key"] if settings.test_mode else ["decidalo_api_key"]
         )
+    if TargetSystem.WECLAPP in targets:
+        required.extend(["weclapp_api_token", "weclapp_employee_number_attribute_id"])
     missing = [name.upper() for name in required if getattr(settings, name) is None]
+    if TargetSystem.WECLAPP in targets and settings.weclapp_tenant is None and settings.weclapp_base_url is None:
+        missing.extend(["WECLAPP_TENANT", "WECLAPP_BASE_URL"])
     if missing:
         raise ConfigurationError(ConfigurationProblem.MISSING_VARIABLES, missing)
     if settings.test_mode and TargetSystem.DECIDALO in targets:

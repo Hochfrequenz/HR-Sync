@@ -731,7 +731,7 @@ requires-dist = [
     { name = "personio-client", specifier = ">=0.1.0a1,<0.2" },
     { name = "pydantic", specifier = ">=2.11" },
     { name = "pydantic-settings", specifier = ">=2.7" },
-    { name = "weclapp-client", specifier = ">=0.1.0a1,<0.2" },
+    { name = "weclapp-client", specifier = ">=0.1.0a2,<0.2" },
 ]
 
 [package.metadata.requires-dev]
@@ -1809,6 +1809,15 @@ wheels = [
 ]
 
 [[package]]
+name = "tzdata"
+version = "2026.6"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/7a/29/6a1391d31cd00ff9e927215a224a880e1e84e826b64ba80a499e51c074d8/tzdata-2026.6.tar.gz", hash = "sha256:85d2cd9c09f81f0bb29db27759fc83af4f1e620efb814f8c5bf8b4cc4feece6d", size = 201017, upload-time = "2026-10-28T09:57:09.137Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/0a/66/9a06c2227fedfd4919f0eaaa8b94377d9730882a7e4f95823c9a331ab5e1/tzdata-2026.6-py2.py3-none-any.whl", hash = "sha256:0a10eec6e13ef16b627fabed9a5f2ba61a62b1c67f327305f4e7e412a70b4aec", size = 348210, upload-time = "2026-10-28T09:57:07.276Z" },
+]
+
+[[package]]
 name = "urllib3"
 version = "2.8.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1835,15 +1844,16 @@ wheels = [
 
 [[package]]
 name = "weclapp-client"
-version = "0.1.0a1"
+version = "0.1.0a2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "httpx" },
     { name = "pydantic" },
+    { name = "tzdata" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/39/c3/42e84b6d125f56433def59e2d3a67b4a549bec14573f9f8089ba429e3322/weclapp_client-0.1.0a1.tar.gz", hash = "sha256:308a45f32fa717b4ef79bc6dc0c772a9c57eab30a62347a155c8219ad344a14d", size = 136374, upload-time = "2026-10-07T12:50:22.857Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/00/10/2d4916d039232968c371962d686ecf4db5918d0da7c2ab308a03180baf47/weclapp_client-0.1.0a2.tar.gz", hash = "sha256:743de3ce379bf92281a788c2c55bc62659a1020a64b089c83247aee94e40c8bc", size = 146587, upload-time = "2026-10-30T15:39:14.403Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/15/26/25c926619405b314295e070b8f67d590dca79ca42b25433d1186a5423903/weclapp_client-0.1.0a1-py3-none-any.whl", hash = "sha256:058399d992ff8c3a72de953523fcca0d2bdede248ef9d7619755a7319dc9ea54", size = 35796, upload-time = "2026-10-07T12:50:21.481Z" },
+    { url = "https://files.pythonhosted.org/packages/79/c3/87f52e7d4435ff1d4a20ae01b6cadd2160ec9b43f55f594262e477902f6e/weclapp_client-0.1.0a2-py3-none-any.whl", hash = "sha256:9535a7fbc0a44362cd34015ee5856fae79a8f04d504c3f72551303cbdb1614da", size = 39863, upload-time = "2026-10-30T15:39:12.827Z" },
 ]
 
 [[package]]

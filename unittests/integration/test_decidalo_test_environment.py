@@ -6,14 +6,12 @@ Personio is read in production, so a failing test must not print personal data:
 - The assertions are not rewritten by pytest (PYTEST_DONT_REWRITE), because pytest would show the values of every
   subexpression, e.g. a snapshot with real names. Instead, every assertion has a message with employee numbers, field
   names, statuses and numbers only.
-- :func:`_without_personal_data` reports any other error only with its :func:`hr_sync.events.error_fields`.
+- :func:`unittests.integration.guards.without_personal_data` reports any other error only with its
+  :func:`hr_sync.events.error_fields`.
 """
 
 import asyncio
-import functools
-from collections.abc import Callable
 from datetime import date
-from typing import ParamSpec
 
 import pytest
 from decidalo_client import DecidaloClient
@@ -21,9 +19,8 @@ from decidalo_client.models import ImportItemStatusType, UserBatchInput, UserImp
 
 from hr_sync.anonymize import KEPT_FIELDS, SUBSTITUTES, anonymize
 from hr_sync.config import Settings
-from hr_sync.events import error_fields
 from hr_sync.mappings import OFFICES
-from hr_sync.model import EmployeeRecord, Snapshot, TargetSystem
+from hr_sync.model import EmployeeRecord, TargetSystem
 from hr_sync.plan import Outcome
 from hr_sync.sync import (
     Snapshots,
@@ -36,50 +33,14 @@ from hr_sync.sync import (
 )
 from hr_sync.systems.decidalo import load_decidalo
 from hr_sync.systems.personio import load_personio
+from unittests.integration.guards import leaked, without_personal_data
 
 DECIDALO = [TargetSystem.DECIDALO]
-
-P = ParamSpec("P")
-
-
-def _without_personal_data(test: Callable[P, None]) -> Callable[P, None]:
-    """
-    Reports a failure of the test, including its cleanup, only with values that are safe to log: a failed assertion
-    with its message, any other error with its type and :func:`hr_sync.events.error_fields`. The original exception,
-    its message, its traceback and chained exceptions are not shown, because they may contain personal data.
-    """
-
-    @functools.wraps(test)
-    def run(*args: P.args, **kwargs: P.kwargs) -> None:
-        failure: str | None = None
-        try:
-            test(*args, **kwargs)
-        except AssertionError as error:
-            failure = f"AssertionError: {error}"
-        except Exception as error:  # e.g. an API error or a validation error that repeats a name
-            failure = f"{type(error).__name__}: {error_fields(error)}"
-        if failure is not None:
-            # outside the except blocks, so that the original exception isn't chained to the failure
-            pytest.fail(failure, pytrace=False)
-
-    return run
 
 
 def _decidalo(systems: Systems) -> DecidaloClient:
     assert isinstance(systems.decidalo, DecidaloClient), "Decidalo has no client"
     return systems.decidalo
-
-
-def _leaked(real: Snapshot, text: str) -> list[tuple[str, str]]:
-    """
-    Returns employee number and field of every real value that occurs in the text, without the value itself.
-    """
-    return [
-        (number, field)
-        for number, record in real.records.items()
-        for field in SUBSTITUTES
-        if isinstance(value := getattr(record, field), str) and value in text
-    ]
 
 
 def _users(client: DecidaloClient, employee_number: str) -> list[UserOverview]:
@@ -147,7 +108,7 @@ def _delete_test_user(client: DecidaloClient, employee_number: str, user_id: int
 
 
 @pytest.mark.integration
-@_without_personal_data
+@without_personal_data
 def test_plan_with_anonymized_data(test_settings: Settings, events: list[dict[str, object]]) -> None:
     """
     Reads Personio and the Decidalo test environment, plans with anonymized data and executes the plan as a dry run.
@@ -158,8 +119,8 @@ def test_plan_with_anonymized_data(test_settings: Settings, events: list[dict[st
     differing = sorted(real.records.keys() ^ anonymized.records.keys())
     assert differing == [], f"anonymizing changed the employees {differing}"
     # without the fields that stay real on purpose: a short name may occur in one of them, e.g. in an office
-    leaked = _leaked(real, anonymized.model_dump_json(exclude={"records": {"__all__": set(KEPT_FIELDS)}}))
-    assert leaked == [], f"real values left after anonymizing (employee number, field): {leaked}"
+    found = leaked(real, anonymized.model_dump_json(exclude={"records": {"__all__": set(KEPT_FIELDS)}}))
+    assert found == [], f"real values left after anonymizing (employee number, field): {found}"
 
     snapshots = Snapshots(source=anonymized, targets={TargetSystem.DECIDALO: load_decidalo(_decidalo(systems))})
     sync_plan = create_plan(snapshots, max_employees=1)
@@ -169,13 +130,13 @@ def test_plan_with_anonymized_data(test_settings: Settings, events: list[dict[st
     assert planned <= 1, f"{planned} operations planned with max_employees=1"
     outcomes = sorted({result.outcome for result in results})
     assert set(outcomes) <= {Outcome.DRY_RUN}, f"outcomes of the dry run: {outcomes}"
-    leaked = _leaked(real, str(events))
-    assert leaked == [], f"real values in the events (employee number, field): {leaked}"
+    found = leaked(real, str(events))
+    assert found == [], f"real values in the events (employee number, field): {found}"
 
 
 @pytest.mark.integration_write
 @pytest.mark.usefixtures("allow_writes")
-@_without_personal_data
+@without_personal_data
 def test_create_one_employee(test_settings: Settings, keep_test_data: bool, capsys: pytest.CaptureFixture[str]) -> None:
     """
     Creates the first employee of the plan anonymized in the Decidalo test environment, checks it and cleans up.

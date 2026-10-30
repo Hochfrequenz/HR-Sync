@@ -110,6 +110,8 @@ class NoticeReason(StrEnum):
     """the value of a field is not part of the mappings (see :mod:`hr_sync.mappings`); the detail is the field"""
     INVALID_PHONE_NUMBER = "invalid_phone_number"
     """the phone number can't be converted to the international form (see :func:`phone_number_key`)"""
+    VALUE_TOO_LONG = "value_too_long"
+    """the value of a field is longer than a target system allows, e.g. a name in weclapp; the detail is the field"""
 
 
 class ExclusionReason(StrEnum):
@@ -124,6 +126,7 @@ class ExclusionReason(StrEnum):
     MISSING_FIELD = "missing_field"
     UNMAPPED_VALUE = "unmapped_value"
     INVALID_PHONE_NUMBER = "invalid_phone_number"
+    VALUE_TOO_LONG = "value_too_long"
 
     @property
     def is_data_problem(self) -> bool:
@@ -138,7 +141,12 @@ class FieldProblem(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    reason: Literal[ExclusionReason.MISSING_FIELD, ExclusionReason.UNMAPPED_VALUE, ExclusionReason.INVALID_PHONE_NUMBER]
+    reason: Literal[
+        ExclusionReason.MISSING_FIELD,
+        ExclusionReason.UNMAPPED_VALUE,
+        ExclusionReason.INVALID_PHONE_NUMBER,
+        ExclusionReason.VALUE_TOO_LONG,
+    ]
     field: str
     """the name of the field in :class:`EmployeeRecord`, e.g. ``career_level``"""
 
@@ -174,8 +182,8 @@ class Snapshot(BaseModel):
     """weclapp only: the employee numbers of users without employee record"""
     deactivated: frozenset[str] = frozenset()
     """
-    Decidalo only: the employee numbers of deactivated users; they are a data problem only if the employee is relevant,
-    which the planner checks
+    the employee numbers of deactivated users (Decidalo: with deactivation date, weclapp: not active); they are a data
+    problem only if the employee is relevant, which the planner checks
     """
     excluded: dict[str, ExclusionReason] = Field(default_factory=dict)
     """

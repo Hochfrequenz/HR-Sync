@@ -8,7 +8,16 @@ from hr_sync.model import EmployeeRecord, Notice, NoticeReason, Snapshot, Target
 from hr_sync.plan import Deviation, EmployeePlan, Operation, OperationType, SyncPlan
 
 COMPARED_FIELDS: Mapping[TargetSystem, tuple[str, ...]] = {
-    TargetSystem.WECLAPP: ("first_name", "last_name", "email", "entry_date"),
+    TargetSystem.WECLAPP: (
+        "first_name",
+        "last_name",
+        "email",
+        "entry_date",
+        "career_level",
+        "office",
+        "weekly_hours",
+        "vacation_days",
+    ),
     TargetSystem.DECIDALO: (
         "display_name",
         "email",
@@ -22,11 +31,14 @@ COMPARED_FIELDS: Mapping[TargetSystem, tuple[str, ...]] = {
 }
 """
 the fields that are compared per target system; Decidalo has no first and last name, only a display name, and no
-vacation days
+vacation days; weclapp has no service category, and the weclapp-client can't read its phone number yet (0.1.0a3)
 """
 
-_SET_BY_COMPLETE = frozenset({"entry_date"})
-"""the fields that :attr:`OperationType.COMPLETE` sets, because weclapp stores them in the employee record"""
+_SET_BY_COMPLETE = frozenset({"entry_date", "weekly_hours"})
+"""
+the fields that :attr:`OperationType.COMPLETE` sets, because weclapp stores them in the work schedule profile of the
+employee record
+"""
 
 
 def build_plan(
@@ -102,7 +114,14 @@ def build_plan(
                 continue
             fields = COMPARED_FIELDS[system]
             if employee_number in target.incomplete:
-                operations.append(Operation(system=system, type=OperationType.COMPLETE, record=desired))
+                operations.append(
+                    Operation(
+                        system=system,
+                        type=OperationType.COMPLETE,
+                        record=desired,
+                        target_id=target.system_ids.get(employee_number),
+                    )
+                )
                 fields = tuple(field for field in fields if field not in _SET_BY_COMPLETE)
             differing = _differing_fields(desired, existing, fields)
             if differing:
