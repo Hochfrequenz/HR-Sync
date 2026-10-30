@@ -363,7 +363,9 @@ Umgesetzt in [`systems/weclapp.py`](../../src/hr_sync/systems/weclapp.py) (AP 5,
     Arbeitszeitprofile, alle User und alle Personalakten. Eine fehlende Definition wird `None`.
   - `check_setup(loaded, setup)` prüft ohne IO Typ und Entität der Definitionen und die IDs der Arbeitszeitprofile.
     Passt etwas nicht, gibt es einen `ConfigurationError` mit `problem=weclapp_setup_mismatch`, den IDs (`ids`)
-    und bei der MA-Nummer auch der Variable. Der Lauf bricht ab (Exit-Code 2).
+    und bei der MA-Nummer auch der Variable. Der Lauf bricht ab (Exit-Code 2). Ebenso, wenn
+    `WECLAPP_EMPLOYEE_NUMBER_ATTRIBUTE_ID` eine der festen IDs ist: Dann würde der Typ des anderen Felds geprüft,
+    und HR-Sync schriebe zwei Werte in ein Feld (Review zu #23).
   - `map_weclapp(loaded, setup=…, today=…)` mappt ohne IO. Ohne Personalakte ist ein User `incomplete`. Ein User
     mit einem anderen Status als `WECLAPP_NEW_USER_STATUS` ist `deactivated`, beim Standard `ACTIVE` also jeder
     andere Status (1.1). Präzisierung: So gelten die eigenen neuen User nie als deaktiviert, auch mit einem anderen

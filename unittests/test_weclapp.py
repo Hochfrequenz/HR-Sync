@@ -105,6 +105,17 @@ class TestCheckSetup:
         assert error_info.value.variables == ("WECLAPP_EMPLOYEE_NUMBER_ATTRIBUTE_ID",)
         assert error_info.value.ids == ("7621",)
 
+    @pytest.mark.parametrize("attribute_id", ["8211", "8217", "9795", "9902", "14175"])
+    def test_employee_number_must_not_be_another_attribute(self, attribute_id: str) -> None:
+        # otherwise, the type of the other attribute would replace the one of the employee number, or HR-Sync would
+        # write two values into one attribute
+        setup = replace(WECLAPP_SETUP, employee_number_attribute_id=attribute_id)
+        with pytest.raises(ConfigurationError) as error_info:
+            check_setup(_loaded(), setup)
+        assert error_info.value.problem == ConfigurationProblem.WECLAPP_SETUP_MISMATCH
+        assert error_info.value.variables == ("WECLAPP_EMPLOYEE_NUMBER_ATTRIBUTE_ID",)
+        assert error_info.value.ids == (attribute_id,)
+
     def test_missing_work_schedule_profiles(self) -> None:
         loaded = replace(_loaded(), work_schedule_profile_ids=frozenset({"7177", "7633"}))
         with pytest.raises(ConfigurationError) as error_info:

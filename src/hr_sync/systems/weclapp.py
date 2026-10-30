@@ -15,7 +15,7 @@ is the entry date.
 """
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import astuple, dataclass, field
 from datetime import date
 from decimal import Decimal
 from typing import TypeVar
@@ -159,12 +159,19 @@ def check_setup(loaded: LoadedWeclapp, setup: WeclappSetup) -> None:
     Each custom attribute definition must exist, belong to users (``"user" in entities``; weclapp leaves
     ``attributeEntityType`` empty for them) and have the expected type: string, number (``DECIMAL`` or ``INTEGER``) or
     list. The type and the entity also catch an id that belongs to another attribute, e.g. in another tenant, unless
-    that attribute has the same type.
+    that attribute has the same type. The employee number must not be one of the other attributes: its type would be
+    checked as theirs, and HR-Sync would write two values into one attribute.
 
     Raises:
         ConfigurationError: with the ids that don't fit, and ``WECLAPP_EMPLOYEE_NUMBER_ATTRIBUTE_ID`` if the employee
             number is one of them.
     """
+    if setup.employee_number_attribute_id in astuple(setup.attribute_ids):
+        raise ConfigurationError(
+            ConfigurationProblem.WECLAPP_SETUP_MISMATCH,
+            ["WECLAPP_EMPLOYEE_NUMBER_ATTRIBUTE_ID"],
+            [setup.employee_number_attribute_id],
+        )
     mismatched = [
         definition_id
         for definition_id, types in setup.attribute_types.items()
