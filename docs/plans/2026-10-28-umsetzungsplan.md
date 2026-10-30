@@ -226,12 +226,13 @@ Umgesetzt in [`systems/personio.py`](../../src/hr_sync/systems/personio.py) (AP 
    (`custom_attribute_definitions.get(WECLAPP_EMPLOYEE_NUMBER_ATTRIBUTE_ID)`) und die Zusatzfelder der Phase 2 (8211,
    8217, 9795, 9902, 14175, siehe 4.4). Gibt es eine nicht, oder passt ihr Typ (`attribute_type`: String, Zahl,
    Auswahl) oder ihre Entität (User, `attribute_entity_type` bzw. `entities`) nicht, ist das ein Konfigurationsfehler:
-   Der Lauf bricht ab. Typ und Entität allein reichen nicht: In einem anderen Tenant kann dieselbe ID ein anderes
-   Zahlenfeld am User sein. Deshalb prüft HR-Sync für die Zusatzfelder der Phase 2 auch ihre fachliche Identität:
-   - Die Bezeichnung (`label`) jeder Definition muss dem erwarteten Wert entsprechen. Die erwarteten Bezeichnungen
-     stehen fest in `mappings.py` und werden in AP 5 einmal lesend aus dem Tenant übernommen.
-   - Die Auswahl-Definition 9902 muss die Auswahlwerte 9903, 9904 und 9905 haben.
-   So schreibt HR-Sync weder Kostensatz noch Urlaubstage in ein fremdes Feld.
+   Der Lauf bricht ab. Außerdem muss die Auswahl-Definition 9902 die Auswahlwerte 9903, 9904 und 9905 haben.
+
+   Typ und Entität identifizieren ein Zusatzfeld nicht eindeutig: In einem anderen Tenant kann dieselbe ID ein
+   anderes Zahlenfeld am User sein. Die Bezeichnung (`label`) prüft HR-Sync trotzdem bewusst nicht. Benennt jemand
+   ein Feld in weclapp um, bräche sonst jeder Lauf ab, bis ein neues Release kommt. Die festen IDs der Phase 2 gelten
+   nur für den Tenant von Hochfrequenz. Andere Firmen können weclapp als Ziel erst nutzen, wenn diese Werte
+   einstellbar sind (9.1, O15).
 2. Alle `user` und alle `employee` laden. Die Employees werden über `user_id` den Usern zugeordnet.
 3. MA-Nummer: `user.custom_attribute(definition.id).string_value`, z. B. `"00165"`.
 4. Für den Vergleich (4.4): `firstName`, `lastName`, `email`, `mobilePhoneNumber` und die Zusatzfelder 9795, 9902 und
@@ -876,8 +877,11 @@ Umgesetzt in [`config.py`](../../src/hr_sync/config.py) und [`sync.py`](../../sr
 
 Karrierestufe, Standort und Wochenstunden bleiben echt, weil sich nur so Mappings und Feiertagskalender in der
 Testumgebung prüfen lassen. Zusammen mit der echten MA-Nummer sind die Testdaten damit pseudonymisiert, nicht anonym:
-Wer Zugriff auf Personio hat, kann sie einem Mitarbeiter zuordnen (siehe Abschnitt 8, O25). Die Ersatzwerte hängen nur
-von der MA-Nummer ab. So erkennt ein zweiter Lauf die angelegte Testperson wieder, ohne
+Wer Zugriff auf Personio hat, kann sie einem Mitarbeiter zuordnen (siehe Abschnitt 8, O25). Auch ohne Personio kann
+die Kombination aus Eintrittsdatum, Karrierestufe und Standort einen Mitarbeiter für Kollegen erkennbar machen, etwa
+den einzigen Senior Principal Consultant in Berlin.
+
+Die Ersatzwerte hängen nur von der MA-Nummer ab. So erkennt ein zweiter Lauf die angelegte Testperson wieder, ohne
 Abweichungen. Ein geheimer Schlüssel ist nicht nötig, weil die Ersatzwerte nichts verraten, was nicht schon in der
 MA-Nummer steht.
 
@@ -984,7 +988,10 @@ und/oder Decidalo verbinden.
 - **Firmenspezifisches ist konfigurierbar** (Abschnitt 7): das Attribut der MA-Nummer in Personio, die ID des Custom
   Attributes in weclapp, der Status neuer weclapp-User sowie Mitarbeitertyp und Login in Decidalo. Die
   Standardwerte von Hochfrequenz sind im README als solche gekennzeichnet. **Ausnahme:** Die Mappings und festen
-  weclapp-Werte der Phase 2 stehen fest im Code (4.4). Andere Firmen bräuchten dafür eigene Einstellungen (O15).
+  weclapp-Werte der Phase 2 stehen fest im Code (4.4). Die IDs der weclapp-Zusatzfelder, Auswahlwerte, Rollen und
+  Arbeitszeitprofile gelten nur im Tenant von Hochfrequenz. HR-Sync prüft nur Typ, Entität und Auswahlwerte (3.2),
+  nicht die Bedeutung eines Felds. In einem anderen Tenant könnte es also in ein fremdes Feld schreiben. Andere
+  Firmen können weclapp als Ziel deshalb erst nutzen, wenn diese Werte einstellbar sind (O15).
 - **Zielsysteme sind wählbar** mit `--target`. Wer nur weclapp oder nur Decidalo nutzt, braucht nur dessen
   Zugangsdaten.
 - **`--env-file`** erlaubt eine Konfigurationsdatei außerhalb des aktuellen Verzeichnisses.
@@ -1110,7 +1117,7 @@ kann parallel zu AP 8a laufen.
 | O12 | ~~URL und API-Key der Decidalo-Testumgebung, nimmt Decidalo E-Mails mit `example.com` an?~~ **Erledigt in AP 8:** URL und Key liegen in der lokalen `.env` (Testumgebung `https://import.decidalo.dev`). Decidalo nimmt die Ersatzadressen `test-<MA-Nummer>@example.com` an | – | Abschnitt 8 |
 | O13 | **Teilweise geklärt:** `delete=true` löscht wirklich. Deaktivieren ist ein eigenes Flag (`deactivate`), und die Antwort unterscheidet `Deleted` und `Deactivated`. ~~Lässt sich dieselbe `employeeID` danach wieder anlegen?~~ **Erledigt in AP 8:** Ja. `integration_write` lief mehrfach hintereinander mit derselben MA-Nummer, jedes Mal wurde sie angelegt und mit `Deleted` gelöscht | – | Abschnitt 8.3 |
 | O14 | Wann erscheint das erste Pre-Release auf PyPI? Das hängt mit O9 zusammen: Wird HR-Sync auf dem Server als Paket installiert, muss es vor dem Go-live erscheinen | später | Abschnitt 9 |
-| O15 | Brauchen andere Firmen weitere Einstellungen, z. B. für das displayName-Format oder die Relevanzregel? | nach Bedarf | Abschnitt 9.1 |
+| O15 | Brauchen andere Firmen weitere Einstellungen, z. B. für das displayName-Format oder die Relevanzregel? Sicher nötig sind sie für die festen weclapp-Werte der Phase 2 (IDs der Zusatzfelder, Auswahlwerte, Rollen, Arbeitszeitprofile), bevor eine andere Firma weclapp als Ziel nutzt (9.1) | nach Bedarf, spätestens vor weclapp bei einer anderen Firma | Abschnitt 9.1 |
 | O16 | `aiohttp`-Grenze in `personio-client` und `decidalo-client` auf `<3.15` anheben und neu releasen (`aiohttp 3.14` unterstützt Python 3.15). Danach entfällt die Obergrenze `<3.15` in HR-Sync. Stand 2026-10-28: Beide Clients verlangen weiterhin `aiohttp<3.14` (`personio-client` 0.1.0a1, `decidalo-client` 0.3.1) | vor AP 10 | Abschnitt 9.3, O11 |
 | O17 | ~~Lässt sich die weclapp-Mitarbeiternummer (`employeeNumber`) per API setzen?~~ **Erledigt (Vorgabe vom 2026-10-30):** Die `employeeNumber` vergibt weclapp selbst. Die MA-Nummer steht weiter im Zusatzfeld 7621 | – | [#8](https://github.com/Hochfrequenz/HR-Sync/issues/8) |
 | O18 | Die Standard-URL des `decidalo-client` (`https://import.decidalo.dev`) ist die Testumgebung, die Produktion ist `https://import.decidalo.app`. Die Doku des Clients nennt `.dev` als „die“ Import-API. Soll der Client das dokumentieren oder ohne Standard-URL auskommen? HR-Sync übergibt die URL schon immer ausdrücklich und braucht die Antwort nicht | nach Bedarf | Abschnitt 3.3, Repo `decidalo_client.py` |
