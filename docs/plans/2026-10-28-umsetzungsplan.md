@@ -57,7 +57,7 @@ HR-Sync überträgt beim Onboarding die Stammdaten neuer Mitarbeiter aus **Perso
 | E-Mail im Zielsystem schon vergeben | Gehört die E-Mail eines Mitarbeiters im Zielsystem einem anderen User (ohne oder mit anderer MA-Nummer), ist das ein Datenproblem: Es gibt ein Warn-Event `email_in_use`, und nach dem Grundsatz passiert mit dem Mitarbeiter nichts, in keinem System |
 | weclapp-Umgebung | Es gibt keinen Test-Tenant, wir arbeiten in der Produktion. Das Feld für die Personalnummer gibt es dort schon, ein späterer Test-Tenant bekommt es auch |
 | Zielsysteme | wählbar mit `--target weclapp` bzw. `--target decidalo`, Standard sind beide |
-| Testumgebungen | In Testumgebungen landen keine echten Namen, E-Mails oder Telefonnummern: Im Test-Modus (`HR_SYNC_ENVIRONMENT=test`) wird anonymisiert. MA-Nummer, Eintrittsdatum, Karrierestufe, Standort und Wochenstunden bleiben echt (8.2) |
+| Testumgebungen | In Testumgebungen landen keine echten Namen, E-Mails oder Telefonnummern: Im Test-Modus (`HR_SYNC_ENVIRONMENT=test`) wird anonymisiert. MA-Nummer, Eintrittsdatum, Karrierestufe, Standort und Wochenstunden bleiben echt (8.2), die Testdaten sind damit pseudonymisiert, nicht anonym. Die Decidalo-Testumgebung braucht Zugriffsschutz wie die Produktion (O25) |
 | Decidalo im Test-Modus | eigene URL und eigener Key (`DECIDALO_TEST_BASE_URL`, `DECIDALO_TEST_API_KEY`), `hasLogin=false`. Die Testumgebung ist nur im Test-Modus erreichbar |
 | Decidalo-URLs | Produktion `https://import.decidalo.app`, Testumgebung `https://import.decidalo.dev`. Die Standard-URL des `decidalo-client` ist die Testumgebung, HR-Sync übergibt die URL deshalb immer ausdrücklich (O18). Bis AP 8 stand hier fälschlich `.dev` als Produktion |
 | Integrationstest | Personio produktiv lesen, nur den ersten Planeintrag in die Decidalo-Testumgebung schreiben. Danach die Testperson wahlweise automatisch löschen (erst nachdem geprüft ist, dass sie angelegt wurde) oder zum Ansehen liegen lassen. Läuft nur lokal |
@@ -226,17 +226,22 @@ Umgesetzt in [`systems/personio.py`](../../src/hr_sync/systems/personio.py) (AP 
    (`custom_attribute_definitions.get(WECLAPP_EMPLOYEE_NUMBER_ATTRIBUTE_ID)`) und die Zusatzfelder der Phase 2 (8211,
    8217, 9795, 9902, 14175, siehe 4.4). Gibt es eine nicht, oder passt ihr Typ (`attribute_type`: String, Zahl,
    Auswahl) oder ihre Entität (User, `attribute_entity_type` bzw. `entities`) nicht, ist das ein Konfigurationsfehler:
-   Der Lauf bricht ab. Diese Prüfung fängt auch eine ID ab, die in einem anderen Tenant zu einem ganz anderen Attribut
-   gehört.
+   Der Lauf bricht ab. Typ und Entität allein reichen nicht: In einem anderen Tenant kann dieselbe ID ein anderes
+   Zahlenfeld am User sein. Deshalb prüft HR-Sync für die Zusatzfelder der Phase 2 auch ihre fachliche Identität:
+   - Die Bezeichnung (`label`) jeder Definition muss dem erwarteten Wert entsprechen. Die erwarteten Bezeichnungen
+     stehen fest in `mappings.py` und werden in AP 5 einmal lesend aus dem Tenant übernommen.
+   - Die Auswahl-Definition 9902 muss die Auswahlwerte 9903, 9904 und 9905 haben.
+   So schreibt HR-Sync weder Kostensatz noch Urlaubstage in ein fremdes Feld.
 2. Alle `user` und alle `employee` laden. Die Employees werden über `user_id` den Usern zugeordnet.
 3. MA-Nummer: `user.custom_attribute(definition.id).string_value`, z. B. `"00165"`.
 4. Für den Vergleich (4.4): `firstName`, `lastName`, `email`, `mobilePhoneNumber` und die Zusatzfelder 9795, 9902 und
    14175 am User, dazu die Arbeitszeitprofile an der Personalakte. Für sie gelten zwei getrennte Regeln:
-   - **Wochenstunden:** aus dem heute gültigen Profil, also dem mit dem spätesten `startDate` bis heute. Künftige
-     Profile zählen nicht.
+   - **Wochenstunden:** aus dem heute gültigen Profil. Gültig ist ein Profil, dessen `startDate` heute oder früher
+     liegt und dessen `endDate` fehlt oder heute oder später liegt. Gibt es mehrere, zählt das mit dem spätesten
+     `startDate`. Künftige und abgelaufene Profile zählen nicht. Gibt es kein gültiges Profil, fehlen die Wochenstunden.
    - **Eintrittsdatum:** das `startDate` des frühesten Profils. HR-Sync legt beim Anlegen genau ein Profil ab dem
      Eintrittsdatum an. Ändern sich die Stunden später, kommt in weclapp ein neues Profil dazu, das früheste bleibt.
-   Hat die Personalakte kein Profil, fehlen beide Werte.
+   Hat die Personalakte gar kein Profil, fehlen beide Werte.
 
 **Anlegen** (pro Person, in dieser Reihenfolge, nach der Vorgabe von Hochfrequenz vom 2026-10-30):
 
@@ -577,6 +582,10 @@ Vorgaben vorliegen (O20). Der Status bleibt `ACTIVE` (`WECLAPP_NEW_USER_STATUS`)
   gilt auch für Felder, die nur ein Zielsystem braucht: Fehlen etwa die Wochenstunden, passiert auch mit
   `--target decidalo` nichts. Mitarbeiter mit anderen Karrierestufen (z. B. Partner oder Werkstudenten) erzeugen so
   bei jedem Lauf eine Warnung, bis das Mapping sie kennt.
+- **Dubletten trotz Ausschluss:** Eine relevante Person, die wegen eines Pflichtfelds ausgeschlossen wird, zählt für
+  die Dublettenprüfung trotzdem mit. Ihre E-Mail und MA-Nummer registriert der `SnapshotBuilder` vor dem Ausschluss.
+  Sonst könnte eine sonst gültige Person mit derselben E-Mail oder MA-Nummer angelegt werden, obwohl Abschnitt 5 das
+  verbietet. AP 8a testet beide Fälle.
 - **Telefonformat:** Decidalo bekommt die Nummer wie in Personio. Für weclapp wird sie international geschrieben:
   - Eine Nummer mit `+` bleibt, z. B. `+49 151 …`.
   - Eine Nummer mit `00` vor der Landesvorwahl bekommt statt `00` ein `+`, z. B. `0049 151 …` → `+49 151 …`.
@@ -803,8 +812,10 @@ Umgesetzt in [`config.py`](../../src/hr_sync/config.py), [`sync.py`](../../src/h
 
 ## 8. Testumgebungen und Anonymisierung
 
-In Testumgebungen dürfen keine echten personenbezogenen Daten landen. Personio gibt es nur produktiv, dort lesen wir
-nur. Eine Testumgebung gibt es bisher nur für Decidalo, mit eigener URL. weclapp hat keinen Test-Tenant: Dort arbeiten
+In Testumgebungen landen keine Namen, E-Mail-Adressen oder Telefonnummern. Was dort landet, ist allerdings
+**pseudonymisiert, nicht anonym:** Über die echte MA-Nummer lassen sich Eintrittsdatum, Karrierestufe, Standort und
+Wochenstunden einem Mitarbeiter in Personio zuordnen. Die Decidalo-Testumgebung braucht deshalb Zugriffsschutz wie die
+Produktion: Zugriff nur für Berechtigte (O25). Personio gibt es nur produktiv, dort lesen wir nur. Eine Testumgebung gibt es bisher nur für Decidalo, mit eigener URL. weclapp hat keinen Test-Tenant: Dort arbeiten
 wir direkt in der Produktion, abgesichert durch Dry-Run und `--only` (AP 9).
 
 ### 8.1 Test-Modus
@@ -812,7 +823,8 @@ wir direkt in der Produktion, abgesichert durch Dry-Run und `--only` (AP 9).
 `HR_SYNC_ENVIRONMENT=test` schaltet den Test-Modus ein. Dann gilt:
 
 - Der Personio-Snapshot wird direkt nach dem Laden anonymisiert, also vor der Planung. Plan, Ausführung und
-  Zielsystem bekommen nur anonymisierte Daten zu sehen. Die Anonymisierung lässt sich im Test-Modus nicht abschalten.
+  Zielsystem bekommen nur diese Ersatzwerte zu sehen, die Daten sind damit pseudonymisiert (siehe oben). Die
+  Anonymisierung lässt sich im Test-Modus nicht abschalten.
 - Neue Decidalo-User bekommen `hasLogin=false`, egal was in `DECIDALO_HAS_LOGIN` steht.
 - weclapp ist als Ziel gesperrt, solange es keinen weclapp-Testtenant gibt. Ein Lauf mit weclapp als Ziel bricht mit
   Exit-Code 2 ab. Im Test-Modus braucht es also `--target decidalo`.
@@ -862,8 +874,10 @@ Umgesetzt in [`config.py`](../../src/hr_sync/config.py) und [`sync.py`](../../sr
 | Wochenstunden | bleibt echt (Phase 2) |
 | Service-Kategorie, Urlaubsanspruch | bleiben echt, abgeleitet aus der Karrierestufe (Phase 2) |
 
-Karrierestufe, Standort und Wochenstunden identifizieren allein niemanden. Echt werden sie gebraucht, um Mappings und
-Feiertagskalender in der Testumgebung zu prüfen. Die Ersatzwerte hängen nur von der MA-Nummer ab. So erkennt ein zweiter Lauf die angelegte Testperson wieder, ohne
+Karrierestufe, Standort und Wochenstunden bleiben echt, weil sich nur so Mappings und Feiertagskalender in der
+Testumgebung prüfen lassen. Zusammen mit der echten MA-Nummer sind die Testdaten damit pseudonymisiert, nicht anonym:
+Wer Zugriff auf Personio hat, kann sie einem Mitarbeiter zuordnen (siehe Abschnitt 8, O25). Die Ersatzwerte hängen nur
+von der MA-Nummer ab. So erkennt ein zweiter Lauf die angelegte Testperson wieder, ohne
 Abweichungen. Ein geheimer Schlüssel ist nicht nötig, weil die Ersatzwerte nichts verraten, was nicht schon in der
 MA-Nummer steht.
 
@@ -1048,7 +1062,7 @@ Fake-Client, `aioresponses` ist nicht nötig.
 | Ende-zu-Ende | ganzer Lauf gegen die Fakes; **ein zweiter Lauf erzeugt keine Schreibzugriffe**; Dry-Run schreibt nichts. Umgesetzt in `test_sync.py` (über `run`) und `test_cli.py` (über `main`, mit der JSON-Ausgabe auf stdout). Ein Fixture in `conftest.py` entfernt die Variablen von HR-Sync aus der Umgebung und wechselt in ein leeres Verzeichnis, damit kein Test echte Zugangsdaten findet |
 | Events | Loguru-Sink in eine Liste; Felder und Level prüfen; keine personenbezogenen Werte |
 | Test-Modus | jedes Feld hat eine Anonymisierungsregel; der Payload an Decidalo enthält keine echten Namen oder E-Mails; `hasLogin=false`; Abbruch bei weclapp als Ziel, bei fehlenden `DECIDALO_TEST_*` oder bei der produktiven Decidalo-URL; der Produktionsmodus nutzt die produktive URL, auch wenn `DECIDALO_TEST_*` gesetzt sind |
-| Felder der Phase 2 | jede erlaubte Karrierestufe und jeder Standort haben alle Zielwerte; fehlende Pflichtfelder und Werte außerhalb der Mappings erzeugen ein Datenproblem; Umwandlung der Telefonnummer (`0…`, `00…`, `+…`) und Vergleich in kanonischer Form; Ersatznummer im Test-Modus; Vergleich von `service_category` und `vacation_days` gegen den Sollwert aus der Karrierestufe; Wochenstunden aus dem heute gültigen und Eintrittsdatum aus dem frühesten Arbeitszeitprofil; bei `COMPLETE` kein Vergleich von `entry_date` und `weekly_hours`; Payload an weclapp nach der Vorgabe, u. a. `title` leer |
+| Felder der Phase 2 | jede erlaubte Karrierestufe und jeder Standort haben alle Zielwerte; fehlende Pflichtfelder und Werte außerhalb der Mappings erzeugen ein Datenproblem; eine deswegen ausgeschlossene Person zählt für doppelte E-Mails und MA-Nummern mit; Umwandlung der Telefonnummer (`0…`, `00…`, `+…`) und Vergleich in kanonischer Form; Ersatznummer im Test-Modus; Vergleich von `service_category` und `vacation_days` gegen den Sollwert aus der Karrierestufe; Wochenstunden aus dem heute gültigen und Eintrittsdatum aus dem frühesten Arbeitszeitprofil; bei `COMPLETE` kein Vergleich von `entry_date` und `weekly_hours`; Payload an weclapp nach der Vorgabe, u. a. `title` leer |
 | Integration | gegen die Decidalo-Testumgebung, siehe [8.3](#83-integrationstest-gegen-die-decidalo-testumgebung) |
 
 ## 12. Arbeitspakete
@@ -1060,7 +1074,7 @@ Die Reihenfolge baut zuerst den Kern ohne IO und hängt dann die Systeme an:
 | 0 | **Repo-Setup:** Template auf `hr_sync` umbenennen, `pyproject.toml` (Paketname `hochfrequenz-hr-sync`, Abhängigkeiten, `[project.scripts]`), `.env.example`, README-Gerüst. Der PyPI-Publish-Workflow bleibt als auskommentierte Vorlage für AP 10 | CI grün mit leerem Paket |
 | 1 | **Datenmodell, Plan und Planner** inklusive Datenproblemen und `email_in_use` | Planner vollständig getestet |
 | 2 | **weclapp-client erweitern** (`entry_date` in `Employee` und `EmployeeCreate`), im Repo `weclapp_client.py`, mit Release. **Teilweise überholt:** HR-Sync setzt `entryDate` nicht mehr (4.4). Der PR ist gemergt, das Release kommt mit AP 2a | neue Client-Version auf PyPI |
-| 2a | **weclapp-client für die Phase 2 erweitern** (3.2, 4.4): `mobilePhoneNumber`, `licenses` und `userRoles` am User, Zusatzfelder vom Typ Zahl und Auswahl, Arbeitszeitprofile an der Personalakte (`workScheduleProfileAssignments`, lesend bestätigen, O23), mit Release. `username` nicht, er ist per API schreibgeschützt (3.2) | neue Client-Version auf PyPI |
+| 2a | **weclapp-client für die Phase 2 erweitern** (3.2, 4.4): `mobilePhoneNumber`, `licenses` und `userRoles` am User, Zusatzfelder vom Typ Zahl und Auswahl (samt den Auswahlwerten einer Definition), Arbeitszeitprofile an der Personalakte (`workScheduleProfileAssignments`, lesend bestätigen, O23), mit Release. `username` nicht, er ist per API schreibgeschützt (3.2) | neue Client-Version auf PyPI |
 | 3 | **Wide Events** mit Loguru, umschaltbare Ausgabe, Intercept-Handler | `wide_event()` getestet |
 | 4 | **Personio-Loader** mit Relevanzfilter und Mapping | Snapshot aus Personio, nur relevante Mitarbeiter |
 | 5 | **weclapp-Loader und -Executor** (`CREATE`, `COMPLETE`) mit allen Feldern nach 3.2 und 4.4: Prüfung der Zusatzfeld-Definitionen, User mit Lizenzen, Rollen und Zusatzfeldern, Personalakte mit Arbeitszeitprofil, Vergleich der neuen Felder. Setzt AP 2a und AP 8a voraus | gegen `FakeWeclapp` getestet |
@@ -1106,6 +1120,7 @@ kann parallel zu AP 8a laufen.
 | O22 | Entscheidungen zu Beginn von AP 8a: Bekommt Decidalo auch die Wochenstunden (`standardWeeklyHours`)? Werden die Personio-Attribute für Karrierestufe und Telefonnummer Variablen mit Hochfrequenz-Standard oder Konstanten? Welche `reason`-Werte bekommen die neuen Datenprobleme, und welches Format hat die Ersatznummer im Test-Modus? | AP 8a | Abschnitt 4.4, 5, 8.2 |
 | O23 | Heißt das Feld für die Arbeitszeitprofile an der weclapp-Personalakte `workScheduleProfileAssignments` (Vorgabe) oder `workingTimeRuleAssignments` (Testdaten des weclapp-client)? **Weitgehend geklärt:** Laut der API-Analyse des Clients gibt es beide als getrennte Felder, für die Arbeitszeitprofile ist es `workScheduleProfileAssignments`. Offen ist nur die lesende Bestätigung gegen die API | AP 2a | Abschnitt 3.2 |
 | O24 | In der Decidalo-Testumgebung heißen die Service-Kategorien intern anders als angezeigt (z. B. „DE Services 1“ für „Senior Consultant“). Klappt der Import über `serviceCategoryName` dort? Wenn nicht, braucht der Test-Modus eine Lösung | AP 8a | Abschnitt 3.3 |
+| O25 | Wer hat Zugriff auf die Decidalo-Testumgebung? Die Testdaten sind pseudonymisiert, nicht anonym (Abschnitt 8): Über die echte MA-Nummer lassen sie sich einem Mitarbeiter zuordnen. Der Zugriff muss deshalb auf Berechtigte beschränkt sein, wie in der Produktion. Bestätigen vor weiteren schreibenden Läufen in die Testumgebung | AP 8a | Abschnitt 8 |
 
 Keiner der offenen Punkte blockiert AP 2–7:
 
@@ -1113,7 +1128,7 @@ Keiner der offenen Punkte blockiert AP 2–7:
 - O3 und O5 klären wir im ersten echten Lauf mit der Testperson (AP 9).
 - O9, O10 und O14 klären wir vor bzw. nach dem Go-live.
 - O16 und O18 liegen in anderen Repos. O19, O20 und O21 kommen nach Bedarf.
-- O22 und O24 klären wir in AP 8a, O23 in AP 2a.
+- O22, O24 und O25 klären wir in AP 8a, O23 in AP 2a.
 
 ## 14. Risiken
 
