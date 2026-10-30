@@ -67,6 +67,23 @@ def test_settings() -> Settings:
 
 
 @pytest.fixture
+def weclapp_settings() -> Settings:
+    """
+    The settings of the developer in the production mode with weclapp as target, as for a dry run: there is no weclapp
+    test tenant. Skips the test if a credential is missing.
+    """
+    settings = load_settings(ENV_FILE if ENV_FILE.is_file() else None)
+    settings = settings.model_copy(update={"hr_sync_environment": Environment.PRODUCTION})
+    try:
+        check_settings(settings, [TargetSystem.WECLAPP], dry_run=True)
+    except ConfigurationError as error:
+        if error.problem == ConfigurationProblem.MISSING_VARIABLES:
+            pytest.skip(f"missing {', '.join(error.variables)}")
+        raise
+    return settings
+
+
+@pytest.fixture
 def allow_writes() -> None:
     """
     Skips the test unless ``HR_SYNC_IT_ALLOW_WRITES=1`` allows writing to the Decidalo test environment.

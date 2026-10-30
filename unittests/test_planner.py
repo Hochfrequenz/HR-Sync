@@ -184,17 +184,42 @@ class TestBuildPlan:
         assert all(employee.deviations == () for employee in plan.employees)
 
     def test_incomplete_weclapp_employee_is_completed(self) -> None:
-        in_weclapp = ERIKA.model_copy(update={"entry_date": None, "first_name": "Eri"})
-        plan = build_plan(
-            _snapshot(System.PERSONIO, ERIKA),
-            {TargetSystem.WECLAPP: _snapshot(System.WECLAPP, in_weclapp, incomplete=frozenset({"00165"}))},
-        )
+        desired = ERIKA.model_copy(update=PHASE_2)
+        # entry date and weekly hours come with the employee record, which is missing
+        in_weclapp = desired.model_copy(update={"entry_date": None, "weekly_hours": None, "first_name": "Eri"})
+        target = _snapshot(System.WECLAPP, in_weclapp, incomplete=frozenset({"00165"}))
+        target = target.model_copy(update={"system_ids": {"00165": "2001"}})
+        plan = build_plan(_snapshot(System.PERSONIO, desired), {TargetSystem.WECLAPP: target})
         assert plan.employees == (
             EmployeePlan(
                 employee_number="00165",
-                operations=(Operation(system=TargetSystem.WECLAPP, type=OperationType.COMPLETE, record=ERIKA),),
+                operations=(
+                    Operation(
+                        system=TargetSystem.WECLAPP, type=OperationType.COMPLETE, record=desired, target_id="2001"
+                    ),
+                ),
                 deviations=(Deviation(system=TargetSystem.WECLAPP, fields=("first_name",)),),
             ),
+        )
+
+    def test_fields_of_phase_2_are_compared_in_weclapp(self) -> None:
+        desired = ERIKA.model_copy(update=PHASE_2)
+        in_weclapp = desired.model_copy(
+            update={
+                "career_level": "Consultant",
+                "office": "Berlin",
+                "weekly_hours": 30,
+                "vacation_days": 25,
+                # weclapp has no service category, and the client can't read the phone number yet
+                "service_category": None,
+                "mobile_phone": None,
+            }
+        )
+        plan = build_plan(
+            _snapshot(System.PERSONIO, desired), {TargetSystem.WECLAPP: _snapshot(System.WECLAPP, in_weclapp)}
+        )
+        assert plan.employees[0].deviations == (
+            Deviation(system=TargetSystem.WECLAPP, fields=("career_level", "office", "weekly_hours", "vacation_days")),
         )
 
     def test_only_the_given_targets_are_planned(self) -> None:

@@ -22,6 +22,7 @@ from uuid import uuid4
 from decidalo_client import DecidaloClient
 from personio_client import PersonioClient
 from pydantic import SecretStr
+from weclapp_client import WeclappClient, WeclappConfig
 
 from hr_sync.anonymize import anonymize
 from hr_sync.config import (
@@ -38,6 +39,7 @@ from hr_sync.plan import Operation, OperationResult, Outcome, SyncPlan
 from hr_sync.planner import build_plan
 from hr_sync.systems.decidalo import DecidaloTarget, NewUserDefaults, execute_decidalo, load_decidalo
 from hr_sync.systems.personio import PersonioAttributes, PersonioSource, load_personio
+from hr_sync.systems.weclapp import WeclappSetup, load_weclapp
 
 
 class ExitCode(IntEnum):
@@ -70,6 +72,14 @@ class Systems:
 
     personio: PersonioSource
     decidalo: DecidaloTarget | None = None
+    weclapp: WeclappClient | None = None
+
+    def close(self) -> None:
+        """
+        Closes the connections of the synchronous weclapp client; the async clients close theirs after every step.
+        """
+        if self.weclapp is not None:
+            self.weclapp.close()
 
 
 @dataclass(frozen=True)
@@ -101,15 +111,19 @@ def run(
         wide_event("sync.run") as event,
     ):
         event.update(_option_fields(options))
+        connected: Systems | None = None
         try:
-            check_settings(settings, options.targets)
+            check_settings(settings, options.targets, dry_run=options.dry_run)
             if systems is None:
-                systems = connect(settings, options.targets)
+                systems = connected = connect(settings, options.targets)
             snapshots = load_snapshots(systems, settings, options.targets, today or date.today())
             sync_plan = create_plan(snapshots, options.only, options.max_employees)
             results = execute_plan(systems, sync_plan, settings, dry_run=options.dry_run)
         except Exception as error:  # any error ends the run with an event, but without its message
             return _aborted(event, error)
+        finally:
+            if connected is not None:
+                connected.close()
         exit_code = _exit_code(results)
         event["results"] = _totals(results)
         event["notices"] = len(snapshots.notices) + len(sync_plan.notices)
@@ -139,7 +153,8 @@ def connect(settings: Settings, targets: Collection[TargetSystem]) -> Systems:
 
     Personio is always the production system, HR-Sync only reads from it. Decidalo is the production system in the
     production mode, which can't be configured, and the test environment in the test mode, which must not be the
-    production system (see :func:`hr_sync.config.decidalo_test_url`).
+    production system (see :func:`hr_sync.config.decidalo_test_url`). weclapp has no test tenant, so it's never
+    connected in the test mode.
 
     Raises:
         ConfigurationError: if a credential is missing or the test mode would write to production, which
@@ -160,7 +175,21 @@ def connect(settings: Settings, targets: Collection[TargetSystem]) -> Systems:
         decidalo = DecidaloClient(
             api_key=_secret(settings.decidalo_api_key, "DECIDALO_API_KEY"), base_url=DECIDALO_PRODUCTION_URL
         )
-    return Systems(personio=personio, decidalo=decidalo)
+    weclapp = _weclapp_client(settings) if TargetSystem.WECLAPP in targets else None
+    return Systems(personio=personio, decidalo=decidalo, weclapp=weclapp)
+
+
+def _weclapp_client(settings: Settings) -> WeclappClient:
+    if settings.test_mode:
+        raise ConfigurationError(ConfigurationProblem.TARGET_NOT_ALLOWED_IN_TEST_MODE)
+    token = SecretStr(_secret(settings.weclapp_api_token, "WECLAPP_API_TOKEN"))
+    if settings.weclapp_base_url is not None:
+        config = WeclappConfig(base_url=settings.weclapp_base_url, api_token=token)
+    elif settings.weclapp_tenant is not None:
+        config = WeclappConfig.for_tenant(settings.weclapp_tenant, token)
+    else:
+        raise ConfigurationError(ConfigurationProblem.MISSING_VARIABLES, ["WECLAPP_TENANT", "WECLAPP_BASE_URL"])
+    return WeclappClient(config)
 
 
 def load_snapshots(systems: Systems, settings: Settings, targets: Collection[TargetSystem], today: date) -> Snapshots:
@@ -183,7 +212,7 @@ def load_snapshots(systems: Systems, settings: Settings, targets: Collection[Tar
         if target == TargetSystem.DECIDALO:
             loaded[target] = load_decidalo(_decidalo(systems))
         else:
-            raise NotImplementedError(f"HR-Sync can't load {target} yet")
+            loaded[target] = load_weclapp(_weclapp(systems), setup=weclapp_setup(settings), today=today)
         _emit_notices(loaded[target].notices)
     return Snapshots(source=source, targets=loaded)
 
@@ -238,7 +267,8 @@ def execute_plan(systems: Systems, sync_plan: SyncPlan, settings: Settings, *, d
         elif target == TargetSystem.DECIDALO:
             results.extend(execute_decidalo(_decidalo(systems), operations, defaults=new_decidalo_users(settings)))
         else:
-            raise NotImplementedError(f"HR-Sync can't execute operations in {target} yet")
+            # like check_settings: new users would lack the phone number for good until weclapp-client 0.1.0a3
+            raise ConfigurationError(ConfigurationProblem.TARGET_NOT_AVAILABLE)
     return results
 
 
@@ -251,6 +281,16 @@ def personio_attributes(settings: Settings) -> PersonioAttributes:
         career_level=settings.personio_career_level_attribute,
         mobile_phone=settings.personio_mobile_phone_attribute,
     )
+
+
+def weclapp_setup(settings: Settings) -> WeclappSetup:
+    """
+    Returns the ids in weclapp and the values of new users, from the settings and the fixed values of Hochfrequenz.
+    """
+    attribute_id = settings.weclapp_employee_number_attribute_id
+    if attribute_id is None:
+        raise ConfigurationError(ConfigurationProblem.MISSING_VARIABLES, ["WECLAPP_EMPLOYEE_NUMBER_ATTRIBUTE_ID"])
+    return WeclappSetup(employee_number_attribute_id=attribute_id, new_user_status=settings.weclapp_new_user_status)
 
 
 def new_decidalo_users(settings: Settings) -> NewUserDefaults:
@@ -271,10 +311,20 @@ def new_decidalo_users(settings: Settings) -> NewUserDefaults:
 
 
 def _dry_run(operations: Iterable[Operation]) -> list[OperationResult]:
-    results = [OperationResult(operation=operation, outcome=Outcome.DRY_RUN) for operation in operations]
+    # the target id is known for COMPLETE: the user that gets its employee record
+    results = [
+        OperationResult(operation=operation, outcome=Outcome.DRY_RUN, target_id=operation.target_id)
+        for operation in operations
+    ]
     for result in results:
         emit_operation(result)
     return results
+
+
+def _weclapp(systems: Systems) -> WeclappClient:
+    if systems.weclapp is None:
+        raise ValueError("weclapp is a selected target system, but has no client")
+    return systems.weclapp
 
 
 def _decidalo(systems: Systems) -> DecidaloTarget:

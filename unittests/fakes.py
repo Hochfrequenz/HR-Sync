@@ -19,8 +19,12 @@ from decidalo_client.models import (
 )
 from personio_client import Employment, Person
 from personio_client.models import EmploymentOffice, PersonCustomAttribute
+from weclapp_client.models import CustomAttributeType, Employee, User
+from weclapp_client.testing import FakeWeclapp
 
+from hr_sync.mappings import WORK_SCHEDULE_PROFILES, WeclappAttributeIds
 from hr_sync.systems.personio import PersonioAttributes
+from hr_sync.systems.weclapp import WeclappSetup
 
 ATTRIBUTE = "company_employee_id"
 """the custom attribute of Personio with the employee number"""
@@ -230,3 +234,90 @@ class FakeDecidalo:
             rows.append(import_row(user.employeeID or "", ImportItemStatusType.Created, self._next_id))
             self._next_id += 1
         return UserImportResults(items=rows)
+
+
+WECLAPP_SETUP = WeclappSetup(employee_number_attribute_id="7621")
+"""the ids of Hochfrequenz in weclapp, for tests with plain data"""
+
+
+def weclapp_user(
+    user_id: str = "2001",
+    employee_number: str | None = "00165",
+    email: str | None = "erika.musterfrau@example.com",
+    first_name: str | None = "Erika",
+    last_name: str | None = "Musterfrau",
+    status: str = "ACTIVE",
+    career_level: str | None = "Senior Consultant",
+    vacation_days: str | None = "26",
+    state_value_id: str | None = "9903",
+) -> User:
+    """A user of weclapp, by default Erika as Personio has her in :func:`personio_person`, in Grünwald."""
+    ids = WECLAPP_SETUP.attribute_ids
+    attributes: list[dict[str, object]] = [
+        {"attributeDefinitionId": ids.cost_rate, "numberValue": "59"},
+        {"attributeDefinitionId": ids.career_level, "stringValue": career_level},
+        {"attributeDefinitionId": ids.vacation_days, "numberValue": vacation_days},
+        {"attributeDefinitionId": ids.state, "selectedValueId": state_value_id},
+    ]
+    if employee_number is not None:
+        attributes.append({"attributeDefinitionId": "7621", "stringValue": employee_number})
+    return User.model_validate(
+        {
+            "id": user_id,
+            "version": "0",
+            "email": email,
+            "firstName": first_name,
+            "lastName": last_name,
+            "status": status,
+            "customAttributes": attributes,
+        }
+    )
+
+
+def weclapp_employee(
+    user_id: str | None = "2001", *assignments: tuple[str, date, date | None], employee_id: str = "3001"
+) -> Employee:
+    """
+    An employee record of weclapp with the given work schedule profiles (id, start, end); by default 40 hours since
+    the entry date of :func:`personio_employment`.
+    """
+    return Employee.model_validate(
+        {
+            "id": employee_id,
+            "version": "0",
+            "userId": user_id,
+            "workScheduleProfileAssignments": [
+                {"workScheduleProfileId": profile_id, "startDate": start, "endDate": end}
+                for profile_id, start, end in assignments or (("7177", date(2026, 9, 1), None),)
+            ],
+        }
+    )
+
+
+def weclapp_fake() -> tuple[FakeWeclapp, WeclappSetup]:
+    """
+    Returns a fake weclapp with the custom attributes and work schedule profiles that HR-Sync uses, and the setup with
+    the ids that the fake assigned. The selected values of the federal state are those of Hochfrequenz: the fake
+    doesn't check them.
+    """
+    fake = FakeWeclapp()
+
+    def definition(key: str, attribute_type: CustomAttributeType) -> str:
+        return fake.add_custom_attribute_definition(attribute_key=key, attribute_type=attribute_type).id
+
+    employee_number = definition("personalnummer", CustomAttributeType.STRING)
+    ids = WeclappAttributeIds(
+        cost_rate=definition("kostensatz", CustomAttributeType.DECIMAL),
+        cost_rate_reason=definition("kostensatzGrund", CustomAttributeType.STRING),
+        vacation_days=definition("urlaubsanspruch", CustomAttributeType.INTEGER),
+        state=definition("bundesland", CustomAttributeType.LIST),
+        career_level=definition("karrierestufe", CustomAttributeType.STRING),
+    )
+    profiles = {
+        hours: fake.add_work_schedule_profile(name=f"{hours} h", weekly_work_duration_in_minutes=hours * 60).id
+        for hours in WORK_SCHEDULE_PROFILES
+    }
+    setup = WeclappSetup(
+        employee_number_attribute_id=employee_number, attribute_ids=ids, work_schedule_profile_ids=profiles
+    )
+    return fake, setup

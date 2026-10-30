@@ -61,7 +61,14 @@ uv run hr-sync --dry-run --target decidalo
 | 2 | aborted, e.g. because of the configuration or an error while loading |
 
 > [!NOTE]
-> weclapp can't be a target yet: it aborts the run with exit code 2, so for now, every run needs `--target decidalo`.
+> For now, weclapp only runs as a dry run: until the `weclapp-client` can send the mobile phone number, a run that
+> would write to weclapp aborts with exit code 2. So for now, every run that writes needs `--target decidalo`.
+
+weclapp needs `WECLAPP_API_TOKEN`, `WECLAPP_TENANT` (or `WECLAPP_BASE_URL`) and
+`WECLAPP_EMPLOYEE_NUMBER_ATTRIBUTE_ID`, the id of the custom attribute definition with the employee number. Before
+planning, HR-Sync checks that the tenant has the custom attributes and work schedule profiles it writes; otherwise the
+run aborts with `problem=weclapp_setup_mismatch` and their ids. Their ids, the licenses, roles and the cost rate of new
+users are fixed values of Hochfrequenz, so other companies can't use weclapp as a target yet.
 
 ### Test Mode
 

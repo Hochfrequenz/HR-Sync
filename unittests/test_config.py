@@ -31,6 +31,15 @@ def _settings(**changes: object) -> Settings:
     return Settings.model_validate(values | changes)
 
 
+def _weclapp_settings(**changes: object) -> Settings:
+    values: dict[str, object] = {
+        "weclapp_api_token": SecretStr("weclapp-token"),
+        "weclapp_tenant": "hf",
+        "weclapp_employee_number_attribute_id": "7621",
+    }
+    return _settings(**(values | changes))
+
+
 def _test_settings(**changes: object) -> Settings:
     """settings of the test mode, without the key of the production system"""
     values: dict[str, object] = {
@@ -54,6 +63,8 @@ class TestLoadSettings:
         assert settings.personio_employee_number_attribute == "company_employee_id"
         assert settings.personio_career_level_attribute == "dynamic_625934eadbe629.22673150"
         assert settings.personio_mobile_phone_attribute == "dynamic_6239d4b55575b2.63567609"
+        assert settings.weclapp_employee_number_attribute_id is None
+        assert settings.weclapp_new_user_status == "ACTIVE"
         assert settings.decidalo_employee_type_id == 2
         assert settings.decidalo_employee_type_name == "Internal"
         assert settings.decidalo_authorization_role_id == 2
@@ -159,10 +170,34 @@ class TestCheckSettings:
             check_settings(settings, [TargetSystem.DECIDALO])
         assert error_info.value.variables == ("DECIDALO_API_KEY",)
 
-    def test_weclapp_is_not_available_yet(self) -> None:
+    def test_weclapp_only_in_a_dry_run_yet(self) -> None:
+        # until the weclapp-client can send the phone number
         with pytest.raises(ConfigurationError) as error_info:
-            check_settings(_settings(), list(TargetSystem))
+            check_settings(_weclapp_settings(), list(TargetSystem))
         assert error_info.value.problem == ConfigurationProblem.TARGET_NOT_AVAILABLE
+        check_settings(_weclapp_settings(), list(TargetSystem), dry_run=True)
+
+    @pytest.mark.parametrize(
+        ("changes", "missing"),
+        [
+            pytest.param({"weclapp_api_token": None}, ["WECLAPP_API_TOKEN"], id="token"),
+            pytest.param(
+                {"weclapp_employee_number_attribute_id": None},
+                ["WECLAPP_EMPLOYEE_NUMBER_ATTRIBUTE_ID"],
+                id="attribute of the employee number",
+            ),
+            pytest.param({"weclapp_tenant": None}, ["WECLAPP_TENANT", "WECLAPP_BASE_URL"], id="tenant"),
+        ],
+    )
+    def test_weclapp_needs_its_variables(self, changes: dict[str, object], missing: list[str]) -> None:
+        with pytest.raises(ConfigurationError) as error_info:
+            check_settings(_weclapp_settings(**changes), [TargetSystem.WECLAPP], dry_run=True)
+        assert error_info.value.problem == ConfigurationProblem.MISSING_VARIABLES
+        assert list(error_info.value.variables) == missing
+
+    def test_weclapp_base_url_instead_of_tenant(self) -> None:
+        settings = _weclapp_settings(weclapp_tenant=None, weclapp_base_url="https://hf.weclapp.com/webapp/api/v2/")
+        check_settings(settings, [TargetSystem.WECLAPP], dry_run=True)
 
     def test_test_mode(self) -> None:
         # without the key of the production system
@@ -240,3 +275,14 @@ class TestConfigurationError:
         error = ConfigurationError(ConfigurationProblem.TARGET_NOT_AVAILABLE)
         assert str(error) == "target_not_available"
         assert error.fields == {"problem": "target_not_available"}
+
+    def test_with_ids(self) -> None:
+        error = ConfigurationError(
+            ConfigurationProblem.WECLAPP_SETUP_MISMATCH, ["WECLAPP_EMPLOYEE_NUMBER_ATTRIBUTE_ID"], ["7621", "9902"]
+        )
+        assert str(error) == "weclapp_setup_mismatch: WECLAPP_EMPLOYEE_NUMBER_ATTRIBUTE_ID, 7621, 9902"
+        assert error.fields == {
+            "problem": "weclapp_setup_mismatch",
+            "variables": ["WECLAPP_EMPLOYEE_NUMBER_ATTRIBUTE_ID"],
+            "ids": ["7621", "9902"],
+        }

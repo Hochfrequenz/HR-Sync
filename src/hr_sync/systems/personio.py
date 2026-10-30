@@ -23,7 +23,7 @@ from typing import Literal, Protocol
 from personio_client import Employment, Person
 
 from hr_sync.events import wide_event
-from hr_sync.mappings import CAREER_LEVELS, OFFICES, work_schedule_profile
+from hr_sync.mappings import CAREER_LEVELS, OFFICES, WECLAPP_NAME_MAX_LENGTH, work_schedule_profile
 from hr_sync.model import (
     EmployeeRecord,
     ExclusionReason,
@@ -207,7 +207,9 @@ def map_person(
     """
     Maps a relevant person and its relevant employment onto the common model, and returns the problems in its fields.
 
-    Every field is mandatory. Career level, office and weekly hours must be part of the mappings (see
+    Every field is mandatory. First and last name must fit into weclapp (see
+    :data:`hr_sync.mappings.WECLAPP_NAME_MAX_LENGTH`), also if weclapp is no target, so that an employee is created
+    everywhere or nowhere. Career level, office and weekly hours must be part of the mappings (see
     :mod:`hr_sync.mappings`); the service category and the vacation days are derived from the career level. The phone
     number stays as in Personio, but it must be convertible to the international form (see
     :func:`hr_sync.model.phone_number_key`). The problems are named by the fields of the record, in their order.
@@ -232,7 +234,7 @@ def map_person(
         service_category=level.service_category if level is not None else None,
         vacation_days=level.vacation_days if level is not None else None,
     )
-    problems = [_missing(name) for name in ("first_name", "last_name") if getattr(record, name) is None]
+    problems = [problem for name in ("first_name", "last_name") if (problem := _name_problem(record, name))]
     problems.extend(_mapped("career_level", career_level, level))
     if mobile_phone is None:
         problems.append(_missing("mobile_phone"))
@@ -242,6 +244,15 @@ def map_person(
     profile = work_schedule_profile(weekly_hours) if weekly_hours is not None else None
     problems.extend(_mapped("weekly_hours", weekly_hours, profile))
     return record, problems
+
+
+def _name_problem(record: EmployeeRecord, field_name: str) -> FieldProblem | None:
+    name: str | None = getattr(record, field_name)
+    if name is None:
+        return _missing(field_name)
+    if len(name) > WECLAPP_NAME_MAX_LENGTH:
+        return FieldProblem(reason=ExclusionReason.VALUE_TOO_LONG, field=field_name)
+    return None
 
 
 def _missing(field_name: str) -> FieldProblem:
