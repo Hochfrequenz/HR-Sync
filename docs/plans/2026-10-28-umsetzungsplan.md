@@ -306,13 +306,31 @@ Client wiederholt einen `POST` mit unklarem Ausgang bewusst nicht. Der nächste 
 die Operation `COMPLETE`, die nur noch die Personalakte samt Arbeitszeitprofil anlegt. Das ist kein Update, sondern der
 Abschluss der Anlage.
 
-**Voraussetzung:** Der `weclapp-client` muss erweitert und neu released werden (AP 2a): `mobilePhoneNumber`,
-`licenses` und `userRoles` am User, Zusatzfelder vom Typ Zahl (`numberValue`) und Auswahl (`selectedValueId`) und die
-Arbeitszeitprofile an der Personalakte. Die Testdaten des Clients nennen das Feld an der Personalakte
-`workingTimeRuleAssignments`, die Vorgabe `workScheduleProfileAssignments`. Laut der API-Analyse des Clients hat die
-Personalakte beide Felder, jeweils mit `startDate`, `endDate` und einer Referenz-ID. Es sind also zwei verschiedene
-Zuordnungen, für die Arbeitszeitprofile ist `workScheduleProfileAssignments` richtig. AP 2a bestätigt das lesend gegen
-die API (O23). `entry_date` aus AP 2 bleibt im Client, HR-Sync setzt es aber nicht.
+**Voraussetzung:** Der `weclapp-client` muss erweitert und neu released werden (AP 2a). Stand von `main` im Repo
+des Clients am 2026-10-30: Auf PyPI gibt es nur `0.1.0a1`. `entry_date` aus AP 2 ist gemergt, aber nicht released.
+Es fehlt:
+
+| Stelle im Client | fehlt für HR-Sync |
+|---|---|
+| `User`, `UserCreate` | `mobile_phone_number`, `licenses` und `user_roles` (`[{id}]`) |
+| `CustomAttribute` | Werte vom Typ Zahl (`numberValue`, z. B. Kostensatz und Urlaubsanspruch) und Auswahl (`selectedValueId`, Bundesland), mit Konstruktoren wie `of_string`. Heute liest und schreibt der Client nur `stringValue` |
+| `CustomAttributeDefinition` | die Auswahlwerte einer Definition (`selectableValues`), damit HR-Sync prüfen kann, dass 9902 die Werte 9903 bis 9905 hat (3.2) |
+| `Employee`, `EmployeeCreate` | die Arbeitszeitprofile `work_schedule_profile_assignments` (`workScheduleProfileId`, `startDate`, `endDate`) |
+| `weclapp_client.testing.FakeWeclapp` | dieselben Felder, damit AP 5 dagegen testen kann. Heute liefert der Fake `licenses` und `userRoles` immer leer |
+| Integrationstests (Stufe 1: lesen und Dry-Run) | die neuen Felder lesend und per Dry-Run gegen den Tenant prüfen, dazu O23 |
+
+Die Testdaten des Clients nennen das Feld an der Personalakte `workingTimeRuleAssignments`, die Vorgabe
+`workScheduleProfileAssignments`. Laut der API-Analyse des Clients hat die Personalakte beide Felder, jeweils mit
+`startDate`, `endDate` und einer Referenz-ID. Es sind also zwei verschiedene Zuordnungen, für die Arbeitszeitprofile ist
+`workScheduleProfileAssignments` richtig. AP 2a bestätigt das lesend gegen die API (O23). `entry_date` aus AP 2 bleibt
+im Client, HR-Sync setzt es aber nicht. `username` braucht der Client nicht zu schreiben, er ist per API
+schreibgeschützt.
+
+**Vorgehen in AP 2a** (2026-10-30): AP 2a arbeitet auf dem aktuellen `main` des Repos `Hochfrequenz/weclapp_client.py`
+auf GitHub, nicht mit einem bestehenden lokalen Klon. Am Ende steht ein sauberes Pre-Release auf PyPI: Tag und
+GitHub-Release als Pre-Release mit Release-Notes, veröffentlicht über den Publish-Workflow mit Trusted Publishing, wie
+`0.1.0a1`. Die Versionsnummer legt AP 2a fest. Bleibt sie unter `0.2`, z. B. `0.1.0a2`, passt sie zur Grenze
+`weclapp-client>=0.1.0a1,<0.2` in HR-Sync. AP 5 hebt dann die Untergrenze auf die neue Version an.
 
 **Offboarding** (nicht im Umfang): Beim Austritt wird der weclapp-User deaktiviert, nie gelöscht, damit seine
 Buchungen erhalten bleiben (O21).
@@ -1137,7 +1155,7 @@ Die Reihenfolge baut zuerst den Kern ohne IO und hängt dann die Systeme an:
 | 0 | **Repo-Setup:** Template auf `hr_sync` umbenennen, `pyproject.toml` (Paketname `hochfrequenz-hr-sync`, Abhängigkeiten, `[project.scripts]`), `.env.example`, README-Gerüst. Der PyPI-Publish-Workflow bleibt als auskommentierte Vorlage für AP 10 | CI grün mit leerem Paket |
 | 1 | **Datenmodell, Plan und Planner** inklusive Datenproblemen und `email_in_use` | Planner vollständig getestet |
 | 2 | **weclapp-client erweitern** (`entry_date` in `Employee` und `EmployeeCreate`), im Repo `weclapp_client.py`, mit Release. **Teilweise überholt:** HR-Sync setzt `entryDate` nicht mehr (4.4). Der PR ist gemergt, das Release kommt mit AP 2a | neue Client-Version auf PyPI |
-| 2a | **weclapp-client für die Phase 2 erweitern** (3.2, 4.4): `mobilePhoneNumber`, `licenses` und `userRoles` am User, Zusatzfelder vom Typ Zahl und Auswahl (samt den Auswahlwerten einer Definition), Arbeitszeitprofile an der Personalakte (`workScheduleProfileAssignments`, lesend bestätigen, O23), mit Release. `username` nicht, er ist per API schreibgeschützt (3.2) | neue Client-Version auf PyPI |
+| 2a | **weclapp-client für die Phase 2 erweitern** (3.2, 4.4): `mobilePhoneNumber`, `licenses` und `userRoles` am User, Zusatzfelder vom Typ Zahl und Auswahl (samt den Auswahlwerten einer Definition), Arbeitszeitprofile an der Personalakte (`workScheduleProfileAssignments`, lesend bestätigen, O23), Fake und Integrationstests dazu. `username` nicht, er ist per API schreibgeschützt. Auf dem aktuellen `main` auf GitHub, nicht mit einem bestehenden lokalen Klon. Einzelheiten in 3.2 | sauberes Pre-Release auf PyPI (Tag, GitHub-Release mit Release-Notes, Trusted Publishing), z. B. `0.1.0a2`, mit `entry_date` aus AP 2 |
 | 3 | **Wide Events** mit Loguru, umschaltbare Ausgabe, Intercept-Handler | `wide_event()` getestet |
 | 4 | **Personio-Loader** mit Relevanzfilter und Mapping | Snapshot aus Personio, nur relevante Mitarbeiter |
 | 5 | **weclapp-Loader und -Executor** (`CREATE`, `COMPLETE`) mit allen Feldern nach 3.2 und 4.4: Prüfung der Zusatzfeld-Definitionen, User mit Lizenzen, Rollen und Zusatzfeldern, Personalakte mit Arbeitszeitprofil, Vergleich der neuen Felder. Setzt AP 2a und AP 8a voraus | gegen `FakeWeclapp` getestet |
@@ -1152,8 +1170,8 @@ Die Reihenfolge baut zuerst den Kern ohne IO und hängt dann die Systeme an:
 AP 2 liegt in einem anderen Repo und kann parallel zu AP 1, 3 und 4 laufen. Dasselbe gilt für O16 (aiohttp-Grenze in
 den Clients), das vor AP 10 erledigt sein sollte.
 
-Reihenfolge ab den Feldern der Phase 2: AP 8a, AP 2a, AP 5, AP 9, AP 10. AP 2a liegt im Repo des weclapp-client und
-kann parallel zu AP 8a laufen.
+Reihenfolge ab den Feldern der Phase 2: AP 8a, AP 2a, AP 5, AP 9, AP 10. AP 8a ist erledigt (#20, #21). AP 2a liegt
+im Repo des weclapp-client.
 
 ## 13. Offene Punkte
 
