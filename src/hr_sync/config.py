@@ -54,8 +54,15 @@ class Settings(BaseSettings):
     personio_employee_number_attribute: str = "company_employee_id"
     """the id of the custom attribute that holds the employee number"""
     decidalo_api_key: SecretStr | None = None
+    decidalo_employee_type_id: int = 2
+    """the employee type of new users, by id; it wins over the name if the name doesn't exist"""
     decidalo_employee_type_name: str = "Internal"
-    """the employee type of new users"""
+    decidalo_authorization_role_id: int = 2
+    """the authorization role of new users, by id and name"""
+    decidalo_authorization_role_name: str = "Employee"
+    decidalo_location: str = "DE"
+    decidalo_country_code: str = "DE"
+    decidalo_company_name: str = "Hochfrequenz Unternehmensberatung GmbH"
     decidalo_has_login: bool = True
     """whether new users get a login; in the test mode, they never get one"""
     decidalo_test_base_url: AnyHttpUrl | None = None

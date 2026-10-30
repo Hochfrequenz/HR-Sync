@@ -36,7 +36,7 @@ from hr_sync.events import emit, emit_operation, error_fields, run_context, wide
 from hr_sync.model import Notice, Snapshot, TargetSystem
 from hr_sync.plan import Operation, OperationResult, Outcome, SyncPlan
 from hr_sync.planner import build_plan
-from hr_sync.systems.decidalo import DecidaloTarget, execute_decidalo, load_decidalo
+from hr_sync.systems.decidalo import DecidaloTarget, NewUserDefaults, execute_decidalo, load_decidalo
 from hr_sync.systems.personio import PersonioSource, load_personio
 
 
@@ -238,18 +238,27 @@ def execute_plan(systems: Systems, sync_plan: SyncPlan, settings: Settings, *, d
         if dry_run:
             results.extend(_dry_run(operations))
         elif target == TargetSystem.DECIDALO:
-            results.extend(
-                execute_decidalo(
-                    _decidalo(systems),
-                    operations,
-                    employee_type_name=settings.decidalo_employee_type_name,
-                    # the anonymized test users must not be able to log in
-                    has_login=False if settings.test_mode else settings.decidalo_has_login,
-                )
-            )
+            results.extend(execute_decidalo(_decidalo(systems), operations, defaults=new_decidalo_users(settings)))
         else:
             raise NotImplementedError(f"HR-Sync can't execute operations in {target} yet")
     return results
+
+
+def new_decidalo_users(settings: Settings) -> NewUserDefaults:
+    """
+    Returns the values that every new user gets in Decidalo, from the settings.
+    """
+    return NewUserDefaults(
+        employee_type_id=settings.decidalo_employee_type_id,
+        employee_type_name=settings.decidalo_employee_type_name,
+        authorization_role_id=settings.decidalo_authorization_role_id,
+        authorization_role_name=settings.decidalo_authorization_role_name,
+        location=settings.decidalo_location,
+        country_code=settings.decidalo_country_code,
+        company_name=settings.decidalo_company_name,
+        # the anonymized test users must not be able to log in
+        has_login=False if settings.test_mode else settings.decidalo_has_login,
+    )
 
 
 def _dry_run(operations: Iterable[Operation]) -> list[OperationResult]:

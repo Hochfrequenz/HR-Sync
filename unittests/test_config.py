@@ -52,7 +52,12 @@ class TestLoadSettings:
         assert settings.personio_client_id is None
         assert settings.personio_app_id == "HR_SYNC"
         assert settings.personio_employee_number_attribute == "company_employee_id"
+        assert settings.decidalo_employee_type_id == 2
         assert settings.decidalo_employee_type_name == "Internal"
+        assert settings.decidalo_authorization_role_id == 2
+        assert settings.decidalo_authorization_role_name == "Employee"
+        assert (settings.decidalo_location, settings.decidalo_country_code) == ("DE", "DE")
+        assert settings.decidalo_company_name == "Hochfrequenz Unternehmensberatung GmbH"
         assert settings.decidalo_has_login is True
         assert settings.hr_sync_environment == Environment.PRODUCTION
         assert settings.hr_sync_log_format == "pretty"

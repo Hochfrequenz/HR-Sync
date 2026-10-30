@@ -109,16 +109,36 @@ def map_users(users: Sequence[UserOverview]) -> Snapshot:
     return builder.build()
 
 
+@dataclass(frozen=True)
+class NewUserDefaults:
+    """
+    The values that every new user gets in Decidalo, besides the data of the employee. ``None`` leaves a field to
+    Decidalo.
+
+    Decidalo identifies an employee type and an authorization role by id or by name. For the employee type, the id
+    wins if the name doesn't exist: in the test environment, the employee type 2 has another name than in production.
+    """
+
+    employee_type_id: int | None = None
+    employee_type_name: str | None = None
+    authorization_role_id: int | None = None
+    authorization_role_name: str | None = None
+    location: str | None = None
+    country_code: str | None = None
+    company_name: str | None = None
+    has_login: bool | None = None
+
+
 def execute_decidalo(
     client: DecidaloTarget,
     operations: Sequence[Operation],
     *,
-    employee_type_name: str | None,
-    has_login: bool | None,
+    defaults: NewUserDefaults,
     batch_size: int = MAX_BATCH_SIZE,
 ) -> list[OperationResult]:
     """
-    Creates the employees of the operations in Decidalo, in batches of at most ``batch_size`` users.
+    Creates the employees of the operations in Decidalo, in batches of at most ``batch_size`` users, with the
+    ``defaults`` for every new user.
 
     An operation succeeds only if its row has the status ``Created``. Any other status means that the row failed or
     that Decidalo matched an existing user, although HR-Sync only sends new ones. If a whole request fails, the
@@ -138,30 +158,31 @@ def execute_decidalo(
     if not operations:
         return []
     batches = [operations[start : start + batch_size] for start in range(0, len(operations), batch_size)]
-    users = [
-        [
-            user_input(operation.record, employee_type_name=employee_type_name, has_login=has_login)
-            for operation in batch
-        ]
-        for batch in batches
-    ]
+    users = [[user_input(operation.record, defaults) for operation in batch] for batch in batches]
     results = evaluate_batches(batches, send_batches(client, users))
     for result in results:
         emit_operation(result)
     return results
 
 
-def user_input(record: EmployeeRecord, *, employee_type_name: str | None, has_login: bool | None) -> UserInput:
+def user_input(record: EmployeeRecord, defaults: NewUserDefaults) -> UserInput:
     """
-    Returns the import row that creates the employee in Decidalo.
+    Returns the import row that creates the employee in Decidalo. New users are always part of the resource management.
     """
     return UserInput(
         employeeID=record.employee_number,
         displayName=record.display_name,
         email=record.email,
         entryDate=record.entry_date,
-        hasLogin=has_login,
-        employeeTypeName=employee_type_name,
+        employeeTypeID=defaults.employee_type_id,
+        employeeTypeName=defaults.employee_type_name,
+        authorizationRoleID=defaults.authorization_role_id,
+        authorizationRoleName=defaults.authorization_role_name,
+        location=defaults.location,
+        countryCode=defaults.country_code,
+        companyName=defaults.company_name,
+        includeInResourceManagement=True,
+        hasLogin=defaults.has_login,
     )
 
 

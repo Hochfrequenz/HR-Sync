@@ -19,8 +19,10 @@ from hr_sync.sync import (
     create_plan,
     execute_plan,
     load_snapshots,
+    new_decidalo_users,
     run,
 )
+from hr_sync.systems.decidalo import NewUserDefaults
 from unittests.fakes import (
     ATTRIBUTE,
     FakeDecidalo,
@@ -173,8 +175,15 @@ class TestRun:
                 "displayName": f"Test Person-{number}",
                 "email": f"test-{number}@example.com",
                 "entryDate": START,
-                "hasLogin": False,
+                "employeeTypeID": 2,
                 "employeeTypeName": "Internal",
+                "authorizationRoleID": 2,
+                "authorizationRoleName": "Employee",
+                "location": "DE",
+                "countryCode": "DE",
+                "companyName": "Hochfrequenz Unternehmensberatung GmbH",
+                "includeInResourceManagement": True,
+                "hasLogin": False,
                 "delete": False,
             }
             for number in ("00165", "00200")
@@ -312,6 +321,38 @@ class TestRun:
         assert run(_settings(), DECIDALO) == ExitCode.SUCCESS
         assert connected == [(TargetSystem.DECIDALO,)]
         assert len(decidalo.batches) == 1
+
+
+class TestNewDecidaloUsers:
+    """
+    Tests of the values that every new user gets in Decidalo.
+    """
+
+    def test_from_the_settings(self) -> None:
+        settings = _settings(
+            decidalo_employee_type_id=7,
+            decidalo_employee_type_name="Werkstudent",
+            decidalo_authorization_role_id=3,
+            decidalo_authorization_role_name="Resource Manager",
+            decidalo_location="AT",
+            decidalo_country_code="AT",
+            decidalo_company_name="Beispiel GmbH",
+            decidalo_has_login=False,
+        )
+        assert new_decidalo_users(settings) == NewUserDefaults(
+            employee_type_id=7,
+            employee_type_name="Werkstudent",
+            authorization_role_id=3,
+            authorization_role_name="Resource Manager",
+            location="AT",
+            country_code="AT",
+            company_name="Beispiel GmbH",
+            has_login=False,
+        )
+
+    def test_no_login_in_the_test_mode(self) -> None:
+        assert new_decidalo_users(_settings(decidalo_has_login=True)).has_login is True
+        assert new_decidalo_users(_test_settings(decidalo_has_login=True)).has_login is False
 
 
 class TestConnect:

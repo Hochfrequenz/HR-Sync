@@ -56,15 +56,23 @@ def _import(client: DecidaloClient, users: list[UserInput]) -> UserImportResults
     return asyncio.run(send())
 
 
-def _differing_fields(user: UserOverview, record: EmployeeRecord) -> list[str]:
+def _differing_fields(user: UserOverview, record: EmployeeRecord, settings: Settings) -> list[str]:
     """
-    Returns the names of the fields in which the user in Decidalo differs from the anonymized record.
+    Returns the names of the fields in which the user in Decidalo differs from the anonymized record and the values
+    for new users. The names of employee type and authorization role are not compared: they may differ in the test
+    environment, the ids count.
     """
     expected = {
         "employeeID": record.employee_number,
         "displayName": record.display_name,
         "email": record.email,
         "entryDate": record.entry_date,
+        "employeeTypeID": settings.decidalo_employee_type_id,
+        "authorizationRoleID": settings.decidalo_authorization_role_id,
+        "location": settings.decidalo_location,
+        "countryCode": settings.decidalo_country_code,
+        "companyName": settings.decidalo_company_name,
+        "includeInResourceManagement": True,
         "hasLogin": False,
         "deactivationDate": None,
     }
@@ -134,7 +142,7 @@ def test_create_one_employee(test_settings: Settings, keep_test_data: bool, caps
 
         users = _users(client, employee_number)
         assert len(users) == 1
-        assert _differing_fields(users[0], record) == []
+        assert _differing_fields(users[0], record, test_settings) == []
 
         # a new plan has nothing left to do for the employee; Personio hasn't changed, so only Decidalo is loaded again
         snapshots = Snapshots(source=snapshots.source, targets={TargetSystem.DECIDALO: load_decidalo(client)})

@@ -15,6 +15,7 @@ from hr_sync.plan import Operation, OperationResult, OperationType, Outcome
 from hr_sync.systems.decidalo import (
     MAX_BATCH_SIZE,
     DecidaloTarget,
+    NewUserDefaults,
     execute_decidalo,
     fetch_users,
     load_decidalo,
@@ -22,6 +23,17 @@ from hr_sync.systems.decidalo import (
     user_input,
 )
 from unittests.fakes import SECRET, FakeDecidalo, decidalo_user, import_row
+
+DEFAULTS = NewUserDefaults(
+    employee_type_id=2,
+    employee_type_name="Internal",
+    authorization_role_id=2,
+    authorization_role_name="Employee",
+    location="DE",
+    country_code="DE",
+    company_name="Hochfrequenz Unternehmensberatung GmbH",
+    has_login=True,
+)
 
 SENT_FROM = {"module": "hr_sync.systems.decidalo", "function": "_send_batches", "line": ANY}
 """the code location of an error that ends a request"""
@@ -43,7 +55,7 @@ def _create(employee_number: str = "00165") -> Operation:
 
 
 def _execute(client: FakeDecidalo, operations: list[Operation], batch_size: int = 100) -> list[OperationResult]:
-    return execute_decidalo(client, operations, employee_type_name="Internal", has_login=True, batch_size=batch_size)
+    return execute_decidalo(client, operations, defaults=DEFAULTS, batch_size=batch_size)
 
 
 class TestMapUsers:
@@ -143,22 +155,36 @@ class TestUserInput:
     """
 
     def test_user_input(self) -> None:
-        row = user_input(_record(), employee_type_name="Internal", has_login=True)
+        row = user_input(_record(), DEFAULTS)
         # what the client sends: it drops the None values
         assert row.model_dump(exclude_none=True) == {
             "employeeID": "00165",
             "displayName": "Erika Musterfrau",
             "email": "erika.00165@example.com",
             "entryDate": date(2026, 10, 1),
-            "hasLogin": True,
+            "employeeTypeID": 2,
             "employeeTypeName": "Internal",
+            "authorizationRoleID": 2,
+            "authorizationRoleName": "Employee",
+            "location": "DE",
+            "countryCode": "DE",
+            "companyName": "Hochfrequenz Unternehmensberatung GmbH",
+            "includeInResourceManagement": True,
+            "hasLogin": True,
             "delete": False,
         }
 
-    def test_without_login_and_employee_type(self) -> None:
-        row = user_input(_record(), employee_type_name=None, has_login=False)
-        assert row.hasLogin is False
-        assert row.employeeTypeName is None
+    def test_without_defaults(self) -> None:
+        # Decidalo decides on the fields without a value
+        row = user_input(_record(), NewUserDefaults())
+        assert set(row.model_dump(exclude_none=True)) == {
+            "employeeID",
+            "displayName",
+            "email",
+            "entryDate",
+            "includeInResourceManagement",
+            "delete",
+        }
 
 
 class TestExecuteDecidalo:
@@ -276,7 +302,6 @@ class TestExecuteDecidalo:
         execute_decidalo(
             client,
             [_create(f"{i:05}") for i in range(MAX_BATCH_SIZE + 1)],
-            employee_type_name="Internal",
-            has_login=True,
+            defaults=DEFAULTS,
         )
         assert [len(batch) for batch in client.batches] == [MAX_BATCH_SIZE, 1]
