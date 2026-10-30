@@ -1260,6 +1260,8 @@ Folgerungen:
   Karrierestufe, Telefonnummer oder kein Standort ab.
 - Die Abweichungen beim Urlaubsanspruch zeigen, dass in weclapp für 8 Mitarbeiter ein anderer Wert steht als aus dem
   Mapping der Karrierestufe. HR-Sync ändert das nicht (nur anlegen), es bleibt eine fachliche Prüfung.
+- Die 10 Karrierestufen außerhalb des Mappings sind keine Beraterstufen, sondern sechs Rollen aus Geschäftsführung,
+  Verwaltung und IT. Wie sie behandelt werden, ist O26.
 - Ob die 13 wegen Datenproblemen ausgeschlossenen Mitarbeiter schon in weclapp stehen, zeigt dieser Lauf nicht. Nach
   einer Korrektur in Personio plant HR-Sync sie wie alle anderen.
 
@@ -1292,6 +1294,7 @@ Folgerungen:
 | O23 | Heißt das Feld für die Arbeitszeitprofile an der weclapp-Personalakte `workScheduleProfileAssignments` (Vorgabe) oder `workingTimeRuleAssignments` (Testdaten des weclapp-client)? **Weitgehend geklärt:** Laut der API-Analyse des Clients gibt es beide als getrennte Felder, für die Arbeitszeitprofile ist es `workScheduleProfileAssignments`. Offen ist nur die lesende Bestätigung gegen die API | AP 2a | Abschnitt 3.2 |
 | O24 | ~~In der Decidalo-Testumgebung heißen die Service-Kategorien intern anders als angezeigt (z. B. „DE Services 1“ für „Senior Consultant“). Klappt der Import über `serviceCategoryName` dort? Wenn nicht, braucht der Test-Modus eine Lösung~~ **Erledigt in AP 8a:** Ja. Der Import nimmt auch übersetzte Namen an, gelesen werden die angezeigten Namen, es entstehen keine falschen Abweichungen (3.3) | – | Abschnitt 3.3 |
 | O25 | ~~Wer hat Zugriff auf die Decidalo-Testumgebung? Die Testdaten sind pseudonymisiert, nicht anonym (Abschnitt 8): Über die echte MA-Nummer lassen sie sich einem Mitarbeiter zuordnen. Der Zugriff muss deshalb auf Berechtigte beschränkt sein, wie in der Produktion. Bestätigen vor weiteren schreibenden Läufen in die Testumgebung~~ **Erledigt (2026-10-30):** Zugriff hat nur, wer auch die Produktion sieht. Die pseudonymisierten Testdaten dürfen weiter dorthin (1.1) | – | Abschnitt 8 |
+| O26 | Karrierestufen außerhalb des Mappings: In Personio haben 10 relevante Mitarbeiter keine Beraterstufe, sondern eine dieser Rollen: GF-Assistenz, Geschäftsführer, Finance Director, HR Consultant, Marketing, Systemadministrator (Stand 2026-10-30, 12.1). Bis das Mapping sie kennt, erzeugen sie bei jedem Lauf eine Warnung `unmapped_value`, und mit ihnen passiert nichts. Vorläufige Richtung: Geschäftsführer bewusst ausnehmen (ohne Warnung, Anlage per Hand), die übrigen fünf Rollen ins Mapping, nach Decidalo wie alle. Offen: je Rolle Decidalo-Service-Kategorie (muss in der Produktion existieren) und Urlaubsanspruch. Bis dahin bleibt das Mapping bei den vier Beraterstufen | später | Abschnitt 4.4, 12.1 |
 
 Keiner der offenen Punkte blockiert AP 2–7:
 
@@ -1300,6 +1303,7 @@ Keiner der offenen Punkte blockiert AP 2–7:
 - O9, O10 und O14 klären wir vor bzw. nach dem Go-live.
 - O16 und O18 liegen in anderen Repos. O19, O20 und O21 kommen nach Bedarf.
 - O22, O24 und O25 sind in AP 8a geklärt. O23 klären wir in AP 2a.
+- O26 (weitere Karrierestufen) kommt später. Bis dahin bleibt das Mapping bei den vier Beraterstufen.
 
 ## 14. Risiken
 
