@@ -1,7 +1,7 @@
 from datetime import date
 
 from hr_sync.anonymize import KEPT_FIELDS, SUBSTITUTES, anonymize, anonymize_record
-from hr_sync.model import EmployeeRecord, ExclusionReason, SnapshotBuilder, System
+from hr_sync.model import EmployeeRecord, ExclusionReason, SnapshotBuilder, System, phone_number_key
 
 ERIKA = EmployeeRecord(
     employee_number="00165",
@@ -10,8 +10,23 @@ ERIKA = EmployeeRecord(
     display_name="Erika Musterfrau",
     email="erika.musterfrau@example.com",
     entry_date=date(2026, 10, 1),
+    career_level="Senior Consultant",
+    mobile_phone="0151 27 409 444",
+    office="Grünwald",
+    weekly_hours=40,
+    service_category="Senior Consultant",
+    vacation_days=26,
 )
-REAL_VALUES = ("Erika", "Musterfrau", "erika.musterfrau", "Max", "Mustermann", "max.mustermann", "admin")
+REAL_VALUES = (
+    "Erika",
+    "Musterfrau",
+    "erika.musterfrau",
+    "Max",
+    "Mustermann",
+    "max.mustermann",
+    "admin",
+    "0151 27 409 444",
+)
 """the personal data of the test data, which must not be left after anonymizing"""
 
 
@@ -28,7 +43,17 @@ class TestAnonymizeRecord:
             display_name="Test Person-00165",
             email="test-00165@example.com",
             entry_date=date(2026, 10, 1),
+            career_level="Senior Consultant",
+            mobile_phone="+49 000 00165",
+            office="Grünwald",
+            weekly_hours=40,
+            service_category="Senior Consultant",
+            vacation_days=26,
         )
+
+    def test_substitute_phone_number_is_valid(self) -> None:
+        # a substitute must pass the same checks as a real number, e.g. when it's compared
+        assert phone_number_key(SUBSTITUTES["mobile_phone"]("00165")) == "+4900000165"
 
     def test_every_field_has_a_rule(self) -> None:
         # a new field needs a decision: substitute it or keep it real
@@ -36,9 +61,12 @@ class TestAnonymizeRecord:
         assert not KEPT_FIELDS & SUBSTITUTES.keys()
 
     def test_substitutes_only_depend_on_the_employee_number(self) -> None:
-        other = EmployeeRecord(employee_number="00165", first_name="Max", email="max@example.com")
-        assert anonymize_record(other).model_dump(exclude={"entry_date"}) == anonymize_record(ERIKA).model_dump(
-            exclude={"entry_date"}
+        other = EmployeeRecord(
+            employee_number="00165", first_name="Max", email="max@example.com", mobile_phone="0170 1234567"
+        )
+        substituted = set(SUBSTITUTES)
+        assert anonymize_record(other).model_dump(include=substituted) == anonymize_record(ERIKA).model_dump(
+            include=substituted
         )
 
 

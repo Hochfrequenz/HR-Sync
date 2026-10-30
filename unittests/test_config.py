@@ -52,6 +52,8 @@ class TestLoadSettings:
         assert settings.personio_client_id is None
         assert settings.personio_app_id == "HR_SYNC"
         assert settings.personio_employee_number_attribute == "company_employee_id"
+        assert settings.personio_career_level_attribute == "dynamic_625934eadbe629.22673150"
+        assert settings.personio_mobile_phone_attribute == "dynamic_6239d4b55575b2.63567609"
         assert settings.decidalo_employee_type_id == 2
         assert settings.decidalo_employee_type_name == "Internal"
         assert settings.decidalo_authorization_role_id == 2

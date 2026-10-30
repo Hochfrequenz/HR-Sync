@@ -18,29 +18,54 @@ from decidalo_client.models import (
     UserOverview,
 )
 from personio_client import Employment, Person
-from personio_client.models import PersonCustomAttribute
+from personio_client.models import EmploymentOffice, PersonCustomAttribute
+
+from hr_sync.systems.personio import PersonioAttributes
 
 ATTRIBUTE = "company_employee_id"
 """the custom attribute of Personio with the employee number"""
+CAREER_LEVEL_ATTRIBUTE = "dynamic_625934eadbe629.22673150"
+MOBILE_PHONE_ATTRIBUTE = "dynamic_6239d4b55575b2.63567609"
+ATTRIBUTES = PersonioAttributes(
+    employee_number=ATTRIBUTE, career_level=CAREER_LEVEL_ATTRIBUTE, mobile_phone=MOBILE_PHONE_ATTRIBUTE
+)
+"""the custom attributes of Personio, the defaults of the settings"""
+GRUENWALD = "906856"
+"""the id of the office in Grünwald in Personio"""
 
 SECRET = "Erika Musterfrau <erika.musterfrau@example.com>"
 """personal data in error messages of the systems, which must never be logged"""
+PHONE = "0151 27 409 444"
+"""the phone number of the test data, as in Personio"""
 
 
-def personio_employment(status: str | None = "ACTIVE", start: date | None = date(2026, 9, 1)) -> Employment:
-    return Employment(status=status, employment_start_date=start)
+def personio_employment(
+    status: str | None = "ACTIVE",
+    start: date | None = date(2026, 9, 1),
+    office_id: str | None = GRUENWALD,
+    weekly_hours: float | None = 40,
+) -> Employment:
+    office = EmploymentOffice(id=office_id) if office_id is not None else None
+    return Employment(status=status, employment_start_date=start, office=office, weekly_working_hours=weekly_hours)
 
 
 def personio_person(
     person_id: str | None = "1",
     employee_number: str | None = "00165",
     email: str | None = "erika.musterfrau@example.com",
-    first_name: str = "Erika",
-    last_name: str = "Musterfrau",
+    first_name: str | None = "Erika",
+    last_name: str | None = "Musterfrau",
+    career_level: str | None = "Senior Consultant",
+    mobile_phone: str | None = PHONE,
 ) -> Person:
     attributes = [PersonCustomAttribute(id="dynamic_4711", type="string", value="something else")]
-    if employee_number is not None:
-        attributes.append(PersonCustomAttribute(id=ATTRIBUTE, type="string", value=employee_number))
+    for attribute_id, value in (
+        (ATTRIBUTE, employee_number),
+        (CAREER_LEVEL_ATTRIBUTE, career_level),
+        (MOBILE_PHONE_ATTRIBUTE, mobile_phone),
+    ):
+        if value is not None:
+            attributes.append(PersonCustomAttribute(id=attribute_id, type="string", value=value))
     return Person(id=person_id, first_name=first_name, last_name=last_name, email=email, custom_attributes=attributes)
 
 

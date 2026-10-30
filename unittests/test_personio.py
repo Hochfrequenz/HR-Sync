@@ -5,18 +5,19 @@ import pytest
 from personio_client import Employment, Person, PersonioClient
 from personio_client.models import PersonCustomAttribute
 
-from hr_sync.model import EmployeeRecord, ExclusionReason, NoticeReason
+from hr_sync.model import EmployeeRecord, ExclusionReason, FieldProblem, NoticeReason
 from hr_sync.systems.personio import (
     LoadedPerson,
     MappedPersons,
     PersonioSource,
-    employee_number_of,
+    attribute_value,
     fetch_persons,
     load_personio,
+    map_person,
     map_persons,
     relevant_employment,
 )
-from unittests.fakes import ATTRIBUTE, FakePersonio, personio_employment, personio_person
+from unittests.fakes import ATTRIBUTE, ATTRIBUTES, PHONE, FakePersonio, personio_employment, personio_person
 
 EARLIER = date(2026, 9, 1)
 TODAY = date(2026, 10, 29)
@@ -28,7 +29,11 @@ def _loaded(person: Person, *employments: Employment) -> LoadedPerson:
 
 
 def _map(*persons: LoadedPerson) -> MappedPersons:
-    return map_persons(persons, employee_number_attribute=ATTRIBUTE, today=TODAY)
+    return map_persons(persons, attributes=ATTRIBUTES, today=TODAY)
+
+
+def _map_person(person: Person, employment: Employment | None = None) -> tuple[EmployeeRecord, list[FieldProblem]]:
+    return map_person(person, employment or personio_employment(), attributes=ATTRIBUTES, employee_number="00165")
 
 
 class TestRelevantEmployment:
@@ -73,9 +78,9 @@ class TestRelevantEmployment:
             assert result is candidates[expected]
 
 
-class TestEmployeeNumberOf:
+class TestAttributeValue:
     """
-    Tests of reading the employee number from the custom attribute.
+    Tests of reading a custom attribute, e.g. the employee number.
     """
 
     @pytest.mark.parametrize(
@@ -92,13 +97,13 @@ class TestEmployeeNumberOf:
     )
     def test_value(self, value: str | int | bool | None, expected: str | None) -> None:
         person = Person(id="1", custom_attributes=[PersonCustomAttribute(id=ATTRIBUTE, value=value)])
-        assert employee_number_of(person, ATTRIBUTE) == expected
+        assert attribute_value(person, ATTRIBUTE) == expected
 
     def test_attribute_missing(self) -> None:
-        assert employee_number_of(personio_person(employee_number=None), ATTRIBUTE) is None
+        assert attribute_value(personio_person(employee_number=None), ATTRIBUTE) is None
 
     def test_no_custom_attributes(self) -> None:
-        assert employee_number_of(Person(id="1"), ATTRIBUTE) is None
+        assert attribute_value(Person(id="1"), ATTRIBUTE) is None
 
 
 class TestMapPersons:
@@ -116,6 +121,12 @@ class TestMapPersons:
                 display_name="Erika Musterfrau",
                 email="erika.musterfrau@example.com",
                 entry_date=EARLIER,
+                career_level="Senior Consultant",
+                mobile_phone=PHONE,
+                office="Grünwald",
+                weekly_hours=40,
+                service_category="Senior Consultant",
+                vacation_days=26,
             )
         }
         assert mapped.snapshot.system_ids == {"00165": "1"}
@@ -180,6 +191,187 @@ class TestMapPersons:
         assert mapped.without_id == 1
 
 
+class TestMapPerson:
+    """
+    Tests of the fields of phase 2 and of the mandatory fields, with plain data.
+    """
+
+    @pytest.mark.parametrize(
+        ("career_level", "service_category", "vacation_days"),
+        [
+            pytest.param("Consultant", "Consultant", 25, id="consultant"),
+            pytest.param("Senior Consultant", "Senior Consultant", 26, id="senior consultant"),
+            pytest.param("Principal Consultant", "Manging Consultant", 30, id="principal consultant"),
+            pytest.param("Senior Principal Consultant", "Associate Partner", 30, id="senior principal consultant"),
+        ],
+    )
+    def test_career_level(self, career_level: str, service_category: str, vacation_days: int) -> None:
+        record, problems = _map_person(personio_person(career_level=f" {career_level} "))
+        assert record.career_level == career_level
+        assert record.service_category == service_category
+        assert record.vacation_days == vacation_days
+        assert problems == []
+
+    @pytest.mark.parametrize(
+        ("office_id", "office"),
+        [
+            pytest.param("906847", "Bremen", id="Bremen"),
+            pytest.param("906855", "Berlin", id="Berlin"),
+            pytest.param("906856", "Grünwald", id="Grünwald"),
+        ],
+    )
+    def test_office(self, office_id: str, office: str) -> None:
+        record, problems = _map_person(personio_person(), personio_employment(office_id=office_id))
+        assert record.office == office
+        assert problems == []
+
+    def test_weekly_hours_of_the_relevant_employment(self) -> None:
+        record, problems = _map_person(personio_person(), personio_employment(weekly_hours=30.0))
+        assert record.weekly_hours == 30
+        assert problems == []
+
+    @pytest.mark.parametrize("mobile_phone", ["+49 151 27409444", "0049 151 27409444", "0151/274-09.444"])
+    def test_phone_number_stays_as_in_personio(self, mobile_phone: str) -> None:
+        record, problems = _map_person(personio_person(mobile_phone=mobile_phone))
+        assert record.mobile_phone == mobile_phone
+        assert problems == []
+
+    @pytest.mark.parametrize(
+        ("person", "employment", "reason", "field"),
+        [
+            pytest.param(
+                personio_person(first_name=" "), None, ExclusionReason.MISSING_FIELD, "first_name", id="no first name"
+            ),
+            pytest.param(
+                personio_person(last_name=None), None, ExclusionReason.MISSING_FIELD, "last_name", id="no last name"
+            ),
+            pytest.param(
+                personio_person(career_level=None),
+                None,
+                ExclusionReason.MISSING_FIELD,
+                "career_level",
+                id="no career level",
+            ),
+            pytest.param(
+                personio_person(career_level="Partner"),
+                None,
+                ExclusionReason.UNMAPPED_VALUE,
+                "career_level",
+                id="unknown career level",
+            ),
+            pytest.param(
+                personio_person(career_level="senior consultant"),
+                None,
+                ExclusionReason.UNMAPPED_VALUE,
+                "career_level",
+                id="career level in other case",
+            ),
+            pytest.param(
+                personio_person(mobile_phone=""), None, ExclusionReason.MISSING_FIELD, "mobile_phone", id="no phone"
+            ),
+            pytest.param(
+                personio_person(mobile_phone="+49 (0) 151 27409444"),
+                None,
+                ExclusionReason.INVALID_PHONE_NUMBER,
+                "mobile_phone",
+                id="phone number with parentheses",
+            ),
+            pytest.param(
+                personio_person(mobile_phone="151 27409444"),
+                None,
+                ExclusionReason.INVALID_PHONE_NUMBER,
+                "mobile_phone",
+                id="phone number without prefix",
+            ),
+            pytest.param(
+                personio_person(),
+                personio_employment(office_id=None),
+                ExclusionReason.MISSING_FIELD,
+                "office",
+                id="no office",
+            ),
+            pytest.param(
+                personio_person(),
+                personio_employment(office_id="4711"),
+                ExclusionReason.UNMAPPED_VALUE,
+                "office",
+                id="unknown office",
+            ),
+            pytest.param(
+                personio_person(),
+                personio_employment(weekly_hours=None),
+                ExclusionReason.MISSING_FIELD,
+                "weekly_hours",
+                id="no weekly hours",
+            ),
+            pytest.param(
+                personio_person(),
+                personio_employment(weekly_hours=38),
+                ExclusionReason.UNMAPPED_VALUE,
+                "weekly_hours",
+                id="unknown weekly hours",
+            ),
+            pytest.param(
+                personio_person(),
+                personio_employment(weekly_hours=37.5),
+                ExclusionReason.UNMAPPED_VALUE,
+                "weekly_hours",
+                id="fraction of an hour",
+            ),
+        ],
+    )
+    def test_problem(self, person: Person, employment: Employment | None, reason: ExclusionReason, field: str) -> None:
+        _, problems = _map_person(person, employment or personio_employment())
+        assert [(problem.reason, problem.field) for problem in problems] == [(reason, field)]
+
+    def test_all_problems_in_the_order_of_the_fields(self) -> None:
+        _, problems = _map_person(
+            personio_person(first_name=None, last_name=None, career_level="Partner", mobile_phone="n/a"),
+            personio_employment(office_id=None, weekly_hours=None),
+        )
+        assert problems == [
+            FieldProblem(reason=ExclusionReason.MISSING_FIELD, field="first_name"),
+            FieldProblem(reason=ExclusionReason.MISSING_FIELD, field="last_name"),
+            FieldProblem(reason=ExclusionReason.UNMAPPED_VALUE, field="career_level"),
+            FieldProblem(reason=ExclusionReason.INVALID_PHONE_NUMBER, field="mobile_phone"),
+            FieldProblem(reason=ExclusionReason.MISSING_FIELD, field="office"),
+            FieldProblem(reason=ExclusionReason.MISSING_FIELD, field="weekly_hours"),
+        ]
+
+    def test_person_with_problems_is_not_part_of_the_snapshot(self) -> None:
+        mapped = _map(
+            _loaded(personio_person("1", "00100", career_level=None, mobile_phone="n/a"), personio_employment()),
+            _loaded(personio_person("2", "00200", email="valid@example.com"), personio_employment()),
+        )
+        assert set(mapped.snapshot.records) == {"00200"}
+        assert mapped.snapshot.excluded == {"00100": ExclusionReason.MISSING_FIELD}
+        assert [
+            (notice.reason, notice.system_id, notice.employee_number, notice.detail)
+            for notice in mapped.snapshot.notices
+        ] == [
+            (NoticeReason.MISSING_FIELD, "1", "00100", "career_level"),
+            (NoticeReason.INVALID_PHONE_NUMBER, "1", "00100", "mobile_phone"),
+        ]
+
+    def test_person_with_problems_still_counts_for_duplicates(self) -> None:
+        mapped = _map(
+            # without career level, so not created, but its e-mail address and employee number are still in use
+            _loaded(
+                personio_person("1", "00100", email="shared@example.com", career_level=None), personio_employment()
+            ),
+            _loaded(personio_person("2", "00200", email="shared@example.com"), personio_employment()),
+            _loaded(personio_person("3", "00300", email="one@example.com", career_level=None), personio_employment()),
+            _loaded(personio_person("4", "00300", email="other@example.com"), personio_employment()),
+        )
+        assert mapped.snapshot.records == {}
+        assert sorted((notice.reason, notice.system_id) for notice in mapped.snapshot.notices) == [
+            (NoticeReason.DUPLICATE_EMAIL, "1"),
+            (NoticeReason.DUPLICATE_EMAIL, "2"),
+            (NoticeReason.DUPLICATE_EMPLOYEE_NUMBER, "3"),
+            (NoticeReason.DUPLICATE_EMPLOYEE_NUMBER, "4"),
+        ]
+
+
 class TestFetchPersons:
     """
     Tests of loading the persons with the (async) Personio client.
@@ -234,7 +426,7 @@ class TestLoadPersonio:
                 (personio_person(None, "00600"), []),
             ]
         )
-        snapshot = load_personio(client, employee_number_attribute=ATTRIBUTE, today=TODAY)
+        snapshot = load_personio(client, attributes=ATTRIBUTES, today=TODAY)
         assert set(snapshot.records) == {"00100"}
         assert len(events) == 1
         event = events[0]
@@ -253,7 +445,7 @@ class TestLoadPersonio:
             fail_for="2",
         )
         with pytest.raises(ConnectionError):
-            load_personio(client, employee_number_attribute=ATTRIBUTE, today=TODAY)
+            load_personio(client, attributes=ATTRIBUTES, today=TODAY)
         assert events[0]["outcome"] == "error"
         assert events[0]["error"] == {
             "type": "ConnectionError",

@@ -24,6 +24,12 @@ The employee number is the key that links an employee across the three systems.
 
 Every step is logged as a wide event.
 
+Every transferred field is mandatory: first and last name, e-mail address, employee number, entry date, career level,
+mobile phone number, office and weekly hours. Career level, office and weekly hours must be part of fixed mappings,
+and the phone number must be convertible to the international form. An employee with a missing or unknown value is
+not created in any system; instead, HR-Sync logs a notice with the name of the field, e.g.
+`reason=missing_field detail=career_level`.
+
 HR-Sync uses these clients for the APIs:
 
 - [`personio-client`](https://github.com/Hochfrequenz/personio_client.py)
@@ -62,8 +68,10 @@ uv run hr-sync --dry-run --target decidalo
 With `HR_SYNC_ENVIRONMENT=test`, HR-Sync writes anonymized data to the Decidalo test environment
 (`DECIDALO_TEST_BASE_URL`, `DECIDALO_TEST_API_KEY`) instead of production:
 
-- Right after loading from Personio, names and e-mail addresses are replaced by substitutes that only depend on the
-  employee number, e.g. `Test Person-00165` and `test-00165@example.com`. Employee number and entry date stay real.
+- Right after loading from Personio, names, e-mail addresses and phone numbers are replaced by substitutes that only
+  depend on the employee number, e.g. `Test Person-00165`, `test-00165@example.com` and `+49 000 00165`. Employee
+  number, entry date, career level, office and weekly hours stay real, so strictly speaking the data is pseudonymized:
+  whoever can see Personio can tell whose data it is.
 - New Decidalo users never get a login.
 - weclapp can't be a target, because there is no weclapp test tenant.
 - A test URL that points to the production system of Decidalo (`https://import.decidalo.app`) aborts the run. The
