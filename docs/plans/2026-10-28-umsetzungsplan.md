@@ -647,7 +647,8 @@ Umgesetzt in [`config.py`](../../src/hr_sync/config.py) und [`sync.py`](../../sr
     im Test-Modus braucht also `--target decidalo`.
   - fehlende `DECIDALO_TEST_*`: `problem=missing_variables`. `DECIDALO_API_KEY` braucht der Test-Modus nicht.
   - Test-URL zeigt auf die Produktion: `problem=production_url_in_test_mode`. Verglichen wird der Host ohne
-    Rücksicht auf Groß- und Kleinschreibung, Schema, Port und Pfad zählen nicht.
+    Rücksicht auf Groß- und Kleinschreibung und ohne Punkt am Ende (`import.decidalo.app.` ist im DNS derselbe Host).
+    Schema, Port und Pfad zählen nicht.
 - `connect` prüft die Test-URL noch einmal (`decidalo_test_url`). So schreibt auch ein Aufruf ohne `check_settings`,
   z. B. aus einem Test, nie in die Produktion. Der Produktionsmodus übergibt fest `DECIDALO_PRODUCTION_URL`
   (`https://import.decidalo.app`) an den Client. Er verlässt sich nie auf dessen Standard-URL, denn die ist die
@@ -729,14 +730,23 @@ Umgesetzt in [`unittests/integration`](../../unittests/integration) (AP 8):
   übersprungen. `HR_SYNC_IT_ALLOW_WRITES` kann in der Umgebung oder in der `.env` stehen.
 - **`integration`:** Personio wird einmal geladen. Der Test prüft, dass keiner der echten Werte im anonymisierten
   Snapshot und in den Events vorkommt. Dann plant er mit `max_employees=1` und führt den Plan als Dry-Run aus.
-- **Keine personenbezogenen Daten in der Testausgabe:** Die Prüfungen vergleichen nur MA-Nummern, Feldnamen, Status
-  und Ersatzwerte. Ein fehlschlagender Test gibt also keine echten Werte aus.
+- **Keine personenbezogenen Daten in der Testausgabe**, auch wenn ein Test fehlschlägt:
+  - pytest schreibt die Assertions dieses Moduls nicht um (`PYTEST_DONT_REWRITE`). Sonst zeigt es die Werte aller
+    Teilausdrücke, z. B. bei `len(users)` die ganze Liste mit Namen. Jede Prüfung hat stattdessen eine eigene Meldung
+    mit MA-Nummern, Feldnamen, Status oder Anzahlen.
+  - Eine gemeinsame Fehlergrenze (`_without_personal_data`) umschließt beide Tests einschließlich des Aufräumens. Sie
+    meldet einen Fehler nur mit dieser Meldung bzw. mit Typ und `error_fields`, ohne die ursprüngliche Exception, ihren
+    Traceback und verkettete Exceptions. Eine Meldung von Personio oder Decidalo mit Namen erscheint so nie.
+  - Das Standard-Logging der Client-Bibliotheken ist in den Integrationstests aus (`logging.disable`), weil pytest
+    deren Meldungen bei einem Fehlschlag ungefiltert zeigen würde. Die Events von HR-Sync laufen über Loguru und
+    bleiben.
 - **Schritt 6** lädt nur Decidalo neu und nutzt den anonymisierten Personio-Snapshot weiter, Personio hat sich ja nicht
   geändert.
-- **Aufräumen:** Es sucht die User mit der MA-Nummer selbst noch einmal, statt das Ergebnis aus Schritt 5 zu nutzen. So
-  räumt es auch auf, wenn Schritt 5 abbricht. Gelöscht wird weiterhin nur, wenn jeder User mit der MA-Nummer genau die
-  Ersatzadresse hat. Gelöscht wird über die interne `userID` zusammen mit MA-Nummer und Ersatzadresse. Erwartet wird
-  der Zeilenstatus `Deleted`.
+- **Aufräumen:** Gelöscht wird nur ein User, den dieser Lauf angelegt hat: Der Import muss `Created` geliefert haben,
+  und Schritt 5 muss genau einen User gefunden haben. Gelöscht wird genau dieser User über seine `userID`, und nur, wenn
+  seine E-Mail genau die Ersatzadresse ist. Antwortet Decidalo mit einem anderen Status (z. B. `Updated`, weil ein
+  anderer Lauf denselben Mitarbeiter gerade angelegt hat), löscht der Test nichts. Erwartet wird der Zeilenstatus
+  `Deleted`, danach prüft der Test, dass der User weg ist.
 - **O13 prüfen:** den Test zweimal hintereinander laufen lassen. Nach dem Löschen ist derselbe Mitarbeiter wieder der
   erste Planeintrag. Klappt das zweite Anlegen, lässt sich eine gelöschte `employeeID` wieder anlegen.
 - **Prüfung der festen Werte:** Der schreibende Test prüft am angelegten User auch Mitarbeitertyp- und Rollen-ID,

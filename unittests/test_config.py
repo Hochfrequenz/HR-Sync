@@ -198,6 +198,9 @@ class TestCheckSettings:
             "https://IMPORT.decidalo.app/",
             "https://import.decidalo.app:443/importapi",
             "http://import.decidalo.app",
+            # the trailing dot names the same host in the DNS
+            "https://import.decidalo.app./",
+            "https://IMPORT.decidalo.APP.:443",
         ],
     )
     def test_test_mode_never_writes_to_production(self, url: str) -> None:

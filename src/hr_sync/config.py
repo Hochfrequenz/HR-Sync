@@ -173,6 +173,7 @@ def decidalo_test_url(settings: Settings) -> str:
     url = settings.decidalo_test_base_url
     if url is None:
         raise ConfigurationError(ConfigurationProblem.MISSING_VARIABLES, ["DECIDALO_TEST_BASE_URL"])
-    if url.host == urlsplit(DECIDALO_PRODUCTION_URL).hostname:
+    # a trailing dot names the same host in the DNS, e.g. import.decidalo.app.
+    if (url.host or "").rstrip(".") == urlsplit(DECIDALO_PRODUCTION_URL).hostname:
         raise ConfigurationError(ConfigurationProblem.PRODUCTION_URL_IN_TEST_MODE, ["DECIDALO_TEST_BASE_URL"])
     return str(url)

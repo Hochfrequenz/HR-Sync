@@ -3,6 +3,8 @@ Fixtures of the integration tests. They read the real configuration: from the en
 the root of the repository.
 """
 
+import logging
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -34,6 +36,17 @@ def isolated_configuration() -> None:
     """
     Replaces the fixture of the unit tests that hides the configuration of the developer: the integration tests need it.
     """
+
+
+@pytest.fixture(autouse=True)
+def without_client_logs() -> Iterator[None]:
+    """
+    Turns off the standard logging of the client libraries: pytest would show their messages on a failure, and they may
+    contain personal data from production. The events of HR-Sync use loguru and stay.
+    """
+    logging.disable(logging.CRITICAL)
+    yield
+    logging.disable(logging.NOTSET)
 
 
 @pytest.fixture
