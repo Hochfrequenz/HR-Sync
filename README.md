@@ -60,15 +60,17 @@ uv run hr-sync --dry-run --target decidalo
 | 1 | at least one operation failed or was skipped |
 | 2 | aborted, e.g. because of the configuration or an error while loading |
 
-> [!NOTE]
-> For now, weclapp only runs as a dry run: until the `weclapp-client` can send the mobile phone number, a run that
-> would write to weclapp aborts with exit code 2. So for now, every run that writes needs `--target decidalo`.
+> [!WARNING]
+> There is no weclapp test tenant: a run with weclapp as target writes to production, and every new user costs a
+> license. Start with `--dry-run`, and run the first real run only with `--only` and the employee number of a test
+> person.
 
 weclapp needs `WECLAPP_API_TOKEN`, `WECLAPP_TENANT` (or `WECLAPP_BASE_URL`) and
 `WECLAPP_EMPLOYEE_NUMBER_ATTRIBUTE_ID`, the id of the custom attribute definition with the employee number. Before
 planning, HR-Sync checks that the tenant has the custom attributes and work schedule profiles it writes; otherwise the
 run aborts with `problem=weclapp_setup_mismatch` and their ids. Their ids, the licenses, roles and the cost rate of new
-users are fixed values of Hochfrequenz, so other companies can't use weclapp as a target yet.
+users are fixed values of Hochfrequenz, so other companies can't use weclapp as a target yet. New users get the
+mobile phone number in the form `+49 151 46414222`.
 
 ### Test Mode
 
@@ -120,7 +122,9 @@ uv run pytest -m integration_write
 uv run pytest -m integration_write --keep-test-data
 ```
 
-`integration` plans with anonymized data and executes the plan as a dry run. `integration_write` additionally needs
+`integration` plans with anonymized data and executes the plan as a dry run. For weclapp, which has no test
+tenant, it reads production and sends the requests of the first employee of the plan with `dryRun=true`, so that
+weclapp stores nothing; it needs the weclapp variables. `integration_write` additionally needs
 `HR_SYNC_IT_ALLOW_WRITES=1`: it creates the first employee of the plan anonymized in the Decidalo test environment,
 checks it and deletes it again, unless `--keep-test-data` keeps it.
 

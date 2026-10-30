@@ -20,6 +20,7 @@ from hr_sync.systems.weclapp import (
     load_weclapp,
     map_weclapp,
     new_employee,
+    weclapp_phone_number,
 )
 from unittests.fakes import WECLAPP_SETUP, weclapp_employee, weclapp_fake, weclapp_user
 
@@ -42,11 +43,25 @@ ERIKA = EmployeeRecord(
 
 
 def _definition(
-    definition_id: str, attribute_type: str, entities: tuple[str, ...] = ("user",)
+    definition_id: str,
+    attribute_type: str,
+    entities: tuple[str, ...] = ("user",),
+    values: dict[str, bool | None] | None = None,
 ) -> CustomAttributeDefinition:
+    """a definition with the given selectable values: whether each value id is active"""
     return CustomAttributeDefinition.model_validate(
-        {"id": definition_id, "version": "0", "attributeType": attribute_type, "entities": list(entities)}
+        {
+            "id": definition_id,
+            "version": "0",
+            "attributeType": attribute_type,
+            "entities": list(entities),
+            "selectableValues": [{"id": value_id, "active": active} for value_id, active in (values or {}).items()],
+        }
     )
+
+
+STATES = {"9903": True, "9904": True, "9905": None}
+"""the federal states of the offices of Hochfrequenz; weclapp may leave ``active`` empty"""
 
 
 def _loaded(**changes: CustomAttributeDefinition | None) -> LoadedWeclapp:
@@ -57,7 +72,7 @@ def _loaded(**changes: CustomAttributeDefinition | None) -> LoadedWeclapp:
         ids.cost_rate: _definition(ids.cost_rate, "DECIMAL"),
         ids.cost_rate_reason: _definition(ids.cost_rate_reason, "STRING"),
         ids.vacation_days: _definition(ids.vacation_days, "INTEGER"),
-        ids.state: _definition(ids.state, "LIST"),
+        ids.state: _definition(ids.state, "LIST", values=STATES | {"9906": False}),
         ids.career_level: _definition(ids.career_level, "STRING"),
     }
     definitions.update({key.removeprefix("_"): value for key, value in changes.items()})
@@ -116,6 +131,24 @@ class TestCheckSetup:
         assert error_info.value.variables == ("WECLAPP_EMPLOYEE_NUMBER_ATTRIBUTE_ID",)
         assert error_info.value.ids == (attribute_id,)
 
+    @pytest.mark.parametrize(
+        "values",
+        [
+            pytest.param({"9903": True, "9904": True}, id="missing"),
+            pytest.param(STATES | {"9905": False}, id="inactive"),
+        ],
+    )
+    def test_federal_state_of_every_office(self, values: dict[str, bool | None]) -> None:
+        with pytest.raises(ConfigurationError) as error_info:
+            check_setup(_loaded(_9902=_definition("9902", "LIST", values=values)), WECLAPP_SETUP)
+        assert error_info.value.ids == ("9905",)
+
+    def test_missing_state_is_named_once(self) -> None:
+        # the missing definition is the problem, not its values
+        with pytest.raises(ConfigurationError) as error_info:
+            check_setup(_loaded(_9902=None), WECLAPP_SETUP)
+        assert error_info.value.ids == ("9902",)
+
     def test_missing_work_schedule_profiles(self) -> None:
         loaded = replace(_loaded(), work_schedule_profile_ids=frozenset({"7177", "7633"}))
         with pytest.raises(ConfigurationError) as error_info:
@@ -171,6 +204,7 @@ class TestMapWeclapp:
                 email="erika.musterfrau@example.com",
                 entry_date=date(2026, 9, 1),
                 career_level="Senior Consultant",
+                mobile_phone="+49 151 27409444",
                 office="Grünwald",
                 weekly_hours=40,
                 vacation_days=26,
@@ -323,6 +357,30 @@ class TestLoadWeclapp:
         }
 
 
+class TestWeclappPhoneNumber:
+    """
+    Tests of the phone number in the form of the existing weclapp users.
+    """
+
+    @pytest.mark.parametrize(
+        ("number", "expected"),
+        [
+            pytest.param("0151 46 41 42 22", "+49 151 46414222", id="national"),
+            pytest.param("+49 151 46414222", "+49 151 46414222", id="as in weclapp"),
+            pytest.param("0049 (151)", None, id="can't be converted"),
+            pytest.param("0049-151/464.142.22", "+49 151 46414222", id="separators"),
+            pytest.param("030 1234567", "+49 301 234567", id="landline"),
+            pytest.param("+43 1 2345678", "+4312345678", id="other country"),
+        ],
+    )
+    def test_weclapp_phone_number(self, number: str, expected: str | None) -> None:
+        if expected is None:
+            with pytest.raises(ValueError, match="convertible"):
+                weclapp_phone_number(number)
+        else:
+            assert weclapp_phone_number(number) == expected
+
+
 class TestNewEmployee:
     """
     Tests of the requests that create an employee, as the admin's guide says.
@@ -338,6 +396,7 @@ class TestNewEmployee:
             "canEditDashboard": False,
             "firstName": "Erika",
             "lastName": "Musterfrau",
+            "mobilePhoneNumber": "+49 151 27409444",
             "licenses": ["WECLAPP_PROJECT", "ADDON_HUMAN_RESOURCES"],
             "userRoles": [{"id": "7166"}, {"id": "4329"}],
             "customAttributes": [
@@ -360,7 +419,7 @@ class TestNewEmployee:
         assert new.work_schedule_profile.work_schedule_profile_id == "7633"
 
     @pytest.mark.parametrize(
-        "field", ["weekly_hours", "entry_date", "email", "office", "career_level", "vacation_days"]
+        "field", ["weekly_hours", "entry_date", "email", "mobile_phone", "office", "career_level", "vacation_days"]
     )
     def test_missing_field_is_a_programming_error(self, field: str) -> None:
         with pytest.raises(ValueError, match=field):

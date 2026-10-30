@@ -202,15 +202,8 @@ class TestMain:
         assert isinstance(event["error"], dict)
         assert event["error"]["problem"] == "env_file_not_found"
 
-    def test_weclapp_only_in_a_dry_run_yet(self, capsys: pytest.CaptureFixture[str]) -> None:
-        # without --target, weclapp is a target, which needs a dry run until the client can send the phone number
-        Path(".env").write_text(_CREDENTIALS, encoding="utf-8")
-        assert main(["--log-format", "json"]) == ExitCode.ABORTED
-        (event,) = _json_events(capsys.readouterr().out)
-        assert isinstance(event["error"], dict)
-        assert event["error"]["problem"] == "target_not_available"
-
     def test_weclapp_needs_its_variables(self, capsys: pytest.CaptureFixture[str]) -> None:
+        # without --target, weclapp is a target
         Path(".env").write_text(_CREDENTIALS, encoding="utf-8")
         assert main(["--dry-run", "--log-format", "json"]) == ExitCode.ABORTED
         (event,) = _json_events(capsys.readouterr().out)

@@ -170,12 +170,8 @@ class TestCheckSettings:
             check_settings(settings, [TargetSystem.DECIDALO])
         assert error_info.value.variables == ("DECIDALO_API_KEY",)
 
-    def test_weclapp_only_in_a_dry_run_yet(self) -> None:
-        # until the weclapp-client can send the phone number
-        with pytest.raises(ConfigurationError) as error_info:
-            check_settings(_weclapp_settings(), list(TargetSystem))
-        assert error_info.value.problem == ConfigurationProblem.TARGET_NOT_AVAILABLE
-        check_settings(_weclapp_settings(), list(TargetSystem), dry_run=True)
+    def test_weclapp(self) -> None:
+        check_settings(_weclapp_settings(), list(TargetSystem))
 
     @pytest.mark.parametrize(
         ("changes", "missing"),
@@ -191,13 +187,13 @@ class TestCheckSettings:
     )
     def test_weclapp_needs_its_variables(self, changes: dict[str, object], missing: list[str]) -> None:
         with pytest.raises(ConfigurationError) as error_info:
-            check_settings(_weclapp_settings(**changes), [TargetSystem.WECLAPP], dry_run=True)
+            check_settings(_weclapp_settings(**changes), [TargetSystem.WECLAPP])
         assert error_info.value.problem == ConfigurationProblem.MISSING_VARIABLES
         assert list(error_info.value.variables) == missing
 
     def test_weclapp_base_url_instead_of_tenant(self) -> None:
         settings = _weclapp_settings(weclapp_tenant=None, weclapp_base_url="https://hf.weclapp.com/webapp/api/v2/")
-        check_settings(settings, [TargetSystem.WECLAPP], dry_run=True)
+        check_settings(settings, [TargetSystem.WECLAPP])
 
     def test_test_mode(self) -> None:
         # without the key of the production system
@@ -272,9 +268,9 @@ class TestConfigurationError:
         assert error.fields == {"problem": "missing_variables", "variables": ["PERSONIO_CLIENT_ID"]}
 
     def test_without_variables(self) -> None:
-        error = ConfigurationError(ConfigurationProblem.TARGET_NOT_AVAILABLE)
-        assert str(error) == "target_not_available"
-        assert error.fields == {"problem": "target_not_available"}
+        error = ConfigurationError(ConfigurationProblem.TARGET_NOT_ALLOWED_IN_TEST_MODE)
+        assert str(error) == "target_not_allowed_in_test_mode"
+        assert error.fields == {"problem": "target_not_allowed_in_test_mode"}
 
     def test_with_ids(self) -> None:
         error = ConfigurationError(

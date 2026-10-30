@@ -39,7 +39,7 @@ from hr_sync.plan import Operation, OperationResult, Outcome, SyncPlan
 from hr_sync.planner import build_plan
 from hr_sync.systems.decidalo import DecidaloTarget, NewUserDefaults, execute_decidalo, load_decidalo
 from hr_sync.systems.personio import PersonioAttributes, PersonioSource, load_personio
-from hr_sync.systems.weclapp import WeclappSetup, load_weclapp
+from hr_sync.systems.weclapp import WeclappSetup, execute_weclapp, load_weclapp
 
 
 class ExitCode(IntEnum):
@@ -113,7 +113,7 @@ def run(
         event.update(_option_fields(options))
         connected: Systems | None = None
         try:
-            check_settings(settings, options.targets, dry_run=options.dry_run)
+            check_settings(settings, options.targets)
             if systems is None:
                 systems = connected = connect(settings, options.targets)
             snapshots = load_snapshots(systems, settings, options.targets, today or date.today())
@@ -267,8 +267,7 @@ def execute_plan(systems: Systems, sync_plan: SyncPlan, settings: Settings, *, d
         elif target == TargetSystem.DECIDALO:
             results.extend(execute_decidalo(_decidalo(systems), operations, defaults=new_decidalo_users(settings)))
         else:
-            # like check_settings: new users would lack the phone number for good until weclapp-client 0.1.0a3
-            raise ConfigurationError(ConfigurationProblem.TARGET_NOT_AVAILABLE)
+            results.extend(execute_weclapp(_weclapp(systems), operations, setup=weclapp_setup(settings)))
     return results
 
 
