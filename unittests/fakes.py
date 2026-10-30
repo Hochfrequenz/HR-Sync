@@ -121,7 +121,13 @@ def decidalo_user(
     display_name: str | None = "Erika Musterfrau",
     entry_date: date | None = date(2026, 10, 1),
     deactivated: bool = False,
+    job_title: str | None = "Senior Consultant",
+    service_category: str | None = "Senior Consultant",
+    mobile_phone: str | None = PHONE,
+    holiday_list_code: str | None = "DE-BY",
+    weekly_hours: int | None = 40,
 ) -> UserOverview:
+    """A user of Decidalo; by default, Erika as Personio has her in :func:`personio_person`, but since October."""
     return UserOverview.model_validate(
         {
             "userID": user_id,
@@ -129,6 +135,11 @@ def decidalo_user(
             "email": email,
             "displayName": display_name,
             "entryDate": entry_date,
+            "jobTitle": job_title,
+            "serviceCategoryName": service_category,
+            "mobilePhoneNumber": mobile_phone,
+            "holidayListCode": holiday_list_code,
+            "standardWeeklyHours": weekly_hours,
             "deactivationDate": datetime(2026, 1, 1, tzinfo=UTC) if deactivated else None,
             "employeeTypeID": 1,
             "employeeTypeName": "Internal",
@@ -203,7 +214,18 @@ class FakeDecidalo:
         rows: list[UserImportRowResult] = []
         for user in batch.users:
             self.users.append(
-                decidalo_user(self._next_id, user.employeeID, user.email, user.displayName, user.entryDate)
+                decidalo_user(
+                    self._next_id,
+                    user.employeeID,
+                    user.email,
+                    user.displayName,
+                    user.entryDate,
+                    job_title=user.jobTitle,
+                    service_category=user.serviceCategoryName,
+                    mobile_phone=user.mobilePhoneNumber,
+                    holiday_list_code=user.holidayListCode,
+                    weekly_hours=user.standardWeeklyHours,
+                )
             )
             rows.append(import_row(user.employeeID or "", ImportItemStatusType.Created, self._next_id))
             self._next_id += 1

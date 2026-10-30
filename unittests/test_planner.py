@@ -31,6 +31,15 @@ MAX = EmployeeRecord(
     email="max.mustermann@example.com",
     entry_date=date(2026, 9, 1),
 )
+PHASE_2: dict[str, object] = {
+    "career_level": "Senior Consultant",
+    "mobile_phone": "0151 27 409 444",
+    "office": "Grünwald",
+    "weekly_hours": 40.0,
+    "service_category": "Senior Consultant",
+    "vacation_days": 26,
+}
+"""the fields of phase 2 of Erika in Personio"""
 ERIKA_IN_DECIDALO = EmployeeRecord(
     employee_number="00165",
     display_name="Erika Musterfrau",
@@ -103,6 +112,71 @@ class TestBuildPlan:
             ),
         )
         assert plan.is_empty
+
+    def test_fields_of_phase_2_are_compared_in_decidalo(self) -> None:
+        desired = ERIKA.model_copy(update=PHASE_2)
+        in_decidalo = ERIKA_IN_DECIDALO.model_copy(
+            update={
+                "career_level": "Consultant",
+                "mobile_phone": "+49 170 1234567",
+                "office": None,
+                "weekly_hours": 30,
+                "service_category": "Consultant",
+                # Decidalo has no vacation days, so they are not compared
+                "vacation_days": None,
+            }
+        )
+        plan = build_plan(
+            _snapshot(System.PERSONIO, desired), {TargetSystem.DECIDALO: _snapshot(System.DECIDALO, in_decidalo)}
+        )
+        assert plan.employees[0].deviations == (
+            Deviation(
+                system=TargetSystem.DECIDALO,
+                fields=("career_level", "mobile_phone", "office", "weekly_hours", "service_category"),
+            ),
+        )
+
+    def test_same_fields_of_phase_2_in_decidalo(self) -> None:
+        desired = ERIKA.model_copy(update=PHASE_2)
+        # Decidalo stores whole hours, Personio may send them as float
+        in_decidalo = ERIKA_IN_DECIDALO.model_copy(update=PHASE_2 | {"weekly_hours": 40, "vacation_days": None})
+        plan = build_plan(
+            _snapshot(System.PERSONIO, desired), {TargetSystem.DECIDALO: _snapshot(System.DECIDALO, in_decidalo)}
+        )
+        assert plan.employees == ()
+
+    @pytest.mark.parametrize(
+        ("existing", "is_same"),
+        [
+            pytest.param("+49 151 27409444", True, id="international"),
+            pytest.param("0049 151 274 09 444", True, id="00 before the country code"),
+            pytest.param("0151/27409444", True, id="separators"),
+            pytest.param("+49 151 27409445", False, id="other number"),
+            pytest.param("+49 (0) 151 27409444", False, id="can't be converted"),
+        ],
+    )
+    def test_phone_numbers_are_compared_in_international_form(self, existing: str, is_same: bool) -> None:
+        desired = ERIKA.model_copy(update={"mobile_phone": "0151 27 409 444"})
+        in_decidalo = ERIKA_IN_DECIDALO.model_copy(update={"mobile_phone": existing})
+        plan = build_plan(
+            _snapshot(System.PERSONIO, desired), {TargetSystem.DECIDALO: _snapshot(System.DECIDALO, in_decidalo)}
+        )
+        deviations = [Deviation(system=TargetSystem.DECIDALO, fields=("mobile_phone",))]
+        assert [deviation for employee in plan.employees for deviation in employee.deviations] == (
+            [] if is_same else deviations
+        )
+
+    def test_phone_numbers_that_cant_be_converted_are_compared_as_they_are(self) -> None:
+        desired = ERIKA.model_copy(update={"mobile_phone": "n/a"})
+        for existing, expected in (
+            ("n/a", ()),
+            ("unknown", (Deviation(system=TargetSystem.DECIDALO, fields=("mobile_phone",)),)),
+        ):
+            in_decidalo = ERIKA_IN_DECIDALO.model_copy(update={"mobile_phone": existing})
+            plan = build_plan(
+                _snapshot(System.PERSONIO, desired), {TargetSystem.DECIDALO: _snapshot(System.DECIDALO, in_decidalo)}
+            )
+            assert tuple(deviation for employee in plan.employees for deviation in employee.deviations) == expected
 
     def test_email_is_compared_case_insensitively(self) -> None:
         in_weclapp = ERIKA.model_copy(update={"email": "Erika.Musterfrau@Example.com"})

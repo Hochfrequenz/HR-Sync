@@ -25,6 +25,7 @@ from hr_sync.sync import (
 from hr_sync.systems.decidalo import NewUserDefaults
 from unittests.fakes import (
     ATTRIBUTE,
+    PHONE,
     FakeDecidalo,
     FakePersonio,
     decidalo_user,
@@ -186,10 +187,16 @@ class TestRun:
                 "includeInResourceManagement": True,
                 "hasLogin": False,
                 "delete": False,
+                # the fields of phase 2: only the phone number is substituted
+                "jobTitle": "Senior Consultant",
+                "serviceCategoryName": "Senior Consultant",
+                "mobilePhoneNumber": f"+49 000 {number}",
+                "holidayListCode": "DE-BY",
+                "standardWeeklyHours": 40,
             }
             for number in ("00165", "00200")
         ]
-        real = ("Erika", "Musterfrau", "Max", "Mustermann", "erika.musterfrau", "max.mustermann")
+        real = ("Erika", "Musterfrau", "Max", "Mustermann", "erika.musterfrau", "max.mustermann", PHONE)
         assert [value for value in real if value in f"{payload} {events}"] == []
         assert {event["environment"] for event in events} == {Environment.TEST}
 

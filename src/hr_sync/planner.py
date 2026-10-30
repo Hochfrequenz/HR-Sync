@@ -4,14 +4,26 @@ Compares the snapshots and creates the plan. Contains no IO.
 
 from collections.abc import Collection, Mapping
 
-from hr_sync.model import EmployeeRecord, Notice, NoticeReason, Snapshot, TargetSystem, email_key
+from hr_sync.model import EmployeeRecord, Notice, NoticeReason, Snapshot, TargetSystem, email_key, phone_number_key
 from hr_sync.plan import Deviation, EmployeePlan, Operation, OperationType, SyncPlan
 
 COMPARED_FIELDS: Mapping[TargetSystem, tuple[str, ...]] = {
     TargetSystem.WECLAPP: ("first_name", "last_name", "email", "entry_date"),
-    TargetSystem.DECIDALO: ("display_name", "email", "entry_date"),
+    TargetSystem.DECIDALO: (
+        "display_name",
+        "email",
+        "entry_date",
+        "career_level",
+        "mobile_phone",
+        "office",
+        "weekly_hours",
+        "service_category",
+    ),
 }
-"""the fields that are compared per target system; Decidalo has no first and last name, only a display name"""
+"""
+the fields that are compared per target system; Decidalo has no first and last name, only a display name, and no
+vacation days
+"""
 
 _SET_BY_COMPLETE = frozenset({"entry_date"})
 """the fields that :attr:`OperationType.COMPLETE` sets, because weclapp stores them in the employee record"""
@@ -173,4 +185,7 @@ def _differing_fields(desired: EmployeeRecord, existing: EmployeeRecord, fields:
 def _same(field: str, desired: object, existing: object) -> bool:
     if field == "email" and isinstance(desired, str) and isinstance(existing, str):
         return desired.casefold() == existing.casefold()
+    if field == "mobile_phone" and isinstance(desired, str) and isinstance(existing, str):
+        # e.g. "0151 …" in Personio is the same number as "+49 151 …"; a number that can't be converted stays as it is
+        return (phone_number_key(desired) or desired) == (phone_number_key(existing) or existing)
     return desired == existing

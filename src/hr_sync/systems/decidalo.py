@@ -24,11 +24,17 @@ from decidalo_client import DecidaloClientError
 from decidalo_client.models import ImportItemStatusType, UserBatchInput, UserImportResults, UserInput, UserOverview
 
 from hr_sync.events import emit_operation, error_fields, wide_event
+from hr_sync.mappings import OFFICES
 from hr_sync.model import EmployeeRecord, Snapshot, SnapshotBuilder, System, TargetSystem
 from hr_sync.plan import Operation, OperationResult, OperationType, Outcome
 
 _REQUEST_ERRORS = (DecidaloClientError, aiohttp.ClientError, TimeoutError)
 """errors of a whole request; after one of them, the remaining operations are skipped"""
+
+_HOLIDAY_LIST_CODES = {office.name: office.holiday_list_code for office in OFFICES.values()}
+"""the public holidays in Decidalo by the name of the office"""
+_OFFICES_BY_HOLIDAY_LIST_CODE = {office.holiday_list_code: office.name for office in OFFICES.values()}
+"""the name of the office by its public holidays in Decidalo, which are unique per office"""
 
 
 class IncompleteUserListError(Exception):
@@ -94,9 +100,11 @@ def map_users(users: Sequence[UserOverview]) -> Snapshot:
     """
     Maps the users of Decidalo onto the common model, without IO.
 
-    The employee number is the ``employeeID``. Decidalo has no first and last name, only the display name. Deactivated
-    users (``deactivationDate`` set) are part of the snapshot, marked in :attr:`Snapshot.deactivated`: they still
-    exist, and they are only a problem if their employee is relevant, which the planner checks.
+    The employee number is the ``employeeID``. Decidalo has no first and last name, only the display name. The career
+    level is the ``jobTitle``, and the office is derived from the public holidays (``holidayListCode``); an unknown
+    code yields no office, so that it shows up as a deviation. Deactivated users (``deactivationDate`` set) are part of
+    the snapshot, marked in :attr:`Snapshot.deactivated`: they still exist, and they are only a problem if their
+    employee is relevant, which the planner checks.
     """
     builder = SnapshotBuilder(System.DECIDALO)
     for user in users:
@@ -110,6 +118,11 @@ def map_users(users: Sequence[UserOverview]) -> Snapshot:
             display_name=user.displayName,
             email=user.email,
             entry_date=user.entryDate,
+            career_level=user.jobTitle,
+            mobile_phone=user.mobilePhoneNumber,
+            office=_OFFICES_BY_HOLIDAY_LIST_CODE.get((user.holidayListCode or "").strip()),
+            weekly_hours=user.standardWeeklyHours,
+            service_category=user.serviceCategoryName,
         )
         builder.add(system_id, record, deactivated=user.deactivationDate is not None)
     return builder.build()
@@ -165,12 +178,21 @@ def execute_decidalo(
 def user_input(record: EmployeeRecord, defaults: NewUserDefaults) -> UserInput:
     """
     Returns the import row that creates the employee in Decidalo. New users are always part of the resource management.
+
+    The career level is the ``jobTitle``, the service category is derived from it, and the office defines the public
+    holidays (``holidayListCode``). The phone number is sent as in Personio. All of them are mandatory in Personio, so
+    a record that is planned for creation has them.
     """
     return UserInput(
         employeeID=record.employee_number,
         displayName=record.display_name,
         email=record.email,
         entryDate=record.entry_date,
+        jobTitle=record.career_level,
+        serviceCategoryName=record.service_category,
+        mobilePhoneNumber=record.mobile_phone,
+        holidayListCode=_HOLIDAY_LIST_CODES.get(record.office) if record.office is not None else None,
+        standardWeeklyHours=int(record.weekly_hours) if record.weekly_hours is not None else None,
         employeeTypeID=defaults.employee_type_id,
         employeeTypeName=defaults.employee_type_name,
         authorizationRoleID=defaults.authorization_role_id,

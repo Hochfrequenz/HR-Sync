@@ -22,7 +22,7 @@ from hr_sync.systems.decidalo import (
     map_users,
     user_input,
 )
-from unittests.fakes import SECRET, FakeDecidalo, decidalo_user, import_row
+from unittests.fakes import PHONE, SECRET, FakeDecidalo, decidalo_user, import_row
 
 DEFAULTS = NewUserDefaults(
     employee_type_id=2,
@@ -47,6 +47,12 @@ def _record(employee_number: str = "00165") -> EmployeeRecord:
         display_name="Erika Musterfrau",
         email=f"erika.{employee_number}@example.com",
         entry_date=date(2026, 10, 1),
+        career_level="Principal Consultant",
+        mobile_phone="0151 27 409 444",
+        office="Berlin",
+        weekly_hours=30,
+        service_category="Manging Consultant",
+        vacation_days=30,
     )
 
 
@@ -76,11 +82,38 @@ class TestMapUsers:
                 display_name="Erika Musterfrau",
                 email="erika.musterfrau@example.com",
                 entry_date=date(2026, 10, 1),
+                career_level="Senior Consultant",
+                mobile_phone=PHONE,
+                office="Grünwald",
+                weekly_hours=40,
+                service_category="Senior Consultant",
             )
         }
         assert snapshot.system_ids == {"00165": "42"}
         assert snapshot.deactivated == frozenset()
         assert snapshot.notices == []
+
+    @pytest.mark.parametrize(
+        ("holiday_list_code", "office"),
+        [
+            pytest.param("DE-HB", "Bremen", id="Bremen"),
+            pytest.param("DE-BE", "Berlin", id="Berlin"),
+            pytest.param(" DE-BY ", "Grünwald", id="Grünwald, stripped"),
+            pytest.param("DE-NW", None, id="unknown code"),
+            pytest.param(None, None, id="no code"),
+        ],
+    )
+    def test_office_from_the_public_holidays(self, holiday_list_code: str | None, office: str | None) -> None:
+        snapshot = map_users([decidalo_user(holiday_list_code=holiday_list_code)])
+        assert snapshot.records["00165"].office == office
+
+    def test_user_without_fields_of_phase_2(self) -> None:
+        user = decidalo_user(
+            job_title=None, service_category=None, mobile_phone=None, holiday_list_code=None, weekly_hours=None
+        )
+        record = map_users([user]).records["00165"]
+        fields = ("career_level", "mobile_phone", "office", "weekly_hours", "service_category", "vacation_days")
+        assert {field: getattr(record, field) for field in fields} == dict.fromkeys(fields)
 
     @pytest.mark.parametrize("employee_id", [None, "", "  "])
     def test_user_without_employee_number(self, employee_id: str | None) -> None:
@@ -190,7 +223,24 @@ class TestUserInput:
             "includeInResourceManagement": True,
             "hasLogin": True,
             "delete": False,
+            "jobTitle": "Principal Consultant",
+            "serviceCategoryName": "Manging Consultant",
+            "mobilePhoneNumber": "0151 27 409 444",
+            "holidayListCode": "DE-BE",
+            "standardWeeklyHours": 30,
         }
+
+    @pytest.mark.parametrize(
+        ("office", "holiday_list_code"),
+        [
+            pytest.param("Bremen", "DE-HB", id="Bremen"),
+            pytest.param("Berlin", "DE-BE", id="Berlin"),
+            pytest.param("Grünwald", "DE-BY", id="Grünwald"),
+        ],
+    )
+    def test_public_holidays_of_the_office(self, office: str, holiday_list_code: str) -> None:
+        record = _record().model_copy(update={"office": office})
+        assert user_input(record, DEFAULTS).holidayListCode == holiday_list_code
 
     def test_without_defaults(self) -> None:
         # Decidalo decides on the fields without a value
@@ -200,6 +250,11 @@ class TestUserInput:
             "displayName",
             "email",
             "entryDate",
+            "jobTitle",
+            "serviceCategoryName",
+            "mobilePhoneNumber",
+            "holidayListCode",
+            "standardWeeklyHours",
             "includeInResourceManagement",
             "delete",
         }

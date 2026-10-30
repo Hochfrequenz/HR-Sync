@@ -375,20 +375,28 @@ in der Testumgebung dreimal, der Import ordnet den Namen trotzdem zu.
 **Service-Kategorien und Feiertagskalender in der Testumgebung:** Die Service-Kategorien heißen dort intern anders als
 angezeigt, z. B. `serviceCategoryName="DE Services 1"` mit der Übersetzung „Senior Consultant“ oder „DE Services 3“ mit
 „Manging Consultant“. Der Tippfehler steckt also in Decidalo selbst, das Mapping trifft die Anzeige. In der Produktion
-heißt die Kategorie laut Vorlage wie im Mapping. Ob der Import über `serviceCategoryName` in der Testumgebung klappt,
-prüft AP 8a (O24). `UserInput` kann für die Kategorie keine ID senden. Die Feiertagskalender `DE-HB`, `DE-BE` und
-`DE-BY` gibt es in der Testumgebung.
+heißt die Kategorie laut Vorlage wie im Mapping. `UserInput` kann für die Kategorie keine ID senden. Die
+Feiertagskalender `DE-HB`, `DE-BE` und `DE-BY` gibt es in der Testumgebung.
+
+**Geklärt in AP 8a (O24):** Der Import über `serviceCategoryName` klappt auch in der Testumgebung. Laut Client nimmt
+der Import die ID, den internen Namen oder jede Übersetzung einer Kategorie an. Alle vier Kategorien des Mappings gibt
+es dort als internen Namen oder als Übersetzung. Beim Lesen liefert Decidalo die angezeigten Namen, z. B. „Senior
+Consultant“ statt „DE Services 1“. Das zeigen die bestehenden User der Testumgebung, und `integration_write` findet
+nach dem Anlegen keine Abweichung. Der Test-Modus braucht also keine Sonderregel.
 
 Die Antwort von `ImportSync` hat ein Ergebnis pro Zeile (`rowIndex`, `status`, `errorMessage`), bei uns also genau
 eines. Daraus wird ein Operation-Event pro Person. Scheitert die Zeile, antwortet die API mit HTTP 500 und dem Ergebnis
 der Zeile. Der Client liefert es trotzdem zurück.
 
-Umgesetzt in [`systems/decidalo.py`](../../src/hr_sync/systems/decidalo.py) (AP 6):
+Umgesetzt in [`systems/decidalo.py`](../../src/hr_sync/systems/decidalo.py) (AP 6, Felder der Phase 2 in AP 8a):
 
 - **Laden:**
   - `fetch_users(client)` holt alle User und prüft danach, dass keiner fehlt. Sonst wirft es
     `IncompleteUserListError`, der Lauf bricht vor dem Planen ab (AP 8).
   - `map_users(users)` mappt `employeeID`, `displayName`, `email` und `entryDate`. Die `system_id` ist die `userID`.
+    Seit AP 8a auch `jobTitle` (Karrierestufe), `serviceCategoryName`, `mobilePhoneNumber`, `standardWeeklyHours`
+    und `holidayListCode`. Den Feiertagskalender übersetzt es über das Standort-Mapping zurück, z. B. `DE-BY` →
+    Grünwald. Ein unbekannter Code ergibt keinen Standort und erscheint so als Abweichung.
   - `load_decidalo(client)` ruft beides auf und erzeugt das Event `sync.load` mit `users`, `records`, `deactivated`
     und `notices`.
 - **Deaktivierte User** (`deactivationDate` gesetzt) gehören zum Snapshot, sie sind in `Snapshot.deactivated`
@@ -398,7 +406,9 @@ Umgesetzt in [`systems/decidalo.py`](../../src/hr_sync/systems/decidalo.py) (AP 
 - **Anlegen:** `execute_decidalo(client, operations, defaults=…)`. Es nimmt nur Decidalo-`CREATE` an, alles andere
   ist ein Programmierfehler (`ValueError`). Bis AP 8 bündelte es bis zu 100 User je Aufruf (`batch_size`), seit AP 8
   gibt es je Mitarbeiter einen Aufruf.
-  - `user_input` baut die Zeile aus dem Datensatz und den festen Werten (`NewUserDefaults`).
+  - `user_input` baut die Zeile aus dem Datensatz und den festen Werten (`NewUserDefaults`), seit AP 8a mit
+    `jobTitle`, `serviceCategoryName`, `mobilePhoneNumber` (wie in Personio), `holidayListCode` (aus dem Standort)
+    und `standardWeeklyHours`.
   - `send_users` schickt die User einzeln und nacheinander und hört nach dem ersten Aufruf auf, der als Ganzes
     scheitert: `DecidaloClientError`, `aiohttp.ClientError` oder `TimeoutError`. Andere Exceptions sind
     Programmierfehler und werden nicht abgefangen.
@@ -511,6 +521,10 @@ Vor dem Vergleich werden Leerzeichen am Anfang und Ende entfernt. E-Mails werden
 Kleinschreibung verglichen. Telefonnummern vergleicht der Planner in einer kanonischen Form: international mit `+` und
 ohne Leerzeichen und Trennzeichen (Umwandlung wie in 4.4). So gibt `0151 …` in Personio gegen `+49 151 …` in weclapp
 keine Abweichung, und Decidalo bekommt beim Anlegen trotzdem die Nummer wie in Personio.
+
+Umgesetzt in [`planner.py`](../../src/hr_sync/planner.py) (AP 8a): Telefonnummern vergleicht `_same` über
+`phone_number_key`. Lässt sich eine Nummer nicht umwandeln, wird sie so verglichen, wie sie ist. Die Wochenstunden
+vergleicht der Planner als Zahl, `40.0` aus Personio und `40` aus Decidalo sind gleich.
 
 Bei `COMPLETE` fehlt in weclapp noch die Personalakte, die dieselbe Operation gerade anlegt. `entry_date` und
 `weekly_hours` stammen aus ihr und werden dann nicht verglichen (`_SET_BY_COMPLETE`), sonst gäbe es falsche
@@ -997,12 +1011,19 @@ Umgesetzt in [`unittests/integration`](../../unittests/integration) (AP 8):
   `Deleted`, danach prüft der Test, dass der User weg ist.
 - **O13 prüfen:** den Test zweimal hintereinander laufen lassen. Nach dem Löschen ist derselbe Mitarbeiter wieder der
   erste Planeintrag. Klappt das zweite Anlegen, lässt sich eine gelöschte `employeeID` wieder anlegen.
+- **Felder der Phase 2 (AP 8a):** Der schreibende Test prüft am angelegten User auch `jobTitle`,
+  `serviceCategoryName`, `mobilePhoneNumber` (die Ersatznummer), `holidayListCode` und `standardWeeklyHours`. Der neue
+  Plan in Schritt 6 darf für den Mitarbeiter auch keine Abweichung enthalten: So zeigt der Test, dass das Laden jedes
+  Feld so zurückübersetzt, wie es gesendet wurde.
 - **Prüfung der festen Werte:** Der schreibende Test prüft am angelegten User auch Mitarbeitertyp- und Rollen-ID,
   Standort, Land, Firma und `includeInResourceManagement`. Die Namen von Typ und Rolle vergleicht er nicht, weil sie in
   der Testumgebung anders heißen können (siehe 3.3).
 - **Ergebnis (2026-10-30):** `integration` und `integration_write` laufen gegen die Testumgebung grün,
   `integration_write` auch mehrfach hintereinander. Danach ist kein Testuser übrig. Geklärt sind damit O7, O12 und
   O13.
+- **Ergebnis mit den Feldern der Phase 2 (2026-10-30, AP 8a):** `integration` und `integration_write` grün. Angelegt
+  wurde MA-Nummer 00002 mit allen Decidalo-Feldern der Phase 2. Zurückgelesen stimmten alle Felder, der neue Plan hatte
+  keine Operation und keine Abweichung. Danach war kein User mit dieser MA-Nummer übrig. Geklärt ist damit O24.
 
 ## 9. PyPI-Paket
 
@@ -1161,7 +1182,7 @@ kann parallel zu AP 8a laufen.
 | O21 | Offboarding: Beim Austritt wird der weclapp-User deaktiviert, nie gelöscht, damit die Buchungen erhalten bleiben. Nicht im Umfang, für später | später | Abschnitt 1, 3.2 |
 | O22 | ~~Entscheidungen zu Beginn von AP 8a: Bekommt Decidalo auch die Wochenstunden (`standardWeeklyHours`)? Werden die Personio-Attribute für Karrierestufe und Telefonnummer Variablen mit Hochfrequenz-Standard oder Konstanten? Welche `reason`-Werte bekommen die neuen Datenprobleme, und welches Format hat die Ersatznummer im Test-Modus?~~ **Erledigt (2026-10-30):** Decidalo bekommt `standardWeeklyHours`; die Attribute sind Variablen mit Hochfrequenz-Standard; `missing_field`, `unmapped_value` und `invalid_phone_number` mit dem Feldnamen in `detail`; Ersatznummer `+49 000 <MA-Nummer>` (1.1) | – | Abschnitt 4.4, 5, 8.2 |
 | O23 | Heißt das Feld für die Arbeitszeitprofile an der weclapp-Personalakte `workScheduleProfileAssignments` (Vorgabe) oder `workingTimeRuleAssignments` (Testdaten des weclapp-client)? **Weitgehend geklärt:** Laut der API-Analyse des Clients gibt es beide als getrennte Felder, für die Arbeitszeitprofile ist es `workScheduleProfileAssignments`. Offen ist nur die lesende Bestätigung gegen die API | AP 2a | Abschnitt 3.2 |
-| O24 | In der Decidalo-Testumgebung heißen die Service-Kategorien intern anders als angezeigt (z. B. „DE Services 1“ für „Senior Consultant“). Klappt der Import über `serviceCategoryName` dort? Wenn nicht, braucht der Test-Modus eine Lösung | AP 8a | Abschnitt 3.3 |
+| O24 | ~~In der Decidalo-Testumgebung heißen die Service-Kategorien intern anders als angezeigt (z. B. „DE Services 1“ für „Senior Consultant“). Klappt der Import über `serviceCategoryName` dort? Wenn nicht, braucht der Test-Modus eine Lösung~~ **Erledigt in AP 8a:** Ja. Der Import nimmt auch übersetzte Namen an, gelesen werden die angezeigten Namen, es entstehen keine falschen Abweichungen (3.3) | – | Abschnitt 3.3 |
 | O25 | ~~Wer hat Zugriff auf die Decidalo-Testumgebung? Die Testdaten sind pseudonymisiert, nicht anonym (Abschnitt 8): Über die echte MA-Nummer lassen sie sich einem Mitarbeiter zuordnen. Der Zugriff muss deshalb auf Berechtigte beschränkt sein, wie in der Produktion. Bestätigen vor weiteren schreibenden Läufen in die Testumgebung~~ **Erledigt (2026-10-30):** Zugriff hat nur, wer auch die Produktion sieht. Die pseudonymisierten Testdaten dürfen weiter dorthin (1.1) | – | Abschnitt 8 |
 
 Keiner der offenen Punkte blockiert AP 2–7:
@@ -1170,7 +1191,7 @@ Keiner der offenen Punkte blockiert AP 2–7:
 - O3 und O5 klären wir im ersten echten Lauf mit der Testperson (AP 9).
 - O9, O10 und O14 klären wir vor bzw. nach dem Go-live.
 - O16 und O18 liegen in anderen Repos. O19, O20 und O21 kommen nach Bedarf.
-- O22 und O25 sind zu Beginn von AP 8a geklärt. O24 klären wir in AP 8a, O23 in AP 2a.
+- O22, O24 und O25 sind in AP 8a geklärt. O23 klären wir in AP 2a.
 
 ## 14. Risiken
 

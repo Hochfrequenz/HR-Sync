@@ -22,6 +22,7 @@ from decidalo_client.models import ImportItemStatusType, UserBatchInput, UserImp
 from hr_sync.anonymize import KEPT_FIELDS, SUBSTITUTES, anonymize
 from hr_sync.config import Settings
 from hr_sync.events import error_fields
+from hr_sync.mappings import OFFICES
 from hr_sync.model import EmployeeRecord, Snapshot, TargetSystem
 from hr_sync.plan import Outcome
 from hr_sync.sync import (
@@ -103,6 +104,7 @@ def _differing_fields(user: UserOverview, record: EmployeeRecord, settings: Sett
     for new users. The names of employee type and authorization role are not compared: they may differ in the test
     environment, the ids count.
     """
+    holiday_list_codes = {office.name: office.holiday_list_code for office in OFFICES.values()}
     expected = {
         "employeeID": record.employee_number,
         "displayName": record.display_name,
@@ -116,6 +118,12 @@ def _differing_fields(user: UserOverview, record: EmployeeRecord, settings: Sett
         "includeInResourceManagement": True,
         "hasLogin": False,
         "deactivationDate": None,
+        # phase 2
+        "jobTitle": record.career_level,
+        "serviceCategoryName": record.service_category,
+        "mobilePhoneNumber": record.mobile_phone,
+        "holidayListCode": holiday_list_codes.get(record.office or ""),
+        "standardWeeklyHours": int(record.weekly_hours) if record.weekly_hours is not None else None,
     }
     return [field for field, value in expected.items() if getattr(user, field) != value]
 
@@ -199,8 +207,12 @@ def test_create_one_employee(test_settings: Settings, keep_test_data: bool, caps
 
         # a new plan has nothing left to do for the employee; Personio hasn't changed, so only Decidalo is loaded again
         snapshots = Snapshots(source=snapshots.source, targets={TargetSystem.DECIDALO: load_decidalo(client)})
-        left = len(create_plan(snapshots, only={employee_number}).operations_for(TargetSystem.DECIDALO))
+        new_plan = create_plan(snapshots, only={employee_number})
+        left = len(new_plan.operations_for(TargetSystem.DECIDALO))
         assert left == 0, f"a new plan still has {left} operations for employee {employee_number}"
+        # loading maps every field back as it was sent
+        deviations = [deviation.fields for employee in new_plan.employees for deviation in employee.deviations]
+        assert deviations == [], f"employee {employee_number} deviates in {deviations} after creating it"
     finally:
         if created_user_id is not None and keep_test_data:
             with capsys.disabled():
