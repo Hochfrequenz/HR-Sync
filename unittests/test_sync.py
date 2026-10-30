@@ -4,12 +4,11 @@ from unittest.mock import ANY
 
 import pytest
 from decidalo_client import DecidaloClient
-from decidalo_client.client import DEFAULT_BASE_URL
 from decidalo_client.models import ImportItemStatusType, UserImportResults
 from personio_client import Employment, Person, PersonioClient
 from pydantic import SecretStr
 
-from hr_sync.config import DECIDALO_PRODUCTION_URL, ConfigurationError, ConfigurationProblem, Environment, Settings
+from hr_sync.config import ConfigurationError, ConfigurationProblem, Environment, Settings
 from hr_sync.model import EmployeeRecord, System, TargetSystem
 from hr_sync.plan import EmployeePlan, Operation, OperationType, Outcome, SyncPlan
 from hr_sync.sync import (
@@ -253,7 +252,7 @@ class TestRun:
             ),
             pytest.param(
                 DECIDALO,
-                lambda: _test_settings(decidalo_test_base_url="https://import.decidalo.dev"),
+                lambda: _test_settings(decidalo_test_base_url="https://import.decidalo.app"),
                 {
                     "function": "decidalo_test_url",
                     "problem": "production_url_in_test_mode",
@@ -324,16 +323,13 @@ class TestConnect:
         systems = connect(_settings(), [TargetSystem.DECIDALO])
         assert isinstance(systems.personio, PersonioClient)
         assert isinstance(systems.decidalo, DecidaloClient)
-        # the production system, which can't be configured
-        assert systems.decidalo._base_url == "https://import.decidalo.dev"
-
-    def test_production_url_is_the_one_of_the_client(self) -> None:
-        assert DECIDALO_PRODUCTION_URL == DEFAULT_BASE_URL
+        # the production system, which can't be configured; the default URL of the client is the test environment
+        assert systems.decidalo._base_url == "https://import.decidalo.app"
 
     def test_production_mode_ignores_the_test_environment(self) -> None:
-        systems = connect(_settings(decidalo_test_base_url="https://test.decidalo.example"), [TargetSystem.DECIDALO])
+        systems = connect(_settings(decidalo_test_base_url="https://import.decidalo.dev"), [TargetSystem.DECIDALO])
         assert isinstance(systems.decidalo, DecidaloClient)
-        assert systems.decidalo._base_url == "https://import.decidalo.dev"
+        assert systems.decidalo._base_url == "https://import.decidalo.app"
 
     def test_test_environment_in_the_test_mode(self) -> None:
         systems = connect(_test_settings(), [TargetSystem.DECIDALO])
@@ -343,7 +339,7 @@ class TestConnect:
 
     def test_test_mode_never_connects_to_production(self) -> None:
         # also when connect is called without check_settings, e.g. by a test
-        settings = _test_settings(decidalo_test_base_url="https://import.decidalo.dev/")
+        settings = _test_settings(decidalo_test_base_url="https://import.decidalo.app/")
         with pytest.raises(ConfigurationError) as error_info:
             connect(settings, [TargetSystem.DECIDALO])
         assert error_info.value.problem == ConfigurationProblem.PRODUCTION_URL_IN_TEST_MODE

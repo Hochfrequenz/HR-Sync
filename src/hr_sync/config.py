@@ -15,8 +15,11 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from hr_sync.events import LogFormat
 from hr_sync.model import TargetSystem
 
-DECIDALO_PRODUCTION_URL = "https://import.decidalo.dev"
-"""the production system of Decidalo, which the production mode always uses and the test mode never"""
+DECIDALO_PRODUCTION_URL = "https://import.decidalo.app"
+"""
+the production system of Decidalo, which the production mode always uses and the test mode never; the default URL of
+the decidalo-client, ``https://import.decidalo.dev``, is the test environment
+"""
 
 
 class Environment(StrEnum):

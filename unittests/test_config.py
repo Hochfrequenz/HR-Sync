@@ -174,6 +174,13 @@ class TestCheckSettings:
             check_settings(settings, [TargetSystem.DECIDALO])
         assert error_info.value.variables == ("DECIDALO_API_KEY",)
 
+    def test_production_url(self) -> None:
+        # the default URL of the decidalo-client, import.decidalo.dev, is the test environment
+        assert DECIDALO_PRODUCTION_URL == "https://import.decidalo.app"
+
+    def test_test_environment_of_decidalo(self) -> None:
+        check_settings(_test_settings(decidalo_test_base_url="https://import.decidalo.dev"), [TargetSystem.DECIDALO])
+
     def test_weclapp_is_not_allowed_in_test_mode(self) -> None:
         with pytest.raises(ConfigurationError) as error_info:
             check_settings(_test_settings(), list(TargetSystem))
@@ -183,9 +190,9 @@ class TestCheckSettings:
         "url",
         [
             DECIDALO_PRODUCTION_URL,
-            "https://IMPORT.decidalo.dev/",
-            "https://import.decidalo.dev:443/importapi",
-            "http://import.decidalo.dev",
+            "https://IMPORT.decidalo.app/",
+            "https://import.decidalo.app:443/importapi",
+            "http://import.decidalo.app",
         ],
     )
     def test_test_mode_never_writes_to_production(self, url: str) -> None:

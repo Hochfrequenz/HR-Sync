@@ -66,8 +66,9 @@ With `HR_SYNC_ENVIRONMENT=test`, HR-Sync writes anonymized data to the Decidalo 
   employee number, e.g. `Test Person-00165` and `test-00165@example.com`. Employee number and entry date stay real.
 - New Decidalo users never get a login.
 - weclapp can't be a target, because there is no weclapp test tenant.
-- A test URL that points to the production system of Decidalo aborts the run. The production mode always uses the
-  production system and ignores the test variables.
+- A test URL that points to the production system of Decidalo (`https://import.decidalo.app`) aborts the run. The
+  production mode always uses the production system and ignores the test variables. The test environment of Decidalo
+  is `https://import.decidalo.dev`, which is also the default URL of the `decidalo-client`.
 
 For a small test run, plan only one employee:
 
