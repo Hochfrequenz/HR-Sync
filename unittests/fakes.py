@@ -250,6 +250,7 @@ def weclapp_user(
     career_level: str | None = "Senior Consultant",
     vacation_days: str | None = "26",
     state_value_id: str | None = "9903",
+    mobile_phone_number: str | None = "+49 151 27409444",
 ) -> User:
     """A user of weclapp, by default Erika as Personio has her in :func:`personio_person`, in Grünwald."""
     ids = WECLAPP_SETUP.attribute_ids
@@ -269,6 +270,7 @@ def weclapp_user(
             "firstName": first_name,
             "lastName": last_name,
             "status": status,
+            "mobilePhoneNumber": mobile_phone_number,
             "customAttributes": attributes,
         }
     )
@@ -296,21 +298,27 @@ def weclapp_employee(
 
 def weclapp_fake() -> tuple[FakeWeclapp, WeclappSetup]:
     """
-    Returns a fake weclapp with the custom attributes and work schedule profiles that HR-Sync uses, and the setup with
-    the ids that the fake assigned. The selected values of the federal state are those of Hochfrequenz: the fake
-    doesn't check them.
+    Returns a fake weclapp with the custom attributes, the federal states of the offices and the work schedule profiles
+    that HR-Sync uses, and the setup with the ids that the fake assigned.
     """
     fake = FakeWeclapp()
 
     def definition(key: str, attribute_type: CustomAttributeType) -> str:
         return fake.add_custom_attribute_definition(attribute_key=key, attribute_type=attribute_type).id
 
+    states = {"Bremen": "Bremen", "Berlin": "Berlin", "Grünwald": "Bayern"}
+    """the federal state of each office"""
+    state = fake.add_custom_attribute_definition(
+        attribute_key="bundesland", attribute_type=CustomAttributeType.LIST, selectable_values=list(states.values())
+    )
+    value_ids = {value.value: value.id for value in state.selectable_values}
+
     employee_number = definition("personalnummer", CustomAttributeType.STRING)
     ids = WeclappAttributeIds(
         cost_rate=definition("kostensatz", CustomAttributeType.DECIMAL),
         cost_rate_reason=definition("kostensatzGrund", CustomAttributeType.STRING),
         vacation_days=definition("urlaubsanspruch", CustomAttributeType.INTEGER),
-        state=definition("bundesland", CustomAttributeType.LIST),
+        state=state.id,
         career_level=definition("karrierestufe", CustomAttributeType.STRING),
     )
     profiles = {
@@ -318,6 +326,9 @@ def weclapp_fake() -> tuple[FakeWeclapp, WeclappSetup]:
         for hours in WORK_SCHEDULE_PROFILES
     }
     setup = WeclappSetup(
-        employee_number_attribute_id=employee_number, attribute_ids=ids, work_schedule_profile_ids=profiles
+        employee_number_attribute_id=employee_number,
+        attribute_ids=ids,
+        state_value_ids={office: value_ids[state_name] for office, state_name in states.items()},
+        work_schedule_profile_ids=profiles,
     )
     return fake, setup

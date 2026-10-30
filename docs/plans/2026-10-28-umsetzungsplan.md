@@ -61,7 +61,7 @@ HR-Sync überträgt beim Onboarding die Stammdaten neuer Mitarbeiter aus **Perso
 | Decidalo im Test-Modus | eigene URL und eigener Key (`DECIDALO_TEST_BASE_URL`, `DECIDALO_TEST_API_KEY`), `hasLogin=false`. Die Testumgebung ist nur im Test-Modus erreichbar |
 | Decidalo-URLs | Produktion `https://import.decidalo.app`, Testumgebung `https://import.decidalo.dev`. Die Standard-URL des `decidalo-client` ist die Testumgebung, HR-Sync übergibt die URL deshalb immer ausdrücklich (O18). Bis AP 8 stand hier fälschlich `.dev` als Produktion |
 | Integrationstest | Personio produktiv lesen, nur den ersten Planeintrag in die Decidalo-Testumgebung schreiben. Danach die Testperson wahlweise automatisch löschen (erst nachdem geprüft ist, dass sie angelegt wurde) oder zum Ansehen liegen lassen. Läuft nur lokal |
-| weclapp vor AP 5 | Seit AP 5, PR 1, läuft weclapp als Ziel im Dry-Run, echte Läufe folgen mit PR 2 (siehe oben). Bis dahin galt: `--target weclapp` ist wählbar und gehört zum Standard. Solange der weclapp-Adapter fehlt, bricht ein Lauf mit weclapp als Ziel mit Exit-Code 2 ab (`problem=target_not_available`). Bis AP 5 braucht jeder Lauf also `--target decidalo`. CLI und Standard ändern sich mit AP 5 nicht mehr |
+| weclapp vor AP 5 | Seit AP 5 ist weclapp ein normales Ziel (PR 1 nur im Dry-Run, seit PR 2 auch schreibend, siehe oben). Bis dahin galt: `--target weclapp` ist wählbar und gehört zum Standard. Solange der weclapp-Adapter fehlt, bricht ein Lauf mit weclapp als Ziel mit Exit-Code 2 ab (`problem=target_not_available`). Bis AP 5 braucht jeder Lauf also `--target decidalo`. CLI und Standard ändern sich mit AP 5 nicht mehr |
 | Test-Modus vor AP 8 | ~~`HR_SYNC_ENVIRONMENT=test` bricht mit Exit-Code 2 ab, bis der Test-Modus steht~~ **Erledigt mit AP 8:** Der Test-Modus steht (Abschnitt 8) |
 | Integrationstests im normalen Testlauf | nein: `uv run pytest` lässt sie immer aus, auch mit gefüllter `.env`. Sie laufen nur mit `-m integration` bzw. `-m integration_write`. Ein normaler Testlauf liest so nie Personio produktiv und braucht kein Netz |
 | Test-Modus ohne `--max-employees` | keine Sonderregel: Ohne Option legt ein Lauf im Test-Modus alle fehlenden Mitarbeiter anonymisiert in der Testumgebung an. Für einen kleinen Lauf setzt man `--max-employees 1` selbst |
@@ -77,7 +77,9 @@ HR-Sync überträgt beim Onboarding die Stammdaten neuer Mitarbeiter aus **Perso
 | `reason`-Werte der Phase 2 (O22) | drei allgemeine Werte: `missing_field` (Pflichtfeld fehlt), `unmapped_value` (Wert außerhalb der Mappings) und `invalid_phone_number`. `detail` nennt den Feldnamen des Modells, z. B. `reason=missing_field detail=career_level`. Ein späteres Feld braucht so keinen neuen Wert. Die bestehenden Werte wie `missing_email` bleiben (5) |
 | Ersatznummer im Test-Modus (O22) | `+49 000 <MA-Nummer>`, z. B. `+49 000 00165`. Nach `+49` beginnt keine deutsche Nummer mit `0`, die Ersatznummer gehört also sicher niemandem (8.2) |
 | Zugriff auf die Decidalo-Testumgebung (O25) | nur, wer auch die Produktion sieht. Dort stehen dieselben Felder ohnehin echt. Die pseudonymisierten Testdaten dürfen deshalb weiter in die Testumgebung (8) |
-| weclapp bis `0.1.0a3` (AP 5) | Der `weclapp-client` `0.1.0a2` kann `mobilePhoneNumber` und die Auswahlwerte der Zusatzfeld-Definitionen noch nicht (Hochfrequenz/weclapp_client.py#33). AP 5 kommt deshalb in zwei PRs: PR 1 mit allem, was `0.1.0a2` kann, PR 2 nach `0.1.0a3` mit Telefonnummer und Prüfung der Auswahlwerte. PR 2 schließt Issue #17. Bis PR 2 läuft weclapp als Ziel nur im Dry-Run, ein echter Lauf bricht mit `problem=target_not_available` ab. So entsteht kein User ohne Telefonnummer, und der lesende Teil von AP 9 kann trotzdem laufen |
+| Telefonnummer in weclapp (AP 5, PR 2) | wie bei allen bestehenden weclapp-Usern: `+49`, die ersten drei Ziffern der nationalen Nummer, dann der Rest ohne Leerzeichen, z. B. `+49 151 46414222` (aus `0151 46 41 42 22`). Nummern mit einer anderen Landesvorwahl schreibt HR-Sync ohne Leerzeichen, z. B. `+43123456789`, weil sich deren Vorwahl ohne Tabelle nicht sicher abtrennen lässt. Verglichen wird weiter in der kanonischen Form (4.2) |
+| Schreiben in weclapp (AP 5, PR 2) | Mit `0.1.0a3` fällt die Sperre: weclapp ist ein normales Ziel. Eine zusätzliche Sicherung im Code gibt es nicht, wie bei Decidalo. Schutz bieten `email_in_use`, die Prüfung des Tenants und der Ablauf von AP 9 (erst Dry-Run, dann der erste echte Lauf nur mit `--only` und der Testperson). **Ohne die ausdrückliche Zustimmung des Auftraggebers läuft nichts gegen eine Produktion** |
+| weclapp bis `0.1.0a3` (AP 5) | Der `weclapp-client` `0.1.0a2` kann `mobilePhoneNumber` und die Auswahlwerte der Zusatzfeld-Definitionen noch nicht (Hochfrequenz/weclapp_client.py#33). AP 5 kommt deshalb in zwei PRs: PR 1 mit allem, was `0.1.0a2` kann, PR 2 nach `0.1.0a3` mit Telefonnummer und Prüfung der Auswahlwerte. PR 2 schließt Issue #17. Bis PR 2 lief weclapp als Ziel nur im Dry-Run, ein echter Lauf brach mit `problem=target_not_available` ab. So entstand kein User ohne Telefonnummer. **Erledigt mit PR 2:** Mit `0.1.0a3` ist die Sperre weg, `target_not_available` gibt es nicht mehr |
 | Wiedereintritt in weclapp (AP 5) | Ein weclapp-User, der nicht im Status `ACTIVE` ist (z. B. `DEPARTURE`), gilt als deaktiviert. Gehört seine MA-Nummer einem relevanten Personio-Mitarbeiter, ist das wie bei Decidalo ein Datenproblem `deactivated_in_target`: Mit dem Mitarbeiter passiert in keinem System etwas, bis jemand den User reaktiviert |
 | Namen über 50 Zeichen (AP 5) | weclapp nimmt für Vor- und Nachname höchstens 50 Zeichen. Längere Namen sind ein Datenproblem in Personio (`reason=value_too_long`, `detail` ist der Feldname), auch mit `--target decidalo` |
 | Integrationstest gegen weclapp (AP 5) | Es gibt nur die Produktion. Der Test liest weclapp und schickt für den ersten Planeintrag `POST user` mit `dryRun=true`, weclapp speichert dabei nichts. Marker `integration`, die Zugangsdaten kommen aus der `.env`, ohne sie wird übersprungen (8.3) |
@@ -253,7 +255,8 @@ Umgesetzt in [`systems/personio.py`](../../src/hr_sync/systems/personio.py) (AP 
    - „Zahl“ heißt `DECIMAL` oder `INTEGER`, „Auswahl“ heißt `LIST`.
    - Auch die Arbeitszeitprofile aus dem Mapping müssen in weclapp existieren (`GET workScheduleProfile`), sonst bricht
      der Lauf ebenso ab.
-   - Die Auswahlwerte von 9902 prüft HR-Sync erst mit `0.1.0a3` des Clients (AP 5, PR 2).
+   - Für 9902 muss jeder Standort einen aktiven Auswahlwert haben (`selectableValues`, ein leeres `active` zählt als
+     aktiv). Fehlt einer, bricht der Lauf mit seiner ID ab. Seit `0.1.0a3` des Clients (AP 5, PR 2).
 
    Typ und Entität identifizieren ein Zusatzfeld nicht eindeutig: In einem anderen Tenant kann dieselbe ID ein
    anderes Zahlenfeld am User sein. Die Bezeichnung (`label`) prüft HR-Sync trotzdem bewusst nicht. Benennt jemand
@@ -384,9 +387,10 @@ Umgesetzt in [`systems/weclapp.py`](../../src/hr_sync/systems/weclapp.py) (AP 5,
   - `evaluate_responses` macht daraus die Ergebnisse. Steht der User, aber nicht die Personalakte, ist die
     Operation ein Fehler mit `detail=employee_not_created`, der nächste Lauf plant `COMPLETE`.
   - `execute_weclapp` ruft beides auf und erzeugt ein `sync.operation` je Operation.
-- **Bis PR 2:** `check_settings` und `execute_plan` lassen weclapp nur im Dry-Run zu (1.1). `execute_weclapp` ist
-  gegen `FakeWeclapp` getestet, wird von `execute_plan` aber erst mit PR 2 aufgerufen. Telefonnummer und Prüfung der
-  Auswahlwerte folgen ebenfalls mit PR 2.
+- **Seit PR 2 (`0.1.0a3`):** `execute_plan` ruft `execute_weclapp` auf, die Sperre ist weg (1.1). Der User bekommt
+  die Telefonnummer in der Schreibweise der bestehenden weclapp-User (`weclapp_phone_number`, z. B.
+  `+49 151 46414222`), gelesen wird sie aus `mobilePhoneNumber` und in der kanonischen Form verglichen. `check_setup`
+  prüft zusätzlich die Auswahlwerte von 9902.
 - `client` ist der echte `WeclappClient`, kein eigenes Protocol: Der `FakeWeclapp` des Clients liefert einen
   `WeclappClient` mit einem Mock-Transport.
 
@@ -587,7 +591,7 @@ damit die Vergleichsregeln an einer Stelle liegen.
 
 | System | verglichene Felder |
 |---|---|
-| weclapp | `first_name`, `last_name`, `email`, `entry_date`; seit AP 5 auch `career_level`, `office`, `weekly_hours` und `vacation_days` (4.4), mit AP 5, PR 2 auch `mobile_phone` |
+| weclapp | `first_name`, `last_name`, `email`, `entry_date`; seit AP 5 auch `career_level`, `mobile_phone`, `office`, `weekly_hours` und `vacation_days` (4.4) |
 | Decidalo | `display_name`, `email`, `entry_date`; ab AP 8a auch `mobile_phone`, `career_level`, `office`, `service_category` und `weekly_hours` (4.4) |
 
 Vor dem Vergleich werden Leerzeichen am Anfang und Ende entfernt. E-Mails werden ohne Rücksicht auf Groß- und
@@ -700,7 +704,7 @@ Vorgaben vorliegen (O20). Der Status bleibt `ACTIVE` (`WECLAPP_NEW_USER_STATUS`)
     gelten als nicht umwandelbar, so wird `+49 (0) 151 …` nie zur falschen Nummer `+49 0151 …`. Nach der Umwandlung
     müssen 7 bis 15 Ziffern übrig sein, die erste nicht `0` (wie bei E.164). Diese Präzisierung kam mit AP 8a dazu.
 
-  Die genaue Schreibweise (Leerzeichen) legt AP 5 fest, die Vorgabe zeigt `+49 151 23411444`. Verglichen wird in der
+  Die Schreibweise legt AP 5 fest (1.1): `+49 151 46414222`, wie bei den bestehenden weclapp-Usern. Verglichen wird in der
   kanonischen Form ohne Leerzeichen (4.2). Diese Form liefert `model.phone_number_key`, z. B. `+4915127409444` für
   `0151 27 409 444`, bzw. `None`, wenn sich die Nummer nicht umwandeln lässt. Personio prüft damit die Nummer (AP 8a),
   der Planner vergleicht damit (AP 8a, PR 2).
@@ -913,7 +917,9 @@ Umgesetzt in [`config.py`](../../src/hr_sync/config.py), [`sync.py`](../../src/h
     Variablen, nie ihre Werte.
   - `check_settings(settings, targets)` prüft vor jedem Zugriff auf ein System:
     - weclapp als Ziel im Test-Modus: `target_not_allowed_in_test_mode` (siehe 8.1)
-    - weclapp als Ziel: `target_not_available` (bis AP 5). Seit AP 5, PR 1, nur noch ohne `--dry-run`, bis PR 2 die Telefonnummer nachzieht (1.1)
+    - ~~weclapp als Ziel: `target_not_available`~~ (bis AP 5, in AP 5, PR 1, nur noch ohne `--dry-run`). Entfällt seit AP 5, PR 2 (1.1)
+    - mit weclapp als Ziel: `WECLAPP_API_TOKEN`, `WECLAPP_EMPLOYEE_NUMBER_ATTRIBUTE_ID` und `WECLAPP_TENANT` oder
+      `WECLAPP_BASE_URL` (sonst `missing_variables`)
     - fehlende Zugangsdaten: `missing_variables`. Die von Personio sind immer nötig. Mit Decidalo als Ziel braucht
       der Produktionsmodus `DECIDALO_API_KEY`, der Test-Modus `DECIDALO_TEST_BASE_URL` und `DECIDALO_TEST_API_KEY`.
     - Test-URL zeigt auf die Produktion: `production_url_in_test_mode` (siehe 8.1)

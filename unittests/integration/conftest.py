@@ -75,7 +75,7 @@ def weclapp_settings() -> Settings:
     settings = load_settings(ENV_FILE if ENV_FILE.is_file() else None)
     settings = settings.model_copy(update={"hr_sync_environment": Environment.PRODUCTION})
     try:
-        check_settings(settings, [TargetSystem.WECLAPP], dry_run=True)
+        check_settings(settings, [TargetSystem.WECLAPP])
     except ConfigurationError as error:
         if error.problem == ConfigurationProblem.MISSING_VARIABLES:
             pytest.skip(f"missing {', '.join(error.variables)}")

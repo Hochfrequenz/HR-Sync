@@ -47,7 +47,7 @@ from hr_sync.mappings import (
     WORK_SCHEDULE_PROFILES,
     WeclappAttributeIds,
 )
-from hr_sync.model import EmployeeRecord, Snapshot, SnapshotBuilder, System, TargetSystem
+from hr_sync.model import EmployeeRecord, Snapshot, SnapshotBuilder, System, TargetSystem, phone_number_key
 from hr_sync.plan import Operation, OperationResult, OperationType, Outcome
 
 _RECORD_ERRORS = (WeclappValidationError, ConflictError)
@@ -160,7 +160,8 @@ def check_setup(loaded: LoadedWeclapp, setup: WeclappSetup) -> None:
     ``attributeEntityType`` empty for them) and have the expected type: string, number (``DECIMAL`` or ``INTEGER``) or
     list. The type and the entity also catch an id that belongs to another attribute, e.g. in another tenant, unless
     that attribute has the same type. The employee number must not be one of the other attributes: its type would be
-    checked as theirs, and HR-Sync would write two values into one attribute.
+    checked as theirs, and HR-Sync would write two values into one attribute. The federal state must have an active
+    selectable value for every office.
 
     Raises:
         ConfigurationError: with the ids that don't fit, and ``WECLAPP_EMPLOYEE_NUMBER_ATTRIBUTE_ID`` if the employee
@@ -177,11 +178,17 @@ def check_setup(loaded: LoadedWeclapp, setup: WeclappSetup) -> None:
         for definition_id, types in setup.attribute_types.items()
         if not _fits(loaded.definitions.get(definition_id), types)
     ]
+    state = loaded.definitions.get(setup.attribute_ids.state)
+    missing_values: list[str] = []
+    if state is not None and setup.attribute_ids.state not in mismatched:
+        # weclapp may leave "active" empty, which counts as active
+        active_values = {value.id for value in state.selectable_values if value.active is not False}
+        missing_values = sorted(set(setup.state_value_ids.values()) - active_values)
     missing_profiles = sorted(set(setup.work_schedule_profile_ids.values()) - loaded.work_schedule_profile_ids)
-    if mismatched or missing_profiles:
+    if mismatched or missing_values or missing_profiles:
         variables = ["WECLAPP_EMPLOYEE_NUMBER_ATTRIBUTE_ID"] if setup.employee_number_attribute_id in mismatched else []
         raise ConfigurationError(
-            ConfigurationProblem.WECLAPP_SETUP_MISMATCH, variables, [*mismatched, *missing_profiles]
+            ConfigurationProblem.WECLAPP_SETUP_MISMATCH, variables, [*mismatched, *missing_values, *missing_profiles]
         )
 
 
@@ -197,6 +204,7 @@ def map_weclapp(loaded: LoadedWeclapp, *, setup: WeclappSetup, today: date) -> S
     employee record is incomplete, a user with another status than :attr:`WeclappSetup.new_user_status` is
     deactivated (e.g. after leaving); the planner decides what that means. The fields of phase 2 are mapped back:
 
+    - the mobile phone number as it is; the planner compares phone numbers in their international form
     - career level and vacation days from their custom attributes; vacation days that aren't whole days yield none
     - the office from the selected federal state, if exactly one office has it
     - the entry date from the earliest work schedule profile, the weekly hours from the one valid today (see
@@ -229,6 +237,7 @@ def map_weclapp(loaded: LoadedWeclapp, *, setup: WeclappSetup, today: date) -> S
             email=user.email,
             entry_date=min((assignment.start_date for assignment in assignments), default=None),
             career_level=_string(user, ids.career_level),
+            mobile_phone=user.mobile_phone_number,
             office=offices_by_state.get(state.selected_value_id or "") if state is not None else None,
             weekly_hours=hours_by_profile.get(current.work_schedule_profile_id) if current is not None else None,
             vacation_days=_whole_number(user, ids.vacation_days),
@@ -281,7 +290,8 @@ class NewEmployee:
 def new_employee(operation: Operation, setup: WeclappSetup) -> NewEmployee:
     """
     Returns the requests that create the employee of the operation in weclapp, as the admin's guide of Hochfrequenz
-    says (see section 3.2 of the plan): an active user with licenses, roles and custom attributes, and an employee
+    says (see section 3.2 of the plan): an active user with licenses, roles, custom attributes and the mobile phone
+    number (see :func:`weclapp_phone_number`), and an employee
     record with the work schedule profile of the weekly hours from the entry date on. The standard field ``title``
     stays empty, and the ``username`` is assigned by weclapp.
 
@@ -306,6 +316,7 @@ def new_employee(operation: Operation, setup: WeclappSetup) -> NewEmployee:
         status=setup.new_user_status,
         first_name=_required(record.first_name, "first_name"),
         last_name=_required(record.last_name, "last_name"),
+        mobile_phone_number=weclapp_phone_number(_required(record.mobile_phone, "mobile_phone")),
         licenses=list(setup.licenses),
         user_roles=[IdReference(id=role_id) for role_id in setup.user_role_ids],
         custom_attributes=[
@@ -318,6 +329,23 @@ def new_employee(operation: Operation, setup: WeclappSetup) -> NewEmployee:
         ],
     )
     return NewEmployee(user=user, user_id=None, work_schedule_profile=profile)
+
+
+def weclapp_phone_number(number: str) -> str:
+    """
+    Returns the phone number in the form of the existing weclapp users: ``+49``, the first three digits of the national
+    number and the rest without spaces, e.g. ``+49 151 46414222`` for ``0151 46 41 42 22``. A number of another country
+    has no spaces, because its country code can't be told from the rest without a table.
+
+    Raises:
+        ValueError: if the number can't be converted, which Personio already checks (see
+            :func:`hr_sync.model.phone_number_key`).
+    """
+    key = _required(phone_number_key(number), "convertible mobile_phone")
+    if not key.startswith("+49"):
+        return key
+    national = key.removeprefix("+49")
+    return f"+49 {national[:3]} {national[3:]}"
 
 
 def _required(value: _T | None, field_name: str) -> _T:

@@ -26,7 +26,7 @@ dependencies = [
     "personio-client>=0.1.0a1,<0.2",
     "pydantic>=2.11",
     "pydantic-settings>=2.7",
-    "weclapp-client>=0.1.0a2,<0.2",
+    "weclapp-client>=0.1.0a3,<0.2",
 ]
 dynamic = ["readme", "version"]
 

@@ -731,7 +731,7 @@ requires-dist = [
     { name = "personio-client", specifier = ">=0.1.0a1,<0.2" },
     { name = "pydantic", specifier = ">=2.11" },
     { name = "pydantic-settings", specifier = ">=2.7" },
-    { name = "weclapp-client", specifier = ">=0.1.0a2,<0.2" },
+    { name = "weclapp-client", specifier = ">=0.1.0a3,<0.2" },
 ]
 
 [package.metadata.requires-dev]
@@ -1844,16 +1844,16 @@ wheels = [
 
 [[package]]
 name = "weclapp-client"
-version = "0.1.0a2"
+version = "0.1.0a3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "httpx" },
     { name = "pydantic" },
     { name = "tzdata" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/00/10/2d4916d039232968c371962d686ecf4db5918d0da7c2ab308a03180baf47/weclapp_client-0.1.0a2.tar.gz", hash = "sha256:743de3ce379bf92281a788c2c55bc62659a1020a64b089c83247aee94e40c8bc", size = 146587, upload-time = "2026-10-30T15:39:14.403Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/9f/88/9c114952cf5987558e4bd0f69d37e3ec17674e12d82b401740bfddbc5d5f/weclapp_client-0.1.0a3.tar.gz", hash = "sha256:7c12bce1b8f876dbbc27b8dd60160bf999a8eaea49c9c54e3c9a7eca5ccdc9c0", size = 148422, upload-time = "2026-10-30T16:10:11.506Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/79/c3/87f52e7d4435ff1d4a20ae01b6cadd2160ec9b43f55f594262e477902f6e/weclapp_client-0.1.0a2-py3-none-any.whl", hash = "sha256:9535a7fbc0a44362cd34015ee5856fae79a8f04d504c3f72551303cbdb1614da", size = 39863, upload-time = "2026-10-30T15:39:12.827Z" },
+    { url = "https://files.pythonhosted.org/packages/61/f6/aace67aebe2c2f2d11c2c013200ebd193dcd9d9ff9be77eb2a9e8b8c6a20/weclapp_client-0.1.0a3-py3-none-any.whl", hash = "sha256:0812091ce9a2e2feffc95bbe8ec2a530dd8b9623f53b1cae7d3cfd03301ccbb8", size = 40868, upload-time = "2026-10-30T16:10:09.949Z" },
 ]
 
 [[package]]

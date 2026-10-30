@@ -284,7 +284,15 @@ class TestRun:
             pytest.param(
                 RunOptions(),
                 _settings,
-                {"problem": "target_not_available"},
+                {
+                    "problem": "missing_variables",
+                    "variables": [
+                        "WECLAPP_API_TOKEN",
+                        "WECLAPP_EMPLOYEE_NUMBER_ATTRIBUTE_ID",
+                        "WECLAPP_TENANT",
+                        "WECLAPP_BASE_URL",
+                    ],
+                },
                 id="weclapp",
             ),
             pytest.param(
@@ -402,15 +410,46 @@ class TestRunWithWeclapp:
         ]
         assert [value for value in PERSONAL_DATA if value in str(events)] == []
 
-    def test_real_run_is_not_available_yet(
+    def test_creates_the_missing_employees(
         self, fake: tuple[FakeWeclapp, WeclappSetup], events: list[dict[str, object]]
     ) -> None:
         weclapp, _ = fake
-        assert self._run(weclapp, ERIKA, dry_run=False) == ExitCode.ABORTED
-        assert weclapp.requests == []
-        error = _run_event(events)["error"]
-        assert isinstance(error, dict)
-        assert error["problem"] == "target_not_available"
+        assert self._run(weclapp, ERIKA, MAX, dry_run=False) == ExitCode.SUCCESS
+        assert sorted(user.email or "" for user in weclapp.users) == [
+            "erika.musterfrau@example.com",
+            "max.mustermann@example.com",
+        ]
+        assert {user.mobile_phone_number for user in weclapp.users} == {"+49 151 27409444"}
+        assert len(weclapp.employees) == 2
+        operations = _named(events, "sync.operation")
+        assert [(event["system"], event["outcome"]) for event in operations] == [
+            ("weclapp", "success"),
+            ("weclapp", "success"),
+        ]
+        assert [value for value in PERSONAL_DATA if value in str(events)] == []
+
+    def test_second_run_writes_nothing(
+        self, fake: tuple[FakeWeclapp, WeclappSetup], events: list[dict[str, object]]
+    ) -> None:
+        weclapp, _ = fake
+        assert self._run(weclapp, ERIKA, MAX, dry_run=False) == ExitCode.SUCCESS
+        weclapp.clear_requests()
+        events.clear()
+        assert self._run(weclapp, ERIKA, MAX, dry_run=False) == ExitCode.SUCCESS
+        assert weclapp.write_requests == []
+        # what HR-Sync wrote is read back without deviations
+        assert _named(events, "sync.deviation") == []
+
+    def test_user_without_employee_record_is_completed_in_the_next_run(
+        self, fake: tuple[FakeWeclapp, WeclappSetup], events: list[dict[str, object]]
+    ) -> None:
+        weclapp, _ = fake
+        weclapp.fail_next(400, method="POST", path="employee")
+        assert self._run(weclapp, ERIKA, dry_run=False) == ExitCode.OPERATION_FAILED
+        assert (len(weclapp.users), len(weclapp.employees)) == (1, 0)
+        assert self._run(weclapp, ERIKA, dry_run=False) == ExitCode.SUCCESS
+        (user,) = weclapp.users
+        assert [employee.user_id for employee in weclapp.employees] == [user.id]
 
     def test_user_without_employee_record_is_completed(
         self, fake: tuple[FakeWeclapp, WeclappSetup], events: list[dict[str, object]]
@@ -620,7 +659,7 @@ class TestSteps:
             ("sync.load", "weclapp"),
         ]
 
-    def test_weclapp_only_in_a_dry_run_yet(self, events: list[dict[str, object]]) -> None:
+    def test_weclapp_dry_run(self, events: list[dict[str, object]]) -> None:
         record = EmployeeRecord(employee_number="00165", first_name="Erika")
         operation = Operation(system=TargetSystem.WECLAPP, type=OperationType.CREATE, record=record)
         sync_plan = SyncPlan(
@@ -630,10 +669,6 @@ class TestSteps:
         systems = Systems(personio=_personio())
         results = execute_plan(systems, sync_plan, _settings(), dry_run=True)
         assert [result.outcome for result in results] == [Outcome.DRY_RUN]
-        # like check_settings, also when the steps are called on their own
-        with pytest.raises(ConfigurationError) as error_info:
-            execute_plan(systems, sync_plan, _settings(), dry_run=False)
-        assert error_info.value.problem == ConfigurationProblem.TARGET_NOT_AVAILABLE
 
     def test_personio_attribute_from_the_settings(self) -> None:
         settings = _settings(personio_employee_number_attribute=ATTRIBUTE)

@@ -14,6 +14,7 @@ COMPARED_FIELDS: Mapping[TargetSystem, tuple[str, ...]] = {
         "email",
         "entry_date",
         "career_level",
+        "mobile_phone",
         "office",
         "weekly_hours",
         "vacation_days",
@@ -31,7 +32,7 @@ COMPARED_FIELDS: Mapping[TargetSystem, tuple[str, ...]] = {
 }
 """
 the fields that are compared per target system; Decidalo has no first and last name, only a display name, and no
-vacation days; weclapp has no service category, and the weclapp-client can't read its phone number yet (0.1.0a3)
+vacation days; weclapp has no service category
 """
 
 _SET_BY_COMPLETE = frozenset({"entry_date", "weekly_hours"})

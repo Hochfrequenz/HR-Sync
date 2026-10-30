@@ -102,11 +102,6 @@ class ConfigurationProblem(StrEnum):
     ENV_FILE_NOT_FOUND = "env_file_not_found"
     INVALID_VARIABLES = "invalid_variables"
     MISSING_VARIABLES = "missing_variables"
-    TARGET_NOT_AVAILABLE = "target_not_available"
-    """
-    weclapp is selected without ``--dry-run``: until the weclapp-client can send the phone number (0.1.0a3), new users
-    would lack it for good, because HR-Sync never updates
-    """
     TARGET_NOT_ALLOWED_IN_TEST_MODE = "target_not_allowed_in_test_mode"
     """weclapp is selected in the test mode, but has no test tenant"""
     PRODUCTION_URL_IN_TEST_MODE = "production_url_in_test_mode"
@@ -159,7 +154,7 @@ def load_settings(env_file: Path | None = None) -> Settings:
         raise ConfigurationError(ConfigurationProblem.INVALID_VARIABLES, variables) from None
 
 
-def check_settings(settings: Settings, targets: Collection[TargetSystem], *, dry_run: bool = False) -> None:
+def check_settings(settings: Settings, targets: Collection[TargetSystem]) -> None:
     """
     Checks that the settings allow a run with the given target systems, before any system is called.
 
@@ -169,15 +164,12 @@ def check_settings(settings: Settings, targets: Collection[TargetSystem], *, dry
     ``WECLAPP_BASE_URL``.
 
     Raises:
-        ConfigurationError: if weclapp is selected in the test mode, where it's never allowed, or without ``dry_run``,
-            which is not available yet (see :attr:`ConfigurationProblem.TARGET_NOT_AVAILABLE`), if a credential of
+        ConfigurationError: if weclapp is selected in the test mode, where it's never allowed, if a credential of
             Personio or a selected target system is missing, or if the test mode would write to the production system
             of Decidalo.
     """
     if settings.test_mode and TargetSystem.WECLAPP in targets:
         raise ConfigurationError(ConfigurationProblem.TARGET_NOT_ALLOWED_IN_TEST_MODE)
-    if TargetSystem.WECLAPP in targets and not dry_run:
-        raise ConfigurationError(ConfigurationProblem.TARGET_NOT_AVAILABLE)
     required = ["personio_client_id", "personio_client_secret"]
     if TargetSystem.DECIDALO in targets:
         required.extend(

@@ -210,9 +210,9 @@ class TestBuildPlan:
                 "office": "Berlin",
                 "weekly_hours": 30,
                 "vacation_days": 25,
-                # weclapp has no service category, and the client can't read the phone number yet
+                # weclapp has no service category; the phone number is the same in international form
                 "service_category": None,
-                "mobile_phone": None,
+                "mobile_phone": "+49 151 27409444",
             }
         )
         plan = build_plan(
