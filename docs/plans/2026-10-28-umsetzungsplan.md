@@ -43,6 +43,7 @@ HR-Sync überträgt beim Onboarding die Stammdaten neuer Mitarbeiter aus **Perso
 | Gescheiterter Aufruf | Scheitert ein Aufruf als Ganzes, ist die Operation dieses Mitarbeiters ein Fehler. Die restlichen Operationen dieses Systems werden übersprungen (`skipped`) |
 | Vollständiges Laden aus Decidalo | Nach dem Laden fragt HR-Sync nach, ob nach dem letzten User noch einer kommt (`top=1`, `skip=Anzahl`). Kommt einer, bricht der Lauf vor dem Planen ab (Exit-Code 2). Sonst würde ein fehlender User als neu geplant, und das Upsert von `ImportSync` würde den bestehenden User überschreiben (O7) |
 | Neue weclapp-User | nach der Vorgabe von Hochfrequenz (3.2, 4.4): `status=ACTIVE`, `mobilePhoneNumber`, Lizenzen `WECLAPP_PROJECT` und `ADDON_HUMAN_RESOURCES`, Rollen `7166` (Zeiterfassung) und `4329` (weclapp Projekt), Zusatzfelder 7621 (MA-Nummer), 8211 und 8217 (Kostensatz, fest 1 EUR/h und „Erstanlage (weclapp)“, O20), 9795 (Urlaubsanspruch), 9902 (Bundesland) und 14175 (Karrierestufe). Das Standardfeld `title` bleibt leer, sonst steht es auf Rechnungen vor dem Namen. Den `username` vergibt weclapp selbst, per API lässt er sich nicht setzen (3.2). weclapp verschickt beim Anlegen per API keine Einladungsmail (O2). Aktive User kosten Lizenzgebühren, die Kosten sind eingeplant |
+| Erster echter Lauf (AP 9) | Statt einer Testperson ist der erste echte Lauf ein Live-Lauf mit dem ersten echten neuen Mitarbeiter, sobald er in Personio bereit ist (Abweichung von AP 9). Ablauf: erst ein Dry-Run mit `--only <MA-Nummer>` gegen beide Ziele, dann der echte Lauf mit denselben Optionen, jeweils nur mit ausdrücklicher Zustimmung. Beide Ziele in einem Lauf, Decidalo mit Login (`hasLogin=true`) wie im Betrieb. Was angelegt wird, bleibt; das Ergebnis prüft der Auftraggeber mit den Kollegen. Das Ergebnis geht als lokale Datei an den Auftraggeber, nicht ins Repo |
 | Produktionsdaten im Repo | Auswertungen von Produktionsdaten (Ergebnisse von Läufen, Zahlen, MA-Nummern, Listen aus Personio, weclapp oder Decidalo) stehen nie im öffentlichen Repo: nicht im Plan, in Commit-Nachrichten, PRs oder Issues. Sie gehen als lokale Datei an den Auftraggeber. Beispiele im Repo nutzen ausgedachte Werte, etwa die MA-Nummern 00965 und 00974 (2026-10-30, 12.1) |
 | Kostensatz neuer weclapp-User | fest 1 EUR/h (8211) als Platzhalter, der echte Kostensatz wird später per Hand in weclapp gepflegt (O20). Der Grund 8217 bleibt „Erstanlage (weclapp)“ |
 | Neue weclapp-Personalakte | `POST employee` mit `userId` und einem Arbeitszeitprofil (`workScheduleProfileAssignments`): Profil aus den Wochenstunden, `startDate` = Eintrittsdatum. `entryDate` setzt HR-Sync nicht, die `employeeNumber` vergibt weclapp selbst (O17) |
@@ -1236,7 +1237,7 @@ Die Reihenfolge baut zuerst den Kern ohne IO und hängt dann die Systeme an:
 | 7a | **Begrenzung des Plans** mit `--max-employees N` für überschaubare Testläufe (siehe 1.1 und 4.2) | `hr-sync --dry-run --target decidalo --max-employees 1` plant höchstens einen Mitarbeiter |
 | 8 | **Test-Modus und Integrationstest:** Anonymisierung, Prüfungen für den Test-Modus, Integrationstests gegen die Decidalo-Testumgebung mit wählbarem Aufräumen | `uv run pytest -m integration_write` legt den ersten Planeintrag anonymisiert in der Testumgebung an, prüft ihn und räumt auf |
 | 8a | **Felder der Phase 2 in Personio und Decidalo** (4.4): Modell, `mappings.py`, Personio-Mapping mit Pflichtfeldern und Datenproblemen, Decidalo-Felder (`jobTitle`, `serviceCategoryName`, `mobilePhoneNumber`, `holidayListCode`, `standardWeeklyHours`) samt Vergleich, Anonymisierung der Telefonnummer, Integrationstest (O24). Entscheidungen aus O22 und O25 in 1.1. In zwei PRs: PR 1 die Quelle (`mappings.py`, Modell und Datenprobleme, Personio, Anonymisierung, Konfiguration), PR 2 das Ziel (Decidalo, Vergleich im Planner, Integrationstest). Nur PR 2 schließt Issue #19 | `uv run pytest -m integration_write` legt den ersten Planeintrag mit allen Decidalo-Feldern der Phase 2 an |
-| 9 | **Testlauf:** Dry-Run gegen die echten Systeme (nur lesend) und offene Punkte klären. Dann der erste echte Lauf, **nur mit `--only <MA-Nummer der Testperson>`**, vorher mit denselben Optionen als Dry-Run. Voraussetzung: Die Testperson steht mit MA-Nummer, E-Mail, allen Pflichtfeldern der Phase 2 und einem aktiven Employment (Start heute oder früher) in Personio. In weclapp prüfen: Lizenzen und Rollen, den von weclapp vergebenen `username` (gleich der E-Mail?, 3.2), Zuweisung zu den INT-Projekten nach etwa 15 Minuten, Anmeldung im Zeitportal | Go-live-Entscheidung |
+| 9 | **Testlauf:** Dry-Run gegen die echten Systeme (nur lesend) und offene Punkte klären. Dann der erste echte Lauf, **nur mit `--only <MA-Nummer>`**, vorher mit denselben Optionen als Dry-Run. **Seit 2026-10-30:** kein Testmitarbeiter, sondern ein Live-Lauf mit dem ersten echten neuen Mitarbeiter, was angelegt wird, bleibt (1.1). Voraussetzung: Die Testperson steht mit MA-Nummer, E-Mail, allen Pflichtfeldern der Phase 2 und einem aktiven Employment (Start heute oder früher) in Personio. In weclapp prüfen: Lizenzen und Rollen, den von weclapp vergebenen `username` (gleich der E-Mail?, 3.2), Zuweisung zu den INT-Projekten nach etwa 15 Minuten, Anmeldung im Zeitportal | Go-live-Entscheidung |
 | 10 | **PyPI-Paket** (siehe [Abschnitt 9](#9-pypi-paket)): `LICENSE`, README als Nutzerdoku, Publish-Workflow aktivieren, Trusted Publisher auf PyPI und Environment `release` einrichten, Python-Obergrenze prüfen, Release als Pre-Release oder stabil je nach Clients. Zeitpunkt offen (O14) | `hochfrequenz-hr-sync` auf PyPI |
 
 AP 2 liegt in einem anderen Repo und kann parallel zu AP 1, 3 und 4 laufen. Dasselbe gilt für O16 (aiohttp-Grenze in
@@ -1250,6 +1251,16 @@ im Repo des weclapp-client.
 Mit ausdrücklicher Zustimmung liefen je ein Dry-Run gegen weclapp und gegen Decidalo, beide nur lesend. Die Ergebnisse
 stehen nicht in diesem öffentlichen Repo, sondern liegen lokal beim Auftraggeber (1.1). Offene Folgepunkte stehen in
 Abschnitt 13 (O10, O26).
+
+Als Nächstes folgt der erste echte Lauf mit dem ersten echten neuen Mitarbeiter (1.1). Geprüft wird danach, auch mit
+den Kollegen:
+
+- **weclapp:** User aktiv mit Lizenzen, Rollen, Zusatzfeldern (MA-Nummer, Kostensatz-Platzhalter, Urlaubsanspruch,
+  Bundesland, Karrierestufe) und Telefonnummer; vergebener `username` (gleich der E-Mail?); Personalakte mit dem
+  Arbeitszeitprofil ab dem Eintrittsdatum; Zuweisung zu den INT-Projekten nach etwa 15 Minuten; Anmeldung im
+  Zeitportal.
+- **Decidalo:** User mit allen Feldern der Phase 2, Typ, Rolle, Firma und Login; ob eine Einladungsmail kommt (O5).
+- **HR-Sync:** Ein Dry-Run danach plant für den Mitarbeiter nichts mehr und meldet keine Abweichung.
 
 ## 13. Offene Punkte
 
