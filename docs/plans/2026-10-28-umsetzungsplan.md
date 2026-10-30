@@ -42,7 +42,8 @@ HR-Sync überträgt beim Onboarding die Stammdaten neuer Mitarbeiter aus **Perso
 | Anlegen in Decidalo: ein Aufruf je Mitarbeiter | Beim Ausführen des Plans geht HR-Sync Mitarbeiter für Mitarbeiter durch: Jeder `ImportSync`-Aufruf legt genau einen User an, die Aufrufe laufen nacheinander. Es gibt keine Pakete mit mehreren Usern, eine Paketgröße spielt also keine Rolle (O7) |
 | Gescheiterter Aufruf | Scheitert ein Aufruf als Ganzes, ist die Operation dieses Mitarbeiters ein Fehler. Die restlichen Operationen dieses Systems werden übersprungen (`skipped`) |
 | Vollständiges Laden aus Decidalo | Nach dem Laden fragt HR-Sync nach, ob nach dem letzten User noch einer kommt (`top=1`, `skip=Anzahl`). Kommt einer, bricht der Lauf vor dem Planen ab (Exit-Code 2). Sonst würde ein fehlender User als neu geplant, und das Upsert von `ImportSync` würde den bestehenden User überschreiben (O7) |
-| Neue weclapp-User | nach der Vorgabe von Hochfrequenz (3.2, 4.4): `status=ACTIVE`, `mobilePhoneNumber`, Lizenzen `WECLAPP_PROJECT` und `ADDON_HUMAN_RESOURCES`, Rollen `7166` (Zeiterfassung) und `4329` (weclapp Projekt), Zusatzfelder 7621 (MA-Nummer), 8211 und 8217 (Kostensatz, vorerst fest 59 EUR/h und „Erstanlage (weclapp)“, O20), 9795 (Urlaubsanspruch), 9902 (Bundesland) und 14175 (Karrierestufe). Das Standardfeld `title` bleibt leer, sonst steht es auf Rechnungen vor dem Namen. Den `username` vergibt weclapp selbst, per API lässt er sich nicht setzen (3.2). weclapp verschickt beim Anlegen per API keine Einladungsmail (O2). Aktive User kosten Lizenzgebühren, die Kosten sind eingeplant |
+| Neue weclapp-User | nach der Vorgabe von Hochfrequenz (3.2, 4.4): `status=ACTIVE`, `mobilePhoneNumber`, Lizenzen `WECLAPP_PROJECT` und `ADDON_HUMAN_RESOURCES`, Rollen `7166` (Zeiterfassung) und `4329` (weclapp Projekt), Zusatzfelder 7621 (MA-Nummer), 8211 und 8217 (Kostensatz, fest 1 EUR/h und „Erstanlage (weclapp)“, O20), 9795 (Urlaubsanspruch), 9902 (Bundesland) und 14175 (Karrierestufe). Das Standardfeld `title` bleibt leer, sonst steht es auf Rechnungen vor dem Namen. Den `username` vergibt weclapp selbst, per API lässt er sich nicht setzen (3.2). weclapp verschickt beim Anlegen per API keine Einladungsmail (O2). Aktive User kosten Lizenzgebühren, die Kosten sind eingeplant |
+| Kostensatz neuer weclapp-User | fest 1 EUR/h (8211) als Platzhalter, der echte Kostensatz wird später per Hand in weclapp gepflegt (O20). Der Grund 8217 bleibt „Erstanlage (weclapp)“ |
 | Neue weclapp-Personalakte | `POST employee` mit `userId` und einem Arbeitszeitprofil (`workScheduleProfileAssignments`): Profil aus den Wochenstunden, `startDate` = Eintrittsdatum. `entryDate` setzt HR-Sync nicht, die `employeeNumber` vergibt weclapp selbst (O17) |
 | Relevante Personio-Mitarbeiter | **nur mit einem Employment im Status `ACTIVE`, dessen Startdatum heute oder in der Vergangenheit liegt** |
 | Eintrittsdatum | `employment_start_date` dieses Employments. Gibt es mehrere, gilt das mit dem neuesten Startdatum |
@@ -295,7 +296,7 @@ Umgesetzt in [`systems/personio.py`](../../src/hr_sync/systems/personio.py) (AP 
      "userRoles": [{"id": "7166"}, {"id": "4329"}],
      "customAttributes": [
        {"attributeDefinitionId": "7621", "stringValue": "00274"},
-       {"attributeDefinitionId": "8211", "numberValue": "59"},
+       {"attributeDefinitionId": "8211", "numberValue": "1"},
        {"attributeDefinitionId": "8217", "stringValue": "Erstanlage (weclapp)"},
        {"attributeDefinitionId": "9795", "numberValue": "25"},
        {"attributeDefinitionId": "9902", "selectedValueId": "9903"},
@@ -679,8 +680,8 @@ Die Elternzeit-Profile (9835, 9836, 9837) vergibt HR-Sync nie. Die aktuelle List
 
 **Feste Werte für neue weclapp-User** (Vorgabe von Hochfrequenz, fest im Code): Lizenzen `WECLAPP_PROJECT` und
 `ADDON_HUMAN_RESOURCES`, Rollen `7166` (Zeiterfassung) und `4329` (weclapp Projekt, alle Berechtigungen), Kostensatz
-8211 = `59` (EUR/h) mit dem Grund 8217 = `"Erstanlage (weclapp)"`. Der Kostensatz ist vorläufig, bis die echten
-Vorgaben vorliegen (O20). Der Status bleibt `ACTIVE` (`WECLAPP_NEW_USER_STATUS`).
+8211 = `1` (EUR/h) als Platzhalter mit dem Grund 8217 = `"Erstanlage (weclapp)"`. Den echten Kostensatz pflegt jemand
+später per Hand in weclapp (O20). Bis 2026-10-30 stand hier vorläufig `59`. Ob 8211 auch leer bleiben darf, ist O27. Der Status bleibt `ACTIVE` (`WECLAPP_NEW_USER_STATUS`).
 
 **Regeln:**
 
@@ -1288,13 +1289,14 @@ Folgerungen:
 | O17 | ~~Lässt sich die weclapp-Mitarbeiternummer (`employeeNumber`) per API setzen?~~ **Erledigt (Vorgabe vom 2026-10-30):** Die `employeeNumber` vergibt weclapp selbst. Die MA-Nummer steht weiter im Zusatzfeld 7621 | – | [#8](https://github.com/Hochfrequenz/HR-Sync/issues/8) |
 | O18 | Die Standard-URL des `decidalo-client` (`https://import.decidalo.dev`) ist die Testumgebung, die Produktion ist `https://import.decidalo.app`. Die Doku des Clients nennt `.dev` als „die“ Import-API. Soll der Client das dokumentieren oder ohne Standard-URL auskommen? HR-Sync übergibt die URL schon immer ausdrücklich und braucht die Antwort nicht | nach Bedarf | Abschnitt 3.3, Repo `decidalo_client.py` |
 | O19 | **Teilweise erledigt:** Jobtitel, Service-Kategorie und Telefonnummer gehören zur Phase 2 (4.4). Offen sind Team, Geburtsjahr, Nationalität und Ausbildung: Woher kommen sie, welche sind gewünscht? Jedes Feld folgt dem Ablauf aus 4.3, mit Anonymisierungsregel | später | Abschnitt 4.3, 4.4 |
-| O20 | Kostensatz neuer weclapp-User: vorerst fest 8211 = 59 EUR/h und 8217 = „Erstanlage (weclapp)“ für alle. Die echten Vorgaben (z. B. je Karrierestufe) folgen, dann wird das Mapping angepasst | wenn die Vorgaben da sind | Abschnitt 4.4 |
+| O20 | ~~Kostensatz neuer weclapp-User: vorerst fest 8211 = 59 EUR/h und 8217 = „Erstanlage (weclapp)“ für alle. Die echten Vorgaben (z. B. je Karrierestufe) folgen, dann wird das Mapping angepasst~~ **Erledigt (2026-10-30):** Neue User bekommen 8211 = 1 EUR/h als Platzhalter, der echte Kostensatz wird später per Hand in weclapp gepflegt. Der Grund 8217 bleibt „Erstanlage (weclapp)“ | – | Abschnitt 4.4 |
 | O21 | Offboarding: Beim Austritt wird der weclapp-User deaktiviert, nie gelöscht, damit die Buchungen erhalten bleiben. Nicht im Umfang, für später | später | Abschnitt 1, 3.2 |
 | O22 | ~~Entscheidungen zu Beginn von AP 8a: Bekommt Decidalo auch die Wochenstunden (`standardWeeklyHours`)? Werden die Personio-Attribute für Karrierestufe und Telefonnummer Variablen mit Hochfrequenz-Standard oder Konstanten? Welche `reason`-Werte bekommen die neuen Datenprobleme, und welches Format hat die Ersatznummer im Test-Modus?~~ **Erledigt (2026-10-30):** Decidalo bekommt `standardWeeklyHours`; die Attribute sind Variablen mit Hochfrequenz-Standard; `missing_field`, `unmapped_value` und `invalid_phone_number` mit dem Feldnamen in `detail`; Ersatznummer `+49 000 <MA-Nummer>` (1.1) | – | Abschnitt 4.4, 5, 8.2 |
 | O23 | Heißt das Feld für die Arbeitszeitprofile an der weclapp-Personalakte `workScheduleProfileAssignments` (Vorgabe) oder `workingTimeRuleAssignments` (Testdaten des weclapp-client)? **Weitgehend geklärt:** Laut der API-Analyse des Clients gibt es beide als getrennte Felder, für die Arbeitszeitprofile ist es `workScheduleProfileAssignments`. Offen ist nur die lesende Bestätigung gegen die API | AP 2a | Abschnitt 3.2 |
 | O24 | ~~In der Decidalo-Testumgebung heißen die Service-Kategorien intern anders als angezeigt (z. B. „DE Services 1“ für „Senior Consultant“). Klappt der Import über `serviceCategoryName` dort? Wenn nicht, braucht der Test-Modus eine Lösung~~ **Erledigt in AP 8a:** Ja. Der Import nimmt auch übersetzte Namen an, gelesen werden die angezeigten Namen, es entstehen keine falschen Abweichungen (3.3) | – | Abschnitt 3.3 |
 | O25 | ~~Wer hat Zugriff auf die Decidalo-Testumgebung? Die Testdaten sind pseudonymisiert, nicht anonym (Abschnitt 8): Über die echte MA-Nummer lassen sie sich einem Mitarbeiter zuordnen. Der Zugriff muss deshalb auf Berechtigte beschränkt sein, wie in der Produktion. Bestätigen vor weiteren schreibenden Läufen in die Testumgebung~~ **Erledigt (2026-10-30):** Zugriff hat nur, wer auch die Produktion sieht. Die pseudonymisierten Testdaten dürfen weiter dorthin (1.1) | – | Abschnitt 8 |
 | O26 | Karrierestufen außerhalb des Mappings: In Personio haben 10 relevante Mitarbeiter keine Beraterstufe, sondern eine dieser Rollen: GF-Assistenz, Geschäftsführer, Finance Director, HR Consultant, Marketing, Systemadministrator (Stand 2026-10-30, 12.1). Bis das Mapping sie kennt, erzeugen sie bei jedem Lauf eine Warnung `unmapped_value`, und mit ihnen passiert nichts. Vorläufige Richtung: Geschäftsführer bewusst ausnehmen (ohne Warnung, Anlage per Hand), die übrigen fünf Rollen ins Mapping, nach Decidalo wie alle. Offen: je Rolle Decidalo-Service-Kategorie (muss in der Produktion existieren) und Urlaubsanspruch. Bis dahin bleibt das Mapping bei den vier Beraterstufen | später | Abschnitt 4.4, 12.1 |
+| O27 | Darf der Kostensatz (8211) beim Anlegen eines weclapp-Users leer bleiben? Bis das geklärt ist, setzt HR-Sync 1 EUR/h als Platzhalter (O20). Darf das Feld leer bleiben, schickt HR-Sync es nicht mehr mit. Zu klären mit dem weclapp-Admin, z. B. ob Zeitbuchungen oder die automatische Zuweisung zu den INT-Projekten einen Kostensatz brauchen | vor dem Go-live | Abschnitt 4.4, O20 |
 
 Keiner der offenen Punkte blockiert AP 2–7:
 
@@ -1304,6 +1306,7 @@ Keiner der offenen Punkte blockiert AP 2–7:
 - O16 und O18 liegen in anderen Repos. O19, O20 und O21 kommen nach Bedarf.
 - O22, O24 und O25 sind in AP 8a geklärt. O23 klären wir in AP 2a.
 - O26 (weitere Karrierestufen) kommt später. Bis dahin bleibt das Mapping bei den vier Beraterstufen.
+- O27 (leerer Kostensatz) klären wir mit dem weclapp-Admin. Bis dahin setzt HR-Sync 1 EUR/h.
 
 ## 14. Risiken
 
