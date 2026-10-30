@@ -119,9 +119,10 @@ class TestRun:
     def test_second_run_writes_nothing(self, events: list[dict[str, object]]) -> None:
         personio, decidalo = _personio(ERIKA, MAX), FakeDecidalo()
         assert _run(personio, decidalo) == ExitCode.SUCCESS
+        assert len(decidalo.batches) == 2
         events.clear()
         assert _run(personio, decidalo) == ExitCode.SUCCESS
-        assert len(decidalo.batches) == 1
+        assert len(decidalo.batches) == 2
         (plan_event,) = _named(events, "sync.plan")
         assert plan_event["is_empty"] is True
         assert _named(events, "sync.deviation") == []
@@ -195,9 +196,10 @@ class TestRun:
     def test_second_run_in_the_test_mode_writes_nothing(self, events: list[dict[str, object]]) -> None:
         personio, decidalo = _personio(ERIKA, MAX), FakeDecidalo()
         assert _run(personio, decidalo, settings=_test_settings()) == ExitCode.SUCCESS
+        assert len(decidalo.batches) == 2
         events.clear()
         assert _run(personio, decidalo, settings=_test_settings()) == ExitCode.SUCCESS
-        assert len(decidalo.batches) == 1
+        assert len(decidalo.batches) == 2
         # the substitutes only depend on the employee number, so they don't deviate
         assert _named(events, "sync.deviation") == []
 
@@ -227,6 +229,16 @@ class TestRun:
         assert "error" not in run_event
         assert run_event["results"] == {"decidalo": {"create": {"error": 1}}}
         assert (run_event["errors"], run_event["exit_code"]) == (1, 1)
+
+    def test_list_cut_by_decidalo_aborts_before_writing(self, events: list[dict[str, object]]) -> None:
+        # Max exists, but Decidalo returns only the first user: he must not be "created", i.e. overwritten
+        decidalo = FakeDecidalo(users=[decidalo_user(6, "00100", email="other@example.com"), MAX_IN_DECIDALO], limit=1)
+        assert _run(_personio(ERIKA, MAX), decidalo) == ExitCode.ABORTED
+        assert decidalo.batches == []
+        assert _named(events, "sync.plan") == []
+        error = _run_event(events)["error"]
+        assert isinstance(error, dict)
+        assert error["type"] == "IncompleteUserListError"
 
     def test_error_while_loading_aborts_before_planning(self, events: list[dict[str, object]]) -> None:
         decidalo = FakeDecidalo(fail_get=True)

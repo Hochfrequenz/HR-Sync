@@ -141,8 +141,9 @@ class TestErrorFields:
         }
 
     def test_code_location_in_hr_sync(self) -> None:
-        with pytest.raises(ValueError, match="batch_size") as error_info:
-            execute_decidalo(FakeDecidalo(), [], defaults=NewUserDefaults(), batch_size=0)
+        weclapp = _OPERATION.model_copy(update={"system": TargetSystem.WECLAPP})
+        with pytest.raises(ValueError, match="CREATE") as error_info:
+            execute_decidalo(FakeDecidalo(), [weclapp], defaults=NewUserDefaults())
         assert error_fields(error_info.value) == {
             "type": "ValueError",
             "module": "hr_sync.systems.decidalo",

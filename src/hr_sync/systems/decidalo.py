@@ -5,12 +5,12 @@ Like every adapter, it separates IO from logic:
 
 - loading: :func:`fetch_users` only talks to Decidalo, :func:`map_users` builds the snapshot without IO, and
   :func:`load_decidalo` does both and logs the event ``sync.load``.
-- executing: :func:`send_batches` only talks to Decidalo, :func:`evaluate_batches` turns the responses into results
+- executing: :func:`send_users` only talks to Decidalo, :func:`evaluate_responses` turns the responses into results
   without IO, and :func:`execute_decidalo` does both and logs one event ``sync.operation`` per operation.
 
-The Decidalo client is async only. :func:`fetch_users` and :func:`send_batches` hide that behind a single
+The Decidalo client is async only. :func:`fetch_users` and :func:`send_users` hide that behind a single
 ``asyncio.run`` each; everything else is synchronous. New users are created with the synchronous import endpoint
-``POST /importapi/User/ImportSync``, whose response contains the result of every row.
+``POST /importapi/User/ImportSync``, one request per employee, whose response contains the result of the row.
 """
 
 import asyncio
@@ -27,14 +27,12 @@ from hr_sync.events import emit_operation, error_fields, wide_event
 from hr_sync.model import EmployeeRecord, Snapshot, SnapshotBuilder, System, TargetSystem
 from hr_sync.plan import Operation, OperationResult, OperationType, Outcome
 
-MAX_BATCH_SIZE = 100
-"""
-the most users per ImportSync request; the API documents no limit, so this is a safety limit until the real limits
-and timeouts are checked in the test environment (O7)
-"""
-
 _REQUEST_ERRORS = (DecidaloClientError, aiohttp.ClientError, TimeoutError)
-"""errors of a whole request; after one of them, the remaining batches are skipped"""
+"""errors of a whole request; after one of them, the remaining operations are skipped"""
+
+
+class IncompleteUserListError(Exception):
+    """Decidalo returned fewer users than it has, e.g. because of an undocumented limit."""
 
 
 class DecidaloTarget(Protocol):
@@ -50,7 +48,7 @@ class DecidaloTarget(Protocol):
         /,
     ) -> None: ...
 
-    async def get_users(self) -> list[UserOverview]: ...
+    async def get_users(self, *, top: int | None = None, skip: int | None = None) -> list[UserOverview]: ...
 
     async def import_users_sync(self, batch: UserBatchInput) -> UserImportResults: ...
 
@@ -73,15 +71,23 @@ def fetch_users(client: DecidaloTarget) -> list[UserOverview]:
     """
     Loads all users of Decidalo. Without ``top``, the API returns all of them.
 
+    Afterwards, one more request checks that there is no user after the last one. A list that Decidalo cut silently
+    would be dangerous: a missing user would be planned as new, and the upsert of ``ImportSync`` would overwrite it.
     The client is opened and closed within a single ``asyncio.run``, so this must not be called from a running event
     loop.
+
+    Raises:
+        IncompleteUserListError: if Decidalo has more users than it returned.
     """
     return asyncio.run(_fetch_users(client))
 
 
 async def _fetch_users(client: DecidaloTarget) -> list[UserOverview]:
     async with client:
-        return await client.get_users()
+        users = await client.get_users()
+        if await client.get_users(top=1, skip=len(users)):
+            raise IncompleteUserListError(f"Decidalo returned {len(users)} users, but has more")
+        return users
 
 
 def map_users(users: Sequence[UserOverview]) -> Snapshot:
@@ -130,36 +136,27 @@ class NewUserDefaults:
 
 
 def execute_decidalo(
-    client: DecidaloTarget,
-    operations: Sequence[Operation],
-    *,
-    defaults: NewUserDefaults,
-    batch_size: int = MAX_BATCH_SIZE,
+    client: DecidaloTarget, operations: Sequence[Operation], *, defaults: NewUserDefaults
 ) -> list[OperationResult]:
     """
-    Creates the employees of the operations in Decidalo, in batches of at most ``batch_size`` users, with the
-    ``defaults`` for every new user.
+    Creates the employees of the operations in Decidalo, one after the other: one ``ImportSync`` request per
+    employee, with the ``defaults`` for every new user.
 
     An operation succeeds only if its row has the status ``Created``. Any other status means that the row failed or
-    that Decidalo matched an existing user, although HR-Sync only sends new ones. If a whole request fails, the
-    operations of its batch are errors and the remaining batches are skipped; the next run catches up on them. Logs
-    one event ``sync.operation`` per operation, without the error messages of Decidalo, which may contain personal
-    data.
+    that Decidalo matched an existing user, although HR-Sync only sends new ones. If a request fails as a whole, its
+    operation is an error and the remaining operations are skipped; the next run catches up on them. Logs one event
+    ``sync.operation`` per operation, without the error messages of Decidalo, which may contain personal data.
 
     Raises:
-        ValueError: if ``batch_size`` is not between 1 and :data:`MAX_BATCH_SIZE` or an operation is not a Decidalo
-            ``CREATE``.
+        ValueError: if an operation is not a Decidalo ``CREATE``.
     """
-    if not 1 <= batch_size <= MAX_BATCH_SIZE:
-        raise ValueError(f"batch_size must be between 1 and {MAX_BATCH_SIZE}, got {batch_size}")
     for operation in operations:
         if operation.system != TargetSystem.DECIDALO or operation.type != OperationType.CREATE:
             raise ValueError(f"Decidalo can only execute CREATE operations for Decidalo, got {operation.type}")
     if not operations:
         return []
-    batches = [operations[start : start + batch_size] for start in range(0, len(operations), batch_size)]
-    users = [[user_input(operation.record, defaults) for operation in batch] for batch in batches]
-    results = evaluate_batches(batches, send_batches(client, users))
+    users = [user_input(operation.record, defaults) for operation in operations]
+    results = evaluate_responses(operations, send_users(client, users))
     for result in results:
         emit_operation(result)
     return results
@@ -193,66 +190,61 @@ class FailedRequest:
     error: Exception
 
 
-def send_batches(
-    client: DecidaloTarget, batches: Sequence[Sequence[UserInput]]
-) -> list[UserImportResults | FailedRequest]:
+def send_users(client: DecidaloTarget, users: Sequence[UserInput]) -> list[UserImportResults | FailedRequest]:
     """
-    Sends the batches to ``ImportSync``, one after the other, and stops after the first request that fails as a whole.
+    Sends the users to ``ImportSync``, one request per user and one after the other, and stops after the first request
+    that fails as a whole.
 
-    The result has one entry per batch that was sent. The client is opened and closed within a single ``asyncio.run``,
-    so this must not be called from a running event loop.
+    The result has one entry per request that was sent. The client is opened and closed within a single
+    ``asyncio.run``, so this must not be called from a running event loop.
     """
-    return asyncio.run(_send_batches(client, batches))
+    return asyncio.run(_send_users(client, users))
 
 
-async def _send_batches(
-    client: DecidaloTarget, batches: Sequence[Sequence[UserInput]]
-) -> list[UserImportResults | FailedRequest]:
+async def _send_users(client: DecidaloTarget, users: Sequence[UserInput]) -> list[UserImportResults | FailedRequest]:
     responses: list[UserImportResults | FailedRequest] = []
     async with client:
-        for batch in batches:
+        for user in users:
             try:
-                responses.append(await client.import_users_sync(UserBatchInput(users=list(batch))))
+                responses.append(await client.import_users_sync(UserBatchInput(users=[user])))
             except _REQUEST_ERRORS as error:
                 responses.append(FailedRequest(error))
                 break
     return responses
 
 
-def evaluate_batches(
-    batches: Sequence[Sequence[Operation]], responses: Sequence[UserImportResults | FailedRequest]
+def evaluate_responses(
+    operations: Sequence[Operation], responses: Sequence[UserImportResults | FailedRequest]
 ) -> list[OperationResult]:
     """
-    Turns the responses of :func:`send_batches` into one result per operation, without IO.
+    Turns the responses of :func:`send_users` into one result per operation, without IO: the n-th response belongs to
+    the n-th operation, and operations without response were skipped.
 
-    The rows are matched by their ``employeeID``, because the API doesn't document whether ``rowIndex`` starts at 0
-    or 1. Batches without response were skipped.
+    The row in a response is found by its ``employeeID``, so that a response for another employee can't count as
+    success. The ``rowIndex`` (it starts at 0) isn't needed.
     """
     results: list[OperationResult] = []
-    for index, batch in enumerate(batches):
+    for index, operation in enumerate(operations):
         if index >= len(responses):
-            results.extend(OperationResult(operation=operation, outcome=Outcome.SKIPPED) for operation in batch)
+            results.append(OperationResult(operation=operation, outcome=Outcome.SKIPPED))
             continue
         response = responses[index]
         if isinstance(response, FailedRequest):
-            fields = error_fields(response.error)
-            results.extend(
-                OperationResult(operation=operation, outcome=Outcome.ERROR, error=fields) for operation in batch
+            results.append(
+                OperationResult(operation=operation, outcome=Outcome.ERROR, error=error_fields(response.error))
             )
             continue
-        rows = {row.employeeID: row for row in response.items or [] if row.employeeID is not None}
-        for operation in batch:
-            row = rows.get(operation.record.employee_number)
-            if row is None:
-                results.append(OperationResult(operation=operation, outcome=Outcome.ERROR, detail="no_result"))
-                continue
-            status = row.status.value if row.status is not None else "no_status"
-            results.append(
-                OperationResult(
-                    operation=operation,
-                    outcome=Outcome.SUCCESS if row.status == ImportItemStatusType.Created else Outcome.ERROR,
-                    target_id=str(row.userID) if row.userID is not None else None,
-                    detail=status,
-                )
+        number = operation.record.employee_number
+        row = next((row for row in response.items or [] if row.employeeID == number), None)
+        if row is None:
+            results.append(OperationResult(operation=operation, outcome=Outcome.ERROR, detail="no_result"))
+            continue
+        results.append(
+            OperationResult(
+                operation=operation,
+                outcome=Outcome.SUCCESS if row.status == ImportItemStatusType.Created else Outcome.ERROR,
+                target_id=str(row.userID) if row.userID is not None else None,
+                detail=row.status.value if row.status is not None else "no_status",
             )
+        )
     return results

@@ -13,8 +13,8 @@ from decidalo_client.models import (
 from hr_sync.model import EmployeeRecord, Notice, NoticeReason, System, TargetSystem
 from hr_sync.plan import Operation, OperationResult, OperationType, Outcome
 from hr_sync.systems.decidalo import (
-    MAX_BATCH_SIZE,
     DecidaloTarget,
+    IncompleteUserListError,
     NewUserDefaults,
     execute_decidalo,
     fetch_users,
@@ -35,7 +35,7 @@ DEFAULTS = NewUserDefaults(
     has_login=True,
 )
 
-SENT_FROM = {"module": "hr_sync.systems.decidalo", "function": "_send_batches", "line": ANY}
+SENT_FROM = {"module": "hr_sync.systems.decidalo", "function": "_send_users", "line": ANY}
 """the code location of an error that ends a request"""
 
 
@@ -54,8 +54,12 @@ def _create(employee_number: str = "00165") -> Operation:
     return Operation(system=TargetSystem.DECIDALO, type=OperationType.CREATE, record=_record(employee_number))
 
 
-def _execute(client: FakeDecidalo, operations: list[Operation], batch_size: int = 100) -> list[OperationResult]:
-    return execute_decidalo(client, operations, defaults=DEFAULTS, batch_size=batch_size)
+def _execute(client: FakeDecidalo, operations: list[Operation]) -> list[OperationResult]:
+    return execute_decidalo(client, operations, defaults=DEFAULTS)
+
+
+def _response(*rows: UserImportRowResult) -> UserImportResults:
+    return UserImportResults(items=list(rows))
 
 
 class TestMapUsers:
@@ -110,9 +114,23 @@ class TestFetchUsers:
     """
 
     def test_fetch_users(self) -> None:
-        client = FakeDecidalo(users=[decidalo_user()])
-        assert fetch_users(client) == [decidalo_user()]
+        client = FakeDecidalo(users=[decidalo_user(), decidalo_user(43, "00200", email="max@example.com")])
+        assert [user.userID for user in fetch_users(client)] == [42, 43]
+        # all users, then the check that there is no user after the last one
+        assert client.user_requests == [(None, None), (1, 2)]
         assert (client.opened, client.closed) == (1, 1)
+
+    def test_list_cut_by_decidalo(self) -> None:
+        users = [decidalo_user(42), decidalo_user(43, "00200", email="max@example.com"), decidalo_user(44, "00300")]
+        client = FakeDecidalo(users=users, limit=2)
+        with pytest.raises(IncompleteUserListError, match="2 users"):
+            fetch_users(client)
+        assert client.closed == 1
+
+    def test_no_users(self) -> None:
+        client = FakeDecidalo()
+        assert fetch_users(client) == []
+        assert client.user_requests == [(None, None), (1, 0)]
 
     def test_client_is_closed_after_an_error(self) -> None:
         client = FakeDecidalo(fail_get=True)
@@ -200,7 +218,8 @@ class TestExecuteDecidalo:
             OperationResult(operation=operations[0], outcome=Outcome.SUCCESS, target_id="1000", detail="Created"),
             OperationResult(operation=operations[1], outcome=Outcome.SUCCESS, target_id="1001", detail="Created"),
         ]
-        assert [[user.employeeID for user in batch] for batch in client.batches] == [["00165", "00200"]]
+        # one request per employee, one after the other, within one session
+        assert [[user.employeeID for user in batch] for batch in client.batches] == [["00165"], ["00200"]]
         assert (client.opened, client.closed) == (1, 1)
         assert [(event["event"], event["level"], event["employee_number"], event["outcome"]) for event in events] == [
             ("sync.operation", "INFO", "00165", "success"),
@@ -209,21 +228,17 @@ class TestExecuteDecidalo:
         assert events[0]["target_id"] == "1000"
         assert events[0]["type"] == "create"
 
-    def test_batches(self) -> None:
-        client = FakeDecidalo()
-        _execute(client, [_create(f"00{i}00") for i in range(1, 6)], batch_size=2)
-        assert [len(batch) for batch in client.batches] == [2, 2, 1]
-
     def test_rows_that_are_not_created_are_errors(self, events: list[dict[str, object]]) -> None:
-        response = UserImportResults(
-            items=[
-                import_row("00100", ImportItemStatusType.Failed),
-                import_row("00200", ImportItemStatusType.Updated, 7),
-                import_row("00300", ImportItemStatusType.NotModified, 8),
-                UserImportRowResult(employeeID="00500", status=None),
+        client = FakeDecidalo(
+            responses=[
+                _response(import_row("00100", ImportItemStatusType.Failed)),
+                _response(import_row("00200", ImportItemStatusType.Updated, 7)),
+                _response(import_row("00300", ImportItemStatusType.NotModified, 8)),
+                # a row for another employee doesn't count
+                _response(import_row("00999", ImportItemStatusType.Created, 9)),
+                _response(UserImportRowResult(employeeID="00500", status=None)),
             ]
         )
-        client = FakeDecidalo(responses=[response])
         operations = [_create("00100"), _create("00200"), _create("00300"), _create("00400"), _create("00500")]
         results = _execute(client, operations)
         assert [(result.outcome, result.detail) for result in results] == [
@@ -246,13 +261,12 @@ class TestExecuteDecidalo:
             pytest.param(TimeoutError(SECRET), {"type": "TimeoutError"}, id="timeout"),
         ],
     )
-    def test_failed_request_skips_the_remaining_batches(
+    def test_failed_request_skips_the_remaining_operations(
         self, events: list[dict[str, object]], error: Exception, fields: dict[str, object]
     ) -> None:
-        first = UserImportResults(items=[import_row("00100", ImportItemStatusType.Created, 1)])
-        client = FakeDecidalo(responses=[first, error])
+        client = FakeDecidalo(responses=[_response(import_row("00100", ImportItemStatusType.Created, 1)), error])
         operations = [_create("00100"), _create("00200"), _create("00300")]
-        results = _execute(client, operations, batch_size=1)
+        results = _execute(client, operations)
         assert [(result.outcome, result.error) for result in results] == [
             (Outcome.SUCCESS, None),
             (Outcome.ERROR, fields | SENT_FROM),
@@ -289,19 +303,3 @@ class TestExecuteDecidalo:
         with pytest.raises(ValueError, match="CREATE"):
             _execute(client, [operation])
         assert client.batches == []
-
-    @pytest.mark.parametrize("batch_size", [0, -1, MAX_BATCH_SIZE + 1])
-    def test_batch_size_is_limited(self, batch_size: int) -> None:
-        client = FakeDecidalo()
-        with pytest.raises(ValueError, match="batch_size"):
-            _execute(client, [_create(f"{i:05}") for i in range(MAX_BATCH_SIZE + 1)], batch_size=batch_size)
-        assert client.batches == []
-
-    def test_default_batch_size_is_the_limit(self) -> None:
-        client = FakeDecidalo()
-        execute_decidalo(
-            client,
-            [_create(f"{i:05}") for i in range(MAX_BATCH_SIZE + 1)],
-            defaults=DEFAULTS,
-        )
-        assert [len(batch) for batch in client.batches] == [MAX_BATCH_SIZE, 1]
