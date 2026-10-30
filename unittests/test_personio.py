@@ -33,7 +33,7 @@ def _map(*persons: LoadedPerson) -> MappedPersons:
 
 
 def _map_person(person: Person, employment: Employment | None = None) -> tuple[EmployeeRecord, list[FieldProblem]]:
-    return map_person(person, employment or personio_employment(), attributes=ATTRIBUTES, employee_number="00165")
+    return map_person(person, employment or personio_employment(), attributes=ATTRIBUTES, employee_number="00965")
 
 
 class TestRelevantEmployment:
@@ -86,8 +86,8 @@ class TestAttributeValue:
     @pytest.mark.parametrize(
         ("value", "expected"),
         [
-            pytest.param("00165", "00165", id="string with leading zeros"),
-            pytest.param(" 00165 ", "00165", id="stripped"),
+            pytest.param("00965", "00965", id="string with leading zeros"),
+            pytest.param(" 00965 ", "00965", id="stripped"),
             pytest.param("", None, id="empty"),
             pytest.param("  ", None, id="blank"),
             pytest.param(165, "165", id="number"),
@@ -114,8 +114,8 @@ class TestMapPersons:
     def test_relevant_person(self) -> None:
         mapped = _map(_loaded(personio_person(), personio_employment()))
         assert mapped.snapshot.records == {
-            "00165": EmployeeRecord(
-                employee_number="00165",
+            "00965": EmployeeRecord(
+                employee_number="00965",
                 first_name="Erika",
                 last_name="Musterfrau",
                 display_name="Erika Musterfrau",
@@ -129,7 +129,7 @@ class TestMapPersons:
                 vacation_days=26,
             )
         }
-        assert mapped.snapshot.system_ids == {"00165": "1"}
+        assert mapped.snapshot.system_ids == {"00965": "1"}
         assert mapped.snapshot.notices == []
         assert mapped.without_id == 0
         assert mapped.not_relevant == {}
@@ -142,7 +142,7 @@ class TestMapPersons:
                 personio_employment("ACTIVE", TODAY),
             )
         )
-        assert mapped.snapshot.records["00165"].entry_date == TODAY
+        assert mapped.snapshot.records["00965"].entry_date == TODAY
 
     def test_not_relevant_persons_yield_no_notices(self) -> None:
         mapped = _map(
@@ -185,7 +185,7 @@ class TestMapPersons:
 
     def test_person_without_id_is_skipped(self) -> None:
         mapped = _map(
-            _loaded(personio_person(None, "00165")), _loaded(personio_person("2", "00200"), personio_employment())
+            _loaded(personio_person(None, "00965")), _loaded(personio_person("2", "00200"), personio_employment())
         )
         assert set(mapped.snapshot.records) == {"00200"}
         assert mapped.without_id == 1
@@ -392,7 +392,7 @@ class TestFetchPersons:
     """
 
     def test_loads_the_active_persons_with_their_employments(self) -> None:
-        erika, max_ = personio_person("1", "00165"), personio_person("2", "00200")
+        erika, max_ = personio_person("1", "00965"), personio_person("2", "00200")
         client = FakePersonio(
             [(erika, [personio_employment()]), (max_, [personio_employment("INACTIVE"), personio_employment()])]
         )
@@ -411,7 +411,7 @@ class TestFetchPersons:
         assert client.max_running == 1
 
     def test_person_without_id_gets_no_request(self) -> None:
-        without_id = personio_person(None, "00165")
+        without_id = personio_person(None, "00965")
         client = FakePersonio([(without_id, []), (personio_person("2", "00200"), [personio_employment()])])
         persons = fetch_persons(client)
         assert persons[0] == _loaded(without_id)

@@ -44,7 +44,7 @@ TODAY = date(2026, 10, 29)
 DECIDALO = RunOptions(targets=(TargetSystem.DECIDALO,))
 """a run with Decidalo as the only target, as long as the weclapp adapter is missing"""
 
-ERIKA = personio_person("1", "00165")
+ERIKA = personio_person("1", "00965")
 MAX = personio_person("2", "00200", email="max.mustermann@example.com", first_name="Max", last_name="Mustermann")
 START = date(2026, 9, 1)
 """the start of the employments in Personio"""
@@ -112,7 +112,7 @@ class TestRun:
     def test_creates_the_missing_employees(self, events: list[dict[str, object]]) -> None:
         decidalo = FakeDecidalo(users=[MAX_IN_DECIDALO])
         assert _run(_personio(ERIKA, MAX), decidalo) == ExitCode.SUCCESS
-        assert [[user.employeeID for user in batch] for batch in decidalo.batches] == [["00165"]]
+        assert [[user.employeeID for user in batch] for batch in decidalo.batches] == [["00965"]]
         assert [(event["event"], event.get("system")) for event in events] == [
             ("sync.load", System.PERSONIO),
             ("sync.load", System.DECIDALO),
@@ -150,8 +150,8 @@ class TestRun:
         assert _run(_personio(ERIKA, MAX), decidalo, options) == ExitCode.SUCCESS
         assert decidalo.batches == []
         assert [(event["employee_number"], event["outcome"]) for event in _named(events, "sync.operation")] == [
-            ("00165", Outcome.DRY_RUN),
             ("00200", Outcome.DRY_RUN),
+            ("00965", Outcome.DRY_RUN),
         ]
         run_event = _run_event(events)
         assert run_event["dry_run"] is True
@@ -176,7 +176,7 @@ class TestRun:
         decidalo = FakeDecidalo()
         options = RunOptions(targets=(TargetSystem.DECIDALO,), max_employees=1, dry_run=dry_run)
         assert _run(_personio(ERIKA, MAX), decidalo, options) == ExitCode.SUCCESS
-        assert [event["employee_number"] for event in _named(events, "sync.operation")] == ["00165"]
+        assert [event["employee_number"] for event in _named(events, "sync.operation")] == ["00200"]
         assert len(decidalo.batches) == (0 if dry_run else 1)
         (plan_event,) = _named(events, "sync.plan")
         assert plan_event["limit_reached"] is True
@@ -209,7 +209,7 @@ class TestRun:
                 "holidayListCode": "DE-BY",
                 "standardWeeklyHours": 40,
             }
-            for number in ("00165", "00200")
+            for number in ("00200", "00965")
         ]
         real = ("Erika", "Musterfrau", "Max", "Mustermann", "erika.musterfrau", "max.mustermann", PHONE)
         assert [value for value in real if value in f"{payload} {events}"] == []
@@ -227,7 +227,7 @@ class TestRun:
 
     def test_notices_and_deviations(self, events: list[dict[str, object]]) -> None:
         without_email = personio_person("3", "00300", email=None)
-        renamed = decidalo_user(8, "00165", display_name="Erika Mustermann", entry_date=START)
+        renamed = decidalo_user(8, "00965", display_name="Erika Mustermann", entry_date=START)
         decidalo = FakeDecidalo(users=[renamed, decidalo_user(9, None, email="admin@example.com")])
         assert _run(_personio(ERIKA, without_email), decidalo) == ExitCode.SUCCESS
         assert decidalo.batches == []
@@ -237,12 +237,12 @@ class TestRun:
         ]
         assert [
             (event["employee_number"], event["system"], event["fields"]) for event in _named(events, "sync.deviation")
-        ] == [("00165", TargetSystem.DECIDALO, ["display_name"])]
+        ] == [("00965", TargetSystem.DECIDALO, ["display_name"])]
         assert _run_event(events)["notices"] == 2
         assert not any(value in str(events) for value in PERSONAL_DATA)
 
     def test_failed_operation(self, events: list[dict[str, object]]) -> None:
-        failed = UserImportResults(items=[import_row("00165", ImportItemStatusType.Failed)])
+        failed = UserImportResults(items=[import_row("00965", ImportItemStatusType.Failed)])
         decidalo = FakeDecidalo(responses=[failed])
         assert _run(_personio(ERIKA), decidalo) == ExitCode.OPERATION_FAILED
         run_event = _run_event(events)
@@ -455,7 +455,7 @@ class TestRunWithWeclapp:
         self, fake: tuple[FakeWeclapp, WeclappSetup], events: list[dict[str, object]]
     ) -> None:
         weclapp, setup = fake
-        record = load_snapshots(Systems(personio=_personio(ERIKA)), _settings(), [], TODAY).source.records["00165"]
+        record = load_snapshots(Systems(personio=_personio(ERIKA)), _settings(), [], TODAY).source.records["00965"]
         operation = Operation(system=TargetSystem.WECLAPP, type=OperationType.CREATE, record=record)
         with weclapp.client() as client:
             user = client.users.create(new_employee(operation, setup).user)  # type: ignore[arg-type]
@@ -472,7 +472,7 @@ class TestRunWithWeclapp:
         weclapp.add_user(
             email="erika.musterfrau@example.com",
             status=UserStatus.DEPARTURE,
-            custom_attributes={setup.employee_number_attribute_id: "00165"},
+            custom_attributes={setup.employee_number_attribute_id: "00965"},
         )
         targets = (TargetSystem.WECLAPP, TargetSystem.DECIDALO)
         assert self._run(weclapp, ERIKA, targets=targets) == ExitCode.SUCCESS
@@ -660,10 +660,10 @@ class TestSteps:
         ]
 
     def test_weclapp_dry_run(self, events: list[dict[str, object]]) -> None:
-        record = EmployeeRecord(employee_number="00165", first_name="Erika")
+        record = EmployeeRecord(employee_number="00965", first_name="Erika")
         operation = Operation(system=TargetSystem.WECLAPP, type=OperationType.CREATE, record=record)
         sync_plan = SyncPlan(
-            employees=(EmployeePlan(employee_number="00165", operations=(operation,)),),
+            employees=(EmployeePlan(employee_number="00965", operations=(operation,)),),
             only_in_target={TargetSystem.WECLAPP: 0},
         )
         systems = Systems(personio=_personio())
@@ -672,7 +672,7 @@ class TestSteps:
 
     def test_personio_attribute_from_the_settings(self) -> None:
         settings = _settings(personio_employee_number_attribute=ATTRIBUTE)
-        assert set(load_snapshots(Systems(personio=_personio(ERIKA)), settings, [], TODAY).source.records) == {"00165"}
+        assert set(load_snapshots(Systems(personio=_personio(ERIKA)), settings, [], TODAY).source.records) == {"00965"}
         # Erika has no employee number in another attribute
         settings = _settings(personio_employee_number_attribute="dynamic_0815")
         assert load_snapshots(Systems(personio=_personio(ERIKA)), settings, [], TODAY).source.records == {}
@@ -686,7 +686,7 @@ class TestSteps:
     )
     def test_attributes_of_phase_2_from_the_settings(self, variable: str, field: str) -> None:
         assert set(load_snapshots(Systems(personio=_personio(ERIKA)), _settings(), [], TODAY).source.records) == {
-            "00165"
+            "00965"
         }
         # Erika has no value in another attribute, which is a data problem
         snapshot = load_snapshots(

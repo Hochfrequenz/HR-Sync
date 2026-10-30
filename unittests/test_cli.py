@@ -63,12 +63,12 @@ class TestOptions:
 
     @pytest.mark.usefixtures("log_formats")
     def test_options(self, runs: _Runs) -> None:
-        argv = ["--dry-run", "--only", "00165", " 00200 ", "--only", "00300", "--target", "decidalo"]
+        argv = ["--dry-run", "--only", "00965", " 00200 ", "--only", "00300", "--target", "decidalo"]
         assert main([*argv, "--max-employees", "1"]) == 0
         ((_, options),) = runs.calls
         assert options == RunOptions(
             targets=(TargetSystem.DECIDALO,),
-            only=frozenset({"00165", "00200", "00300"}),
+            only=frozenset({"00965", "00200", "00300"}),
             max_employees=1,
             dry_run=True,
         )

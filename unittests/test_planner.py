@@ -16,7 +16,7 @@ from hr_sync.plan import Deviation, EmployeePlan, Operation, OperationType, Sync
 from hr_sync.planner import build_plan, check_only
 
 ERIKA = EmployeeRecord(
-    employee_number="00165",
+    employee_number="00965",
     first_name="Erika",
     last_name="Musterfrau",
     display_name="Erika Musterfrau",
@@ -41,7 +41,7 @@ PHASE_2: dict[str, object] = {
 }
 """the fields of phase 2 of Erika in Personio"""
 ERIKA_IN_DECIDALO = EmployeeRecord(
-    employee_number="00165",
+    employee_number="00965",
     display_name="Erika Musterfrau",
     email="erika.musterfrau@example.com",
     entry_date=date(2026, 10, 1),
@@ -78,7 +78,7 @@ class TestBuildPlan:
         plan = build_plan(_snapshot(System.PERSONIO, ERIKA), _targets())
         assert plan.employees == (
             EmployeePlan(
-                employee_number="00165",
+                employee_number="00965",
                 operations=(
                     Operation(system=TargetSystem.WECLAPP, type=OperationType.CREATE, record=ERIKA),
                     Operation(system=TargetSystem.DECIDALO, type=OperationType.CREATE, record=ERIKA),
@@ -104,7 +104,7 @@ class TestBuildPlan:
         )
         assert plan.employees == (
             EmployeePlan(
-                employee_number="00165",
+                employee_number="00965",
                 deviations=(
                     Deviation(system=TargetSystem.WECLAPP, fields=("last_name", "entry_date")),
                     Deviation(system=TargetSystem.DECIDALO, fields=("display_name",)),
@@ -187,12 +187,12 @@ class TestBuildPlan:
         desired = ERIKA.model_copy(update=PHASE_2)
         # entry date and weekly hours come with the employee record, which is missing
         in_weclapp = desired.model_copy(update={"entry_date": None, "weekly_hours": None, "first_name": "Eri"})
-        target = _snapshot(System.WECLAPP, in_weclapp, incomplete=frozenset({"00165"}))
-        target = target.model_copy(update={"system_ids": {"00165": "2001"}})
+        target = _snapshot(System.WECLAPP, in_weclapp, incomplete=frozenset({"00965"}))
+        target = target.model_copy(update={"system_ids": {"00965": "2001"}})
         plan = build_plan(_snapshot(System.PERSONIO, desired), {TargetSystem.WECLAPP: target})
         assert plan.employees == (
             EmployeePlan(
-                employee_number="00165",
+                employee_number="00965",
                 operations=(
                     Operation(
                         system=TargetSystem.WECLAPP, type=OperationType.COMPLETE, record=desired, target_id="2001"
@@ -233,43 +233,45 @@ class TestBuildPlan:
         assert plan.notices == ()
 
     def test_only_notes_employee_numbers_that_cant_be_planned(self) -> None:
-        plan = build_plan(_snapshot(System.PERSONIO, ERIKA), _targets(), only={"00165", "00999"})
-        assert [employee.employee_number for employee in plan.employees] == ["00165"]
+        plan = build_plan(_snapshot(System.PERSONIO, ERIKA), _targets(), only={"00965", "00999"})
+        assert [employee.employee_number for employee in plan.employees] == ["00965"]
         assert plan.notices == (
             Notice(system=System.PERSONIO, reason=NoticeReason.UNKNOWN_EMPLOYEE_NUMBER, employee_number="00999"),
         )
 
     def test_max_employees_stops_planning(self) -> None:
         plan = build_plan(_snapshot(System.PERSONIO, ERIKA, MAX), _targets(), max_employees=1)
-        assert [employee.employee_number for employee in plan.employees] == ["00165"]
+        assert [employee.employee_number for employee in plan.employees] == ["00200"]
         assert plan.limit_reached
 
     @pytest.mark.parametrize("max_employees", [2, None])
     def test_max_employees_not_reached(self, max_employees: int | None) -> None:
         plan = build_plan(_snapshot(System.PERSONIO, ERIKA, MAX), _targets(), max_employees=max_employees)
-        assert [employee.employee_number for employee in plan.employees] == ["00165", "00200"]
+        assert [employee.employee_number for employee in plan.employees] == ["00200", "00965"]
         assert not plan.limit_reached
 
     def test_only_employees_with_operations_count_for_max_employees(self) -> None:
         renamed = ERIKA.model_copy(update={"employee_number": "00100", "email": "erika.renamed@example.com"})
-        later = MAX.model_copy(update={"employee_number": "00300", "email": "later@example.com"})
+        # Erika (00965) lies between the deviation and the planned employee, so both follow her
+        planned = MAX.model_copy(update={"employee_number": "00970"})
+        later = MAX.model_copy(update={"employee_number": "00990", "email": "later@example.com"})
         decidalo = _snapshot(System.DECIDALO, renamed.model_copy(update={"first_name": None})).model_copy(
             update={"email_owners": {"erika.musterfrau@example.com": ("98",), "later@example.com": ("99",)}}
         )
         weclapp = _snapshot(System.WECLAPP, renamed.model_copy(update={"first_name": "Rika"}))
         plan = build_plan(
-            _snapshot(System.PERSONIO, renamed, ERIKA, MAX, later),
+            _snapshot(System.PERSONIO, renamed, ERIKA, planned, later),
             _targets(weclapp=weclapp, decidalo=decidalo),
             max_employees=1,
         )
-        # 00100 only has a deviation, 00165 a data problem: neither counts, so 00200 is planned
+        # 00100 only has a deviation, 00965 a data problem: neither counts, so 00970 is planned
         assert [(employee.employee_number, bool(employee.operations)) for employee in plan.employees] == [
             ("00100", False),
-            ("00200", True),
+            ("00970", True),
         ]
-        # 00300 is not looked at, so its e-mail address in use yields no notice
+        # 00990 is not looked at, so its e-mail address in use yields no notice
         assert [(notice.reason, notice.employee_number) for notice in plan.notices] == [
-            (NoticeReason.EMAIL_IN_USE, "00165")
+            (NoticeReason.EMAIL_IN_USE, "00965")
         ]
         assert plan.limit_reached
 
@@ -287,16 +289,16 @@ class TestBuildPlan:
     def test_operations_for(self) -> None:
         plan = build_plan(_snapshot(System.PERSONIO, MAX, ERIKA), _targets(decidalo=_snapshot(System.DECIDALO, MAX)))
         assert [operation.record.employee_number for operation in plan.operations_for(TargetSystem.WECLAPP)] == [
-            "00165",
             "00200",
+            "00965",
         ]
         assert [operation.record.employee_number for operation in plan.operations_for(TargetSystem.DECIDALO)] == [
-            "00165"
+            "00965"
         ]
 
     def test_employees_are_sorted_by_employee_number(self) -> None:
-        plan = build_plan(_snapshot(System.PERSONIO, MAX, ERIKA), _targets())
-        assert [employee.employee_number for employee in plan.employees] == ["00165", "00200"]
+        plan = build_plan(_snapshot(System.PERSONIO, ERIKA, MAX), _targets())
+        assert [employee.employee_number for employee in plan.employees] == ["00200", "00965"]
 
     def test_only_in_target_ignores_employees_excluded_in_the_source(self) -> None:
         unknown = MAX.model_copy(update={"employee_number": "00999"})
@@ -333,7 +335,7 @@ class TestBuildPlan:
                 system=System(in_use_in.value),
                 reason=NoticeReason.EMAIL_IN_USE,
                 system_id="42",
-                employee_number="00165",
+                employee_number="00965",
             ),
         )
 
@@ -373,7 +375,7 @@ class TestBuildPlan:
                 system=System.WECLAPP,
                 reason=NoticeReason.EMAIL_IN_USE,
                 system_id="user-9",
-                employee_number="00165",
+                employee_number="00965",
             ),
         )
 
@@ -390,7 +392,7 @@ class TestBuildPlan:
                 ),
             ),
         )
-        assert [notice.employee_number for notice in plan.notices] == ["00165"]
+        assert [notice.employee_number for notice in plan.notices] == ["00965"]
 
     def test_blocked_employee_keeps_its_deviations(self) -> None:
         in_weclapp = ERIKA.model_copy(update={"last_name": "Schmidt"})
@@ -400,7 +402,7 @@ class TestBuildPlan:
         plan = build_plan(_snapshot(System.PERSONIO, ERIKA), _targets(weclapp=builder.build()))
         assert plan.employees == (
             EmployeePlan(
-                employee_number="00165",
+                employee_number="00965",
                 deviations=(Deviation(system=TargetSystem.WECLAPP, fields=("last_name",)),),
             ),
         )
@@ -417,7 +419,7 @@ class TestBuildPlan:
                 system=System.DECIDALO,
                 reason=NoticeReason.DEACTIVATED_IN_TARGET,
                 system_id="42",
-                employee_number="00165",
+                employee_number="00965",
             ),
         )
 
@@ -443,7 +445,7 @@ class TestCheckOnly:
                 "00400": ExclusionReason.MISSING_EMAIL,
             },
         )
-        notices = check_only(source, ["00999", "00400", "00300", "00165"])
+        notices = check_only(source, ["00999", "00400", "00300", "00965"])
         assert notices == [
             Notice(
                 system=System.PERSONIO,
@@ -455,4 +457,4 @@ class TestCheckOnly:
         ]
 
     def test_no_notices_for_planned_employees(self) -> None:
-        assert check_only(_snapshot(System.PERSONIO, ERIKA), ["00165"]) == []
+        assert check_only(_snapshot(System.PERSONIO, ERIKA), ["00965"]) == []

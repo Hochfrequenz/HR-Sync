@@ -78,7 +78,7 @@ With `HR_SYNC_ENVIRONMENT=test`, HR-Sync writes anonymized data to the Decidalo 
 (`DECIDALO_TEST_BASE_URL`, `DECIDALO_TEST_API_KEY`) instead of production:
 
 - Right after loading from Personio, names, e-mail addresses and phone numbers are replaced by substitutes that only
-  depend on the employee number, e.g. `Test Person-00165`, `test-00165@example.com` and `+49 000 00165`. Employee
+  depend on the employee number, e.g. `Test Person-00965`, `test-00965@example.com` and `+49 000 00965`. Employee
   number, entry date, career level, office and weekly hours stay real, so strictly speaking the data is pseudonymized:
   whoever can see Personio can tell whose data it is.
 - New Decidalo users never get a login.

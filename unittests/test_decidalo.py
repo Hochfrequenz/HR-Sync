@@ -39,7 +39,7 @@ SENT_FROM = {"module": "hr_sync.systems.decidalo", "function": "_send_users", "l
 """the code location of an error that ends a request"""
 
 
-def _record(employee_number: str = "00165") -> EmployeeRecord:
+def _record(employee_number: str = "00965") -> EmployeeRecord:
     return EmployeeRecord(
         employee_number=employee_number,
         first_name="Erika",
@@ -56,7 +56,7 @@ def _record(employee_number: str = "00165") -> EmployeeRecord:
     )
 
 
-def _create(employee_number: str = "00165") -> Operation:
+def _create(employee_number: str = "00965") -> Operation:
     return Operation(system=TargetSystem.DECIDALO, type=OperationType.CREATE, record=_record(employee_number))
 
 
@@ -77,8 +77,8 @@ class TestMapUsers:
         snapshot = map_users([decidalo_user()])
         assert snapshot.system == System.DECIDALO
         assert snapshot.records == {
-            "00165": EmployeeRecord(
-                employee_number="00165",
+            "00965": EmployeeRecord(
+                employee_number="00965",
                 display_name="Erika Musterfrau",
                 email="erika.musterfrau@example.com",
                 entry_date=date(2026, 10, 1),
@@ -89,7 +89,7 @@ class TestMapUsers:
                 service_category="Senior Consultant",
             )
         }
-        assert snapshot.system_ids == {"00165": "42"}
+        assert snapshot.system_ids == {"00965": "42"}
         assert snapshot.deactivated == frozenset()
         assert snapshot.notices == []
 
@@ -105,13 +105,13 @@ class TestMapUsers:
     )
     def test_office_from_the_public_holidays(self, holiday_list_code: str | None, office: str | None) -> None:
         snapshot = map_users([decidalo_user(holiday_list_code=holiday_list_code)])
-        assert snapshot.records["00165"].office == office
+        assert snapshot.records["00965"].office == office
 
     def test_user_without_fields_of_phase_2(self) -> None:
         user = decidalo_user(
             job_title=None, service_category=None, mobile_phone=None, holiday_list_code=None, weekly_hours=None
         )
-        record = map_users([user]).records["00165"]
+        record = map_users([user]).records["00965"]
         fields = ("career_level", "mobile_phone", "office", "weekly_hours", "service_category", "vacation_days")
         assert {field: getattr(record, field) for field in fields} == dict.fromkeys(fields)
 
@@ -127,8 +127,8 @@ class TestMapUsers:
 
     def test_deactivated_user_is_part_of_the_snapshot(self) -> None:
         snapshot = map_users([decidalo_user(deactivated=True), decidalo_user(44, "00200", email="max@example.com")])
-        assert set(snapshot.records) == {"00165", "00200"}
-        assert snapshot.deactivated == frozenset({"00165"})
+        assert set(snapshot.records) == {"00965", "00200"}
+        assert snapshot.deactivated == frozenset({"00965"})
         # only a problem for a relevant employee, which the planner checks
         assert snapshot.notices == []
 
@@ -186,7 +186,7 @@ class TestLoadDecidalo:
             ]
         )
         snapshot = load_decidalo(client)
-        assert set(snapshot.records) == {"00165", "00200"}
+        assert set(snapshot.records) == {"00965", "00200"}
         assert len(events) == 1
         event = events[0]
         assert event["event"] == "sync.load"
@@ -209,9 +209,9 @@ class TestUserInput:
         row = user_input(_record(), DEFAULTS)
         # what the client sends: it drops the None values
         assert row.model_dump(exclude_none=True) == {
-            "employeeID": "00165",
+            "employeeID": "00965",
             "displayName": "Erika Musterfrau",
-            "email": "erika.00165@example.com",
+            "email": "erika.00965@example.com",
             "entryDate": date(2026, 10, 1),
             "employeeTypeID": 2,
             "employeeTypeName": "Internal",
@@ -267,17 +267,17 @@ class TestExecuteDecidalo:
 
     def test_created(self, events: list[dict[str, object]]) -> None:
         client = FakeDecidalo()
-        operations = [_create("00165"), _create("00200")]
+        operations = [_create("00965"), _create("00200")]
         results = _execute(client, operations)
         assert results == [
             OperationResult(operation=operations[0], outcome=Outcome.SUCCESS, target_id="1000", detail="Created"),
             OperationResult(operation=operations[1], outcome=Outcome.SUCCESS, target_id="1001", detail="Created"),
         ]
         # one request per employee, one after the other, within one session
-        assert [[user.employeeID for user in batch] for batch in client.batches] == [["00165"], ["00200"]]
+        assert [[user.employeeID for user in batch] for batch in client.batches] == [["00965"], ["00200"]]
         assert (client.opened, client.closed) == (1, 1)
         assert [(event["event"], event["level"], event["employee_number"], event["outcome"]) for event in events] == [
-            ("sync.operation", "INFO", "00165", "success"),
+            ("sync.operation", "INFO", "00965", "success"),
             ("sync.operation", "INFO", "00200", "success"),
         ]
         assert events[0]["target_id"] == "1000"

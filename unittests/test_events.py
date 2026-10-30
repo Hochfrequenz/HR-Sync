@@ -15,7 +15,7 @@ from unittests.fakes import FakeDecidalo
 _OPERATION = Operation(
     system=TargetSystem.DECIDALO,
     type=OperationType.CREATE,
-    record=EmployeeRecord(employee_number="00165", first_name="Erika", email="erika.musterfrau@example.com"),
+    record=EmployeeRecord(employee_number="00965", first_name="Erika", email="erika.musterfrau@example.com"),
 )
 
 
@@ -167,7 +167,7 @@ class TestErrorFields:
         convert = namespace["convert"]
         assert callable(convert)
         with pytest.raises(ValueError, match="invalid literal") as error_info:
-            convert(["00165", "Erika"])
+            convert(["00965", "Erika"])
         assert error_fields(error_info.value) == {
             "type": "ValueError",
             "module": "hr_sync.example",
@@ -207,7 +207,7 @@ class TestEmitOperation:
             {
                 "event": "sync.operation",
                 "level": level,
-                "employee_number": "00165",
+                "employee_number": "00965",
                 "system": "decidalo",
                 "type": "create",
                 "outcome": outcome,
@@ -270,7 +270,7 @@ class TestConfigureLogging:
         stream = io.StringIO()
         configure_logging("json", stream=stream)
         secret = "Erika Musterfrau <erika.musterfrau@example.com>"
-        with pytest.raises(ValueError, match="Erika"), wide_event("sync.operation", employee_number="00165"):
+        with pytest.raises(ValueError, match="Erika"), wide_event("sync.operation", employee_number="00965"):
             raise ValueError(secret)
         output = stream.getvalue()
         assert "Erika" not in output
