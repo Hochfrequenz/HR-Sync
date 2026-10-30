@@ -26,7 +26,7 @@ from unittests.fakes import WECLAPP_SETUP, weclapp_employee, weclapp_fake, wecla
 
 TODAY = date(2026, 10, 29)
 ERIKA = EmployeeRecord(
-    employee_number="00165",
+    employee_number="00965",
     first_name="Erika",
     last_name="Musterfrau",
     display_name="Erika Musterfrau",
@@ -197,8 +197,8 @@ class TestMapWeclapp:
         )
         assert snapshot.system == System.WECLAPP
         assert snapshot.records == {
-            "00165": EmployeeRecord(
-                employee_number="00165",
+            "00965": EmployeeRecord(
+                employee_number="00965",
                 first_name="Erika",
                 last_name="Musterfrau",
                 email="erika.musterfrau@example.com",
@@ -210,15 +210,15 @@ class TestMapWeclapp:
                 vacation_days=26,
             )
         }
-        assert snapshot.system_ids == {"00165": "2001"}
+        assert snapshot.system_ids == {"00965": "2001"}
         assert snapshot.incomplete == frozenset()
         assert snapshot.deactivated == frozenset()
         assert snapshot.notices == []
 
     def test_user_without_employee_record_is_incomplete(self) -> None:
         snapshot = map_weclapp(replace(_loaded(), users=(weclapp_user(),)), setup=WECLAPP_SETUP, today=TODAY)
-        assert snapshot.incomplete == frozenset({"00165"})
-        record = snapshot.records["00165"]
+        assert snapshot.incomplete == frozenset({"00965"})
+        record = snapshot.records["00965"]
         assert (record.entry_date, record.weekly_hours) == (None, None)
 
     def test_user_without_employee_number(self) -> None:
@@ -244,7 +244,7 @@ class TestMapWeclapp:
             setup=WECLAPP_SETUP,
             today=TODAY,
         )
-        assert snapshot.deactivated == (frozenset({"00165"}) if deactivated else frozenset())
+        assert snapshot.deactivated == (frozenset({"00965"}) if deactivated else frozenset())
 
     def test_status_of_new_users_counts_as_active(self) -> None:
         setup = replace(WECLAPP_SETUP, new_user_status=UserStatus.NOT_ACTIVE)
@@ -260,7 +260,7 @@ class TestMapWeclapp:
         employee = weclapp_employee("2001", ("4711", date(2026, 9, 1), None))
         record = map_weclapp(
             replace(_loaded(), users=(user,), employees=(employee,)), setup=WECLAPP_SETUP, today=TODAY
-        ).records["00165"]
+        ).records["00965"]
         assert (record.career_level, record.vacation_days, record.office, record.weekly_hours) == (
             None,
             None,
@@ -272,7 +272,7 @@ class TestMapWeclapp:
 
     def test_user_without_custom_attributes_of_phase_2(self) -> None:
         user = weclapp_user(career_level=None, vacation_days=None, state_value_id=None)
-        record = map_weclapp(replace(_loaded(), users=(user,)), setup=WECLAPP_SETUP, today=TODAY).records["00165"]
+        record = map_weclapp(replace(_loaded(), users=(user,)), setup=WECLAPP_SETUP, today=TODAY).records["00965"]
         assert (record.career_level, record.vacation_days, record.office) == (None, None, None)
 
     def test_entry_date_and_weekly_hours_after_a_change(self) -> None:
@@ -282,7 +282,7 @@ class TestMapWeclapp:
         )
         record = map_weclapp(
             replace(_loaded(), users=(weclapp_user(),), employees=(employee,)), setup=WECLAPP_SETUP, today=TODAY
-        ).records["00165"]
+        ).records["00965"]
         assert (record.entry_date, record.weekly_hours) == (date(2026, 9, 1), 30)
 
     def test_duplicate_employee_numbers(self) -> None:
@@ -300,7 +300,7 @@ class TestMapWeclapp:
             setup=WECLAPP_SETUP,
             today=TODAY,
         )
-        assert snapshot.incomplete == frozenset({"00165"})
+        assert snapshot.incomplete == frozenset({"00965"})
 
 
 class TestLoadWeclapp:
@@ -319,9 +319,9 @@ class TestLoadWeclapp:
                 custom_attributes={setup.employee_number_attribute_id: "00007"},
             )
             snapshot = load_weclapp(client, setup=setup, today=TODAY)
-        assert set(snapshot.records) == {"00165", "00007"}
-        assert snapshot.system_ids["00165"] == created.id
-        assert snapshot.incomplete == frozenset({"00165", "00007"})
+        assert set(snapshot.records) == {"00965", "00007"}
+        assert snapshot.system_ids["00965"] == created.id
+        assert snapshot.incomplete == frozenset({"00965", "00007"})
         assert snapshot.deactivated == frozenset({"00007"})
         assert events == [
             {
@@ -400,7 +400,7 @@ class TestNewEmployee:
             "licenses": ["WECLAPP_PROJECT", "ADDON_HUMAN_RESOURCES"],
             "userRoles": [{"id": "7166"}, {"id": "4329"}],
             "customAttributes": [
-                {"attributeDefinitionId": "7621", "stringValue": "00165"},
+                {"attributeDefinitionId": "7621", "stringValue": "00965"},
                 {"attributeDefinitionId": "8211", "numberValue": "1"},
                 {"attributeDefinitionId": "8217", "stringValue": "Erstanlage (weclapp)"},
                 {"attributeDefinitionId": "9795", "numberValue": "26"},
@@ -444,7 +444,7 @@ class TestExecuteWeclapp:
         assert [(result.outcome, result.target_id) for result in results] == [(Outcome.SUCCESS, user.id)]
         assert (user.email, user.status, user.licenses) == (ERIKA.email, UserStatus.ACTIVE, list(setup.licenses))
         assert [role.id for role in user.user_roles] == list(setup.user_role_ids)
-        assert user.custom_attribute(setup.employee_number_attribute_id).string_value == "00165"  # type: ignore[union-attr]
+        assert user.custom_attribute(setup.employee_number_attribute_id).string_value == "00965"  # type: ignore[union-attr]
         assert user.custom_attribute(setup.attribute_ids.cost_rate).number_value == Decimal(1)  # type: ignore[union-attr]
         assert employee.user_id == user.id
         assert [(a.work_schedule_profile_id, a.start_date) for a in employee.work_schedule_profile_assignments] == [

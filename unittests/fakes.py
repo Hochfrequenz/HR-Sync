@@ -55,7 +55,7 @@ def personio_employment(
 
 def personio_person(
     person_id: str | None = "1",
-    employee_number: str | None = "00165",
+    employee_number: str | None = "00965",
     email: str | None = "erika.musterfrau@example.com",
     first_name: str | None = "Erika",
     last_name: str | None = "Musterfrau",
@@ -120,7 +120,7 @@ class FakePersonio:
 
 def decidalo_user(
     user_id: int = 42,
-    employee_id: str | None = "00165",
+    employee_id: str | None = "00965",
     email: str | None = "erika.musterfrau@example.com",
     display_name: str | None = "Erika Musterfrau",
     entry_date: date | None = date(2026, 10, 1),
@@ -242,7 +242,7 @@ WECLAPP_SETUP = WeclappSetup(employee_number_attribute_id="7621")
 
 def weclapp_user(
     user_id: str = "2001",
-    employee_number: str | None = "00165",
+    employee_number: str | None = "00965",
     email: str | None = "erika.musterfrau@example.com",
     first_name: str | None = "Erika",
     last_name: str | None = "Musterfrau",

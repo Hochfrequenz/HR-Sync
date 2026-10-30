@@ -26,8 +26,8 @@ HR-Sync überträgt beim Onboarding die Stammdaten neuer Mitarbeiter aus **Perso
 
 | Thema | Entscheidung |
 |---|---|
-| MA-Nummer in Personio | Custom Attribute mit `id == "company_employee_id"` (Typ `string`, z. B. `"00165"`). Sie bleibt immer ein String, damit führende Nullen erhalten bleiben |
-| MA-Nummer in weclapp | Custom Attribute am `user`, konfiguriert über die **ID der Definition** (`WECLAPP_EMPLOYEE_NUMBER_ATTRIBUTE_ID`, bei Hochfrequenz `7621`). Der Wert steht als String in `stringValue`, z. B. `"00165"` |
+| MA-Nummer in Personio | Custom Attribute mit `id == "company_employee_id"` (Typ `string`, z. B. `"00965"`). Sie bleibt immer ein String, damit führende Nullen erhalten bleiben |
+| MA-Nummer in weclapp | Custom Attribute am `user`, konfiguriert über die **ID der Definition** (`WECLAPP_EMPLOYEE_NUMBER_ATTRIBUTE_ID`, bei Hochfrequenz `7621`). Der Wert steht als String in `stringValue`, z. B. `"00965"` |
 | Abweichungen bei bestehenden Personen | nicht überschreiben, nur loggen |
 | Person ohne MA-Nummer (in jedem System) | Warn-Event, Person wird für den Plan nicht betrachtet |
 | Personio-Person ohne E-Mail | Warn-Event, Person wird für den Plan nicht betrachtet |
@@ -43,6 +43,7 @@ HR-Sync überträgt beim Onboarding die Stammdaten neuer Mitarbeiter aus **Perso
 | Gescheiterter Aufruf | Scheitert ein Aufruf als Ganzes, ist die Operation dieses Mitarbeiters ein Fehler. Die restlichen Operationen dieses Systems werden übersprungen (`skipped`) |
 | Vollständiges Laden aus Decidalo | Nach dem Laden fragt HR-Sync nach, ob nach dem letzten User noch einer kommt (`top=1`, `skip=Anzahl`). Kommt einer, bricht der Lauf vor dem Planen ab (Exit-Code 2). Sonst würde ein fehlender User als neu geplant, und das Upsert von `ImportSync` würde den bestehenden User überschreiben (O7) |
 | Neue weclapp-User | nach der Vorgabe von Hochfrequenz (3.2, 4.4): `status=ACTIVE`, `mobilePhoneNumber`, Lizenzen `WECLAPP_PROJECT` und `ADDON_HUMAN_RESOURCES`, Rollen `7166` (Zeiterfassung) und `4329` (weclapp Projekt), Zusatzfelder 7621 (MA-Nummer), 8211 und 8217 (Kostensatz, fest 1 EUR/h und „Erstanlage (weclapp)“, O20), 9795 (Urlaubsanspruch), 9902 (Bundesland) und 14175 (Karrierestufe). Das Standardfeld `title` bleibt leer, sonst steht es auf Rechnungen vor dem Namen. Den `username` vergibt weclapp selbst, per API lässt er sich nicht setzen (3.2). weclapp verschickt beim Anlegen per API keine Einladungsmail (O2). Aktive User kosten Lizenzgebühren, die Kosten sind eingeplant |
+| Produktionsdaten im Repo | Auswertungen von Produktionsdaten (Ergebnisse von Läufen, Zahlen, MA-Nummern, Listen aus Personio, weclapp oder Decidalo) stehen nie im öffentlichen Repo: nicht im Plan, in Commit-Nachrichten, PRs oder Issues. Sie gehen als lokale Datei an den Auftraggeber. Beispiele im Repo nutzen ausgedachte Werte, etwa die MA-Nummern 00965 und 00974 (2026-10-30, 12.1) |
 | Kostensatz neuer weclapp-User | fest 1 EUR/h (8211) als Platzhalter, der echte Kostensatz wird später per Hand in weclapp gepflegt (O20). Der Grund 8217 bleibt „Erstanlage (weclapp)“ |
 | Neue weclapp-Personalakte | `POST employee` mit `userId` und einem Arbeitszeitprofil (`workScheduleProfileAssignments`): Profil aus den Wochenstunden, `startDate` = Eintrittsdatum. `entryDate` setzt HR-Sync nicht, die `employeeNumber` vergibt weclapp selbst (O17) |
 | Relevante Personio-Mitarbeiter | **nur mit einem Employment im Status `ACTIVE`, dessen Startdatum heute oder in der Vergangenheit liegt** |
@@ -76,7 +77,7 @@ HR-Sync überträgt beim Onboarding die Stammdaten neuer Mitarbeiter aus **Perso
 | Wochenstunden in Decidalo (O22) | Decidalo bekommt die Wochenstunden als `standardWeeklyHours` und vergleicht sie. Sonst plant die Ressourcenplanung eine Teilzeitkraft womöglich mit voller Kapazität. Das geht über die Vorgabe für Decidalo hinaus, die das Feld nicht nennt (4.4) |
 | Personio-Attribute der Phase 2 (O22) | Variablen mit Hochfrequenz-Standard wie `PERSONIO_EMPLOYEE_NUMBER_ATTRIBUTE`: `PERSONIO_CAREER_LEVEL_ATTRIBUTE` und `PERSONIO_MOBILE_PHONE_ATTRIBUTE`. Die Attribut-IDs sind kein Mapping, also gilt „Firmenspezifisches ist einstellbar“ (7) |
 | `reason`-Werte der Phase 2 (O22) | drei allgemeine Werte: `missing_field` (Pflichtfeld fehlt), `unmapped_value` (Wert außerhalb der Mappings) und `invalid_phone_number`. `detail` nennt den Feldnamen des Modells, z. B. `reason=missing_field detail=career_level`. Ein späteres Feld braucht so keinen neuen Wert. Die bestehenden Werte wie `missing_email` bleiben (5) |
-| Ersatznummer im Test-Modus (O22) | `+49 000 <MA-Nummer>`, z. B. `+49 000 00165`. Nach `+49` beginnt keine deutsche Nummer mit `0`, die Ersatznummer gehört also sicher niemandem (8.2) |
+| Ersatznummer im Test-Modus (O22) | `+49 000 <MA-Nummer>`, z. B. `+49 000 00965`. Nach `+49` beginnt keine deutsche Nummer mit `0`, die Ersatznummer gehört also sicher niemandem (8.2) |
 | Zugriff auf die Decidalo-Testumgebung (O25) | nur, wer auch die Produktion sieht. Dort stehen dieselben Felder ohnehin echt. Die pseudonymisierten Testdaten dürfen deshalb weiter in die Testumgebung (8) |
 | Telefonnummer in weclapp (AP 5, PR 2) | wie bei allen bestehenden weclapp-Usern: `+49`, die ersten drei Ziffern der nationalen Nummer, dann der Rest ohne Leerzeichen, z. B. `+49 151 46414222` (aus `0151 46 41 42 22`). Nummern mit einer anderen Landesvorwahl schreibt HR-Sync ohne Leerzeichen, z. B. `+43123456789`, weil sich deren Vorwahl ohne Tabelle nicht sicher abtrennen lässt. Verglichen wird weiter in der kanonischen Form (4.2) |
 | Schreiben in weclapp (AP 5, PR 2) | Mit `0.1.0a3` fällt die Sperre: weclapp ist ein normales Ziel. Eine zusätzliche Sicherung im Code gibt es nicht, wie bei Decidalo. Schutz bieten `email_in_use`, die Prüfung des Tenants und der Ablauf von AP 9 (erst Dry-Run, dann der erste echte Lauf nur mit `--only` und der Testperson). **Ohne die ausdrückliche Zustimmung des Auftraggebers läuft nichts gegen eine Produktion** |
@@ -265,7 +266,7 @@ Umgesetzt in [`systems/personio.py`](../../src/hr_sync/systems/personio.py) (AP 
    nur für den Tenant von Hochfrequenz. Andere Firmen können weclapp als Ziel erst nutzen, wenn diese Werte
    einstellbar sind (9.1, O15).
 2. Alle `user` und alle `employee` laden. Die Employees werden über `user_id` den Usern zugeordnet. Ein User, der nicht im Status `ACTIVE` ist, gilt als deaktiviert (`Snapshot.deactivated`, siehe 1.1).
-3. MA-Nummer: `user.custom_attribute(definition.id).string_value`, z. B. `"00165"`.
+3. MA-Nummer: `user.custom_attribute(definition.id).string_value`, z. B. `"00965"`.
 4. Für den Vergleich (4.4): `firstName`, `lastName`, `email`, `mobilePhoneNumber` und die Zusatzfelder 9795, 9902 und
    14175 am User, dazu die Arbeitszeitprofile an der Personalakte. Für sie gelten zwei getrennte Regeln:
    - **Wochenstunden:** aus dem heute gültigen Profil. Gültig ist ein Profil, dessen `startDate` heute oder früher
@@ -295,7 +296,7 @@ Umgesetzt in [`systems/personio.py`](../../src/hr_sync/systems/personio.py) (AP 
      "licenses": ["WECLAPP_PROJECT", "ADDON_HUMAN_RESOURCES"],
      "userRoles": [{"id": "7166"}, {"id": "4329"}],
      "customAttributes": [
-       {"attributeDefinitionId": "7621", "stringValue": "00274"},
+       {"attributeDefinitionId": "7621", "stringValue": "00974"},
        {"attributeDefinitionId": "8211", "numberValue": "1"},
        {"attributeDefinitionId": "8217", "stringValue": "Erstanlage (weclapp)"},
        {"attributeDefinitionId": "9795", "numberValue": "25"},
@@ -934,7 +935,7 @@ Umgesetzt in [`config.py`](../../src/hr_sync/config.py), [`sync.py`](../../src/h
   - `run` macht alles zusammen, fängt jeden Fehler ab und loggt `sync.run` mit dem Exit-Code. Lässt sich schon die
     Konfiguration nicht lesen, loggt `abort` das `sync.run`, auch bei einer `.env`, die sich nicht lesen oder nicht
     als UTF-8 dekodieren lässt (dann `error.type=PermissionError`, `UnicodeDecodeError` o. Ä.).
-- **CLI:** `--only` und `--target` nehmen mehrere Werte auf einmal (`--only 00165 00200`) und lassen sich
+- **CLI:** `--only` und `--target` nehmen mehrere Werte auf einmal (`--only 00965 00200`) und lassen sich
   wiederholen. Die Hilfe nennt die Exit-Codes.
 
 ## 8. Testumgebungen und Anonymisierung
@@ -996,7 +997,7 @@ Umgesetzt in [`config.py`](../../src/hr_sync/config.py) und [`sync.py`](../../sr
 | E-Mail | `test-<MA-Nummer>@example.com`. Die Domain ist für Beispiele reserviert, Mails dorthin werden nicht zugestellt |
 | Eintrittsdatum | bleibt echt |
 | Karrierestufe | bleibt echt (Phase 2) |
-| Telefonnummer | `+49 000 <MA-Nummer>`, z. B. `+49 000 00165` (Phase 2, O22). Nach `+49` beginnt keine deutsche Nummer mit `0`, die Ersatznummer gehört also niemandem |
+| Telefonnummer | `+49 000 <MA-Nummer>`, z. B. `+49 000 00965` (Phase 2, O22). Nach `+49` beginnt keine deutsche Nummer mit `0`, die Ersatznummer gehört also niemandem |
 | Standort | bleibt echt (Phase 2) |
 | Wochenstunden | bleibt echt (Phase 2) |
 | Service-Kategorie, Urlaubsanspruch | bleiben echt, abgeleitet aus der Karrierestufe (Phase 2) |
@@ -1072,7 +1073,7 @@ Umgesetzt in [`unittests/integration`](../../unittests/integration) (AP 8):
   Snapshot und in den Events vorkommt. Dann plant er mit `max_employees=1` und führt den Plan als Dry-Run aus.
   Gesucht wird nach Teilzeichenketten. Die Felder, die absichtlich echt bleiben (`KEPT_FIELDS`), durchsucht der Test im
   Snapshot deshalb nicht: Seit AP 8a stehen dort echte Standorte, und ein kurzer Nachname kann Teil eines
-  Standortnamens sein. Das war beim ersten Lauf mit den Feldern der Phase 2 ein Fehlalarm.
+  Standortnamens sein.
 - **Keine personenbezogenen Daten in der Testausgabe**, auch wenn ein Test fehlschlägt:
   - pytest schreibt die Assertions dieses Moduls nicht um (`PYTEST_DONT_REWRITE`). Sonst zeigt es die Werte aller
     Teilausdrücke, z. B. bei `len(users)` die ganze Liste mit Namen. Jede Prüfung hat stattdessen eine eigene Meldung
@@ -1103,8 +1104,8 @@ Umgesetzt in [`unittests/integration`](../../unittests/integration) (AP 8):
   `integration_write` auch mehrfach hintereinander. Danach ist kein Testuser übrig. Geklärt sind damit O7, O12 und
   O13.
 - **Ergebnis mit den Feldern der Phase 2 (2026-10-30, AP 8a):** `integration` und `integration_write` grün. Angelegt
-  wurde MA-Nummer 00002 mit allen Decidalo-Feldern der Phase 2. Zurückgelesen stimmten alle Felder, der neue Plan hatte
-  keine Operation und keine Abweichung. Danach war kein User mit dieser MA-Nummer übrig. Geklärt ist damit O24.
+  wurde der erste Planeintrag mit allen Decidalo-Feldern der Phase 2. Zurückgelesen stimmten alle Felder, der neue Plan
+  hatte keine Operation und keine Abweichung. Danach war kein User mit dieser MA-Nummer übrig. Geklärt ist damit O24.
 
 **weclapp (AP 5):** Für weclapp gibt es keinen Test-Tenant. `test_weclapp_production.py` (Marker `integration`) liest
 Personio und weclapp produktiv, prüft dabei den Tenant (`check_setup`), plant mit `max_employees=1` und führt den Plan
@@ -1244,27 +1245,11 @@ den Clients), das vor AP 10 erledigt sein sollte.
 Reihenfolge ab den Feldern der Phase 2: AP 8a, AP 2a, AP 5, AP 9, AP 10. AP 8a ist erledigt (#20, #21). AP 2a liegt
 im Repo des weclapp-client.
 
-### 12.1 AP 9: erster Dry-Run gegen weclapp (2026-10-30)
+### 12.1 AP 9: Dry-Runs gegen die Produktion (2026-10-30)
 
-`hr-sync --dry-run --target weclapp` gegen die Produktion, mit dem Stand von AP 5, PR 2 (#24) und ausdrücklicher
-Zustimmung. Der Lauf hat nur gelesen. Hier stehen nur Zahlen, die MA-Nummern stehen nicht im öffentlichen Repo.
-
-| Was | Ergebnis |
-|---|---|
-| Personio | 173 Personen, 11 nicht relevant, 149 gültige Mitarbeiter. 14 Datenprobleme: 10 × Karrierestufe außerhalb des Mappings, 3 × Telefonnummer nicht umwandelbar (einer hat beides), 1 × ohne MA-Nummer |
-| weclapp | 177 User, 172 Personalakten, 167 User mit MA-Nummer. 1 User ohne Personalakte, kein deaktivierter User. 10 Datenprobleme: 5 User ohne MA-Nummer, 5 Test-User mit derselben MA-Nummer `TESTUSER` |
-| Plan | **keine Operation**: Alle 149 gültigen Mitarbeiter haben schon einen vollständigen weclapp-User. Kein `email_in_use`. 9 Mitarbeiter mit Abweichungen (nur geloggt): 8 × `vacation_days`, 4 × `entry_date`, 1 × `weekly_hours`. Keine Abweichung bei Namen, E-Mail, Karrierestufe, Telefonnummer und Standort. 1 User nur in weclapp |
-
-Folgerungen:
-
-- Die Mappings und die Rückübersetzung passen: Bei 149 bestehenden Mitarbeitern weicht kein Name, keine E-Mail,
-  Karrierestufe, Telefonnummer oder kein Standort ab.
-- Die Abweichungen beim Urlaubsanspruch zeigen, dass in weclapp für 8 Mitarbeiter ein anderer Wert steht als aus dem
-  Mapping der Karrierestufe. HR-Sync ändert das nicht (nur anlegen), es bleibt eine fachliche Prüfung.
-- Die 10 Karrierestufen außerhalb des Mappings sind keine Beraterstufen, sondern sechs Rollen aus Geschäftsführung,
-  Verwaltung und IT. Wie sie behandelt werden, ist O26.
-- Ob die 13 wegen Datenproblemen ausgeschlossenen Mitarbeiter schon in weclapp stehen, zeigt dieser Lauf nicht. Nach
-  einer Korrektur in Personio plant HR-Sync sie wie alle anderen.
+Mit ausdrücklicher Zustimmung liefen je ein Dry-Run gegen weclapp und gegen Decidalo, beide nur lesend. Die Ergebnisse
+stehen nicht in diesem öffentlichen Repo, sondern liegen lokal beim Auftraggeber (1.1). Offene Folgepunkte stehen in
+Abschnitt 13 (O10, O26).
 
 ## 13. Offene Punkte
 
@@ -1272,14 +1257,14 @@ Folgerungen:
 |---|---|---|---|
 | O1 | ~~Kosten aktive weclapp-User (`ACTIVE`) eine Lizenz?~~ **Erledigt:** Aktive User kosten etwas, die Kosten sind eingeplant. Ob weclapp einen aktiven User ohne Lizenzzuweisung anlegt, zeigt der erste echte Lauf mit der Testperson | – | [#4](https://github.com/Hochfrequenz/HR-Sync/issues/4), AP 9 |
 | O2 | ~~Verschickt weclapp beim Anlegen eines aktiven Users automatisch eine Einladung?~~ **Erledigt (Vorgabe vom 2026-10-30):** Beim Anlegen per API verschickt weclapp keine Einladungsmail | – | [#6](https://github.com/Hochfrequenz/HR-Sync/issues/6) |
-| O3 | ~~Gibt es das Custom Attribute für die Personalnummer im weclapp-Tenant schon?~~ **Erledigt:** Das Feld gibt es in der Produktion am User, die ID der Definition ist `7621` (`stringValue`, z. B. `"00165"`). Der erste Dry-Run (12.1) zeigt: 167 von 177 Usern haben eine MA-Nummer, alle 149 gültigen Personio-Mitarbeiter werden darüber gefunden | – | [#7](https://github.com/Hochfrequenz/HR-Sync/issues/7) |
+| O3 | ~~Gibt es das Custom Attribute für die Personalnummer im weclapp-Tenant schon?~~ **Erledigt:** Das Feld gibt es in der Produktion am User, die ID der Definition ist `7621` (`stringValue`, z. B. `"00965"`). Ob die bestehenden User eine Nummer haben, hat der erste Dry-Run gezeigt (12.1, Ergebnis lokal) | – | [#7](https://github.com/Hochfrequenz/HR-Sync/issues/7) |
 | O4 | ~~Prüft weclapp E-Mail-Adressen auf Eindeutigkeit?~~ **Erledigt durch die Regel `email_in_use`:** HR-Sync legt keinen User mit einer E-Mail an, die in weclapp schon vergeben ist. weclapp selbst prüft das nicht, im Tenant teilen sich schon mehrere User eine E-Mail (Befund P4 im Repo des `weclapp-client`) | – | [#5](https://github.com/Hochfrequenz/HR-Sync/issues/5), Abschnitt 4.2 |
 | O5 | ~~Welche weiteren Felder braucht ein neuer Decidalo-User (Berechtigungsrolle, Team, Standort, Land, …)?~~ **Teilweise erledigt in AP 8:** Typ, Rolle, Standort, Land und Firma sind festgelegt (1.1, 3.3). Jobtitel, Service-Kategorie, Telefonnummer und Feiertagskalender kommen mit der Phase 2 (4.4), weitere personenbezogene Felder später (O19). Offen: Bekommt er bei `hasLogin=true` eine Mail? Laut Spec ist kein Feld Pflicht, und `includeInResourceManagement` ist beim Anlegen `true`. Die Mail lässt sich in der Testumgebung nicht prüfen, weil dort `hasLogin=false` gilt: also im ersten echten Lauf mit der Testperson oder beim Decidalo-Support | vor AP 9 | Brainstorming |
 | O6 | ~~Woran erkennt der Decidalo-Import bestehende User?~~ **Erledigt durch die Regel `email_in_use`:** HR-Sync schickt nur MA-Nummern, die in Decidalo fehlen, und keine E-Mail, die dort schon vergeben ist. Damit trifft `ImportSync` keinen bestehenden User, egal wie es zuordnet | – | R3, Abschnitt 4.2 |
 | O7 | ~~Grenzen und Timeouts von `GET /importapi/User` und `ImportSync`, Beginn von `rowIndex`~~ **Erledigt in AP 8:** **Paketgröße:** Es gibt keine Pakete mehr. Jeder `ImportSync`-Aufruf legt genau einen User an, Mitarbeiter für Mitarbeiter (1.1). **Laden:** Ohne `top` liefert `GET /importapi/User` laut Spec alle User, in der Testumgebung alle 51 in 0,2 s. Eine stille Kürzung fällt durch die Vollständigkeitsprüfung auf und bricht den Lauf vor dem Planen ab (1.1). **Timeouts:** Der Client setzt keines, es gilt das Standard-Timeout von aiohttp (5 Minuten je Anfrage). Ein Timeout beim Laden bricht den Lauf ab (Exit-Code 2), beim Anlegen wird die Operation zum Fehler und der Rest übersprungen (Exit-Code 1). **`rowIndex`** beginnt bei 0, HR-Sync braucht ihn nicht. Bei `Created` liefert die Antwort keine `userID`, `target_id` bleibt in `sync.operation` dann leer | – | Abschnitt 3.3 |
 | O8 | ~~Personio-Person ohne Employment oder Startdatum: ohne Eintrittsdatum anlegen oder überspringen?~~ **Erledigt:** Ohne aktives Employment mit Startdatum heute oder früher ist ein Mitarbeiter nicht relevant. Ein aktives Employment ohne Startdatum ist ein Datenproblem | – | Abschnitt 3.1, 5 |
 | O9 | **Richtung geklärt:** zeitgesteuert auf einem internen Server (Cron, Task Scheduler oder Container-Job), Secrets dort in einer `.env`. Offen: welcher Server, welches Intervall, wer bei Warnungen oder Fehlern benachrichtigt wird | vor dem Go-live | [#9](https://github.com/Hochfrequenz/HR-Sync/issues/9) |
-| O10 | Brauchen wir eine Ignore-Liste für technische User ohne MA-Nummer (Admins, API-User), damit die Warnungen nicht jedes Mal kommen? Wir entscheiden nach dem ersten Dry-Run, wenn die Zahl der Warnungen bekannt ist. **Stand nach dem ersten Dry-Run (12.1):** In weclapp erzeugen 5 User ohne MA-Nummer und 5 Test-User mit der MA-Nummer `TESTUSER` bei jedem Lauf je eine Warnung | jetzt (AP 9) | Risiko R5 |
+| O10 | Brauchen wir eine Ignore-Liste für technische User ohne MA-Nummer (Admins, API-User), damit die Warnungen nicht jedes Mal kommen? Wir entscheiden nach dem ersten Dry-Run, wenn die Zahl der Warnungen bekannt ist. Der Dry-Run ist gelaufen (12.1), die Zahlen liegen lokal | jetzt (AP 9) | Risiko R5 |
 | O11 | ~~Welche Python-Version? Laut weclapp-Plan (K3) die neueste~~ **Erledigt in AP 0:** Python 3.14 (CI 3.11–3.14), `requires-python = ">=3.11,<3.15"`, weil die Clients `aiohttp<3.14` verlangen (siehe O16) | – | AP 0 |
 | O12 | ~~URL und API-Key der Decidalo-Testumgebung, nimmt Decidalo E-Mails mit `example.com` an?~~ **Erledigt in AP 8:** URL und Key liegen in der lokalen `.env` (Testumgebung `https://import.decidalo.dev`). Decidalo nimmt die Ersatzadressen `test-<MA-Nummer>@example.com` an | – | Abschnitt 8 |
 | O13 | **Teilweise geklärt:** `delete=true` löscht wirklich. Deaktivieren ist ein eigenes Flag (`deactivate`), und die Antwort unterscheidet `Deleted` und `Deactivated`. ~~Lässt sich dieselbe `employeeID` danach wieder anlegen?~~ **Erledigt in AP 8:** Ja. `integration_write` lief mehrfach hintereinander mit derselben MA-Nummer, jedes Mal wurde sie angelegt und mit `Deleted` gelöscht | – | Abschnitt 8.3 |
@@ -1295,7 +1280,7 @@ Folgerungen:
 | O23 | Heißt das Feld für die Arbeitszeitprofile an der weclapp-Personalakte `workScheduleProfileAssignments` (Vorgabe) oder `workingTimeRuleAssignments` (Testdaten des weclapp-client)? **Weitgehend geklärt:** Laut der API-Analyse des Clients gibt es beide als getrennte Felder, für die Arbeitszeitprofile ist es `workScheduleProfileAssignments`. Offen ist nur die lesende Bestätigung gegen die API | AP 2a | Abschnitt 3.2 |
 | O24 | ~~In der Decidalo-Testumgebung heißen die Service-Kategorien intern anders als angezeigt (z. B. „DE Services 1“ für „Senior Consultant“). Klappt der Import über `serviceCategoryName` dort? Wenn nicht, braucht der Test-Modus eine Lösung~~ **Erledigt in AP 8a:** Ja. Der Import nimmt auch übersetzte Namen an, gelesen werden die angezeigten Namen, es entstehen keine falschen Abweichungen (3.3) | – | Abschnitt 3.3 |
 | O25 | ~~Wer hat Zugriff auf die Decidalo-Testumgebung? Die Testdaten sind pseudonymisiert, nicht anonym (Abschnitt 8): Über die echte MA-Nummer lassen sie sich einem Mitarbeiter zuordnen. Der Zugriff muss deshalb auf Berechtigte beschränkt sein, wie in der Produktion. Bestätigen vor weiteren schreibenden Läufen in die Testumgebung~~ **Erledigt (2026-10-30):** Zugriff hat nur, wer auch die Produktion sieht. Die pseudonymisierten Testdaten dürfen weiter dorthin (1.1) | – | Abschnitt 8 |
-| O26 | Karrierestufen außerhalb des Mappings: In Personio haben 10 relevante Mitarbeiter keine Beraterstufe, sondern eine dieser Rollen: GF-Assistenz, Geschäftsführer, Finance Director, HR Consultant, Marketing, Systemadministrator (Stand 2026-10-30, 12.1). Bis das Mapping sie kennt, erzeugen sie bei jedem Lauf eine Warnung `unmapped_value`, und mit ihnen passiert nichts. Vorläufige Richtung: Geschäftsführer bewusst ausnehmen (ohne Warnung, Anlage per Hand), die übrigen fünf Rollen ins Mapping, nach Decidalo wie alle. Offen: je Rolle Decidalo-Service-Kategorie (muss in der Produktion existieren) und Urlaubsanspruch. Bis dahin bleibt das Mapping bei den vier Beraterstufen | später | Abschnitt 4.4, 12.1 |
+| O26 | Karrierestufen außerhalb des Mappings: In Personio gibt es Karrierestufen, die das Mapping nicht kennt (welche, steht in der lokalen Auswertung, 12.1). Bis das Mapping sie kennt, erzeugen sie bei jedem Lauf eine Warnung `unmapped_value`, und mit diesen Mitarbeitern passiert nichts. Vorläufige Richtung: einzelne Rollen bewusst ausnehmen (ohne Warnung, Anlage per Hand), die übrigen ins Mapping, nach Decidalo wie alle. Offen: je Rolle Decidalo-Service-Kategorie (muss in der Produktion existieren) und Urlaubsanspruch. Bis dahin bleibt das Mapping bei den vier Beraterstufen | später | Abschnitt 4.4 |
 | O27 | Darf der Kostensatz (8211) beim Anlegen eines weclapp-Users leer bleiben? Bis das geklärt ist, setzt HR-Sync 1 EUR/h als Platzhalter (O20). Darf das Feld leer bleiben, schickt HR-Sync es nicht mehr mit. Zu klären mit dem weclapp-Admin, z. B. ob Zeitbuchungen oder die automatische Zuweisung zu den INT-Projekten einen Kostensatz brauchen | vor dem Go-live | Abschnitt 4.4, O20 |
 
 Keiner der offenen Punkte blockiert AP 2–7:
