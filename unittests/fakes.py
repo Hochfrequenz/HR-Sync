@@ -255,7 +255,7 @@ def weclapp_user(
     """A user of weclapp, by default Erika as Personio has her in :func:`personio_person`, in Grünwald."""
     ids = WECLAPP_SETUP.attribute_ids
     attributes: list[dict[str, object]] = [
-        {"attributeDefinitionId": ids.cost_rate, "numberValue": "0"},
+        {"attributeDefinitionId": ids.cost_rate, "numberValue": "1"},
         {"attributeDefinitionId": ids.career_level, "stringValue": career_level},
         {"attributeDefinitionId": ids.vacation_days, "numberValue": vacation_days},
         {"attributeDefinitionId": ids.state, "selectedValueId": state_value_id},

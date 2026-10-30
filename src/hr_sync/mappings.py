@@ -87,8 +87,8 @@ WECLAPP_LICENSES = ("WECLAPP_PROJECT", "ADDON_HUMAN_RESOURCES")
 """the licenses of new weclapp users"""
 WECLAPP_USER_ROLE_IDS = ("7166", "4329")
 """the roles of new weclapp users: time recording and weclapp project (all permissions)"""
-WECLAPP_COST_RATE = Decimal(0)
-"""the cost rate of new weclapp users in EUR/h; 0 until someone maintains it by hand in weclapp (O20)"""
+WECLAPP_COST_RATE = Decimal(1)
+"""the cost rate of new weclapp users in EUR/h; a placeholder until someone maintains it by hand in weclapp (O20)"""
 WECLAPP_COST_RATE_REASON = "Erstanlage (weclapp)"
 """the reason of the cost rate of new weclapp users"""
 

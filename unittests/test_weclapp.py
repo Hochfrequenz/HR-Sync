@@ -401,7 +401,7 @@ class TestNewEmployee:
             "userRoles": [{"id": "7166"}, {"id": "4329"}],
             "customAttributes": [
                 {"attributeDefinitionId": "7621", "stringValue": "00165"},
-                {"attributeDefinitionId": "8211", "numberValue": "0"},
+                {"attributeDefinitionId": "8211", "numberValue": "1"},
                 {"attributeDefinitionId": "8217", "stringValue": "Erstanlage (weclapp)"},
                 {"attributeDefinitionId": "9795", "numberValue": "26"},
                 {"attributeDefinitionId": "9902", "selectedValueId": "9903"},
@@ -445,7 +445,7 @@ class TestExecuteWeclapp:
         assert (user.email, user.status, user.licenses) == (ERIKA.email, UserStatus.ACTIVE, list(setup.licenses))
         assert [role.id for role in user.user_roles] == list(setup.user_role_ids)
         assert user.custom_attribute(setup.employee_number_attribute_id).string_value == "00165"  # type: ignore[union-attr]
-        assert user.custom_attribute(setup.attribute_ids.cost_rate).number_value == Decimal(0)  # type: ignore[union-attr]
+        assert user.custom_attribute(setup.attribute_ids.cost_rate).number_value == Decimal(1)  # type: ignore[union-attr]
         assert employee.user_id == user.id
         assert [(a.work_schedule_profile_id, a.start_date) for a in employee.work_schedule_profile_assignments] == [
             (setup.work_schedule_profile_ids[40], date(2026, 9, 1))
