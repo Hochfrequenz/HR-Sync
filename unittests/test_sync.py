@@ -9,7 +9,7 @@ from personio_client import Employment, Person, PersonioClient
 from pydantic import SecretStr
 
 from hr_sync.config import ConfigurationError, ConfigurationProblem, Environment, Settings
-from hr_sync.model import EmployeeRecord, System, TargetSystem
+from hr_sync.model import EmployeeRecord, NoticeReason, System, TargetSystem
 from hr_sync.plan import EmployeePlan, Operation, OperationType, Outcome, SyncPlan
 from hr_sync.sync import (
     ExitCode,
@@ -451,3 +451,23 @@ class TestSteps:
         # Erika has no employee number in another attribute
         settings = _settings(personio_employee_number_attribute="dynamic_0815")
         assert load_snapshots(Systems(personio=_personio(ERIKA)), settings, [], TODAY).source.records == {}
+
+    @pytest.mark.parametrize(
+        ("variable", "field"),
+        [
+            pytest.param("personio_career_level_attribute", "career_level", id="career level"),
+            pytest.param("personio_mobile_phone_attribute", "mobile_phone", id="phone number"),
+        ],
+    )
+    def test_attributes_of_phase_2_from_the_settings(self, variable: str, field: str) -> None:
+        assert set(load_snapshots(Systems(personio=_personio(ERIKA)), _settings(), [], TODAY).source.records) == {
+            "00165"
+        }
+        # Erika has no value in another attribute, which is a data problem
+        snapshot = load_snapshots(
+            Systems(personio=_personio(ERIKA)), _settings(**{variable: "dynamic_0815"}), [], TODAY
+        )
+        assert snapshot.source.records == {}
+        assert [(notice.reason, notice.detail) for notice in snapshot.source.notices] == [
+            (NoticeReason.MISSING_FIELD, field)
+        ]

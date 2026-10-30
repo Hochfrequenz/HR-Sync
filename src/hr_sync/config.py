@@ -53,6 +53,10 @@ class Settings(BaseSettings):
     """identifies HR-Sync towards Personio"""
     personio_employee_number_attribute: str = "company_employee_id"
     """the id of the custom attribute that holds the employee number"""
+    personio_career_level_attribute: str = "dynamic_625934eadbe629.22673150"
+    """the id of the custom attribute that holds the career level"""
+    personio_mobile_phone_attribute: str = "dynamic_6239d4b55575b2.63567609"
+    """the id of the custom attribute that holds the mobile phone number"""
     decidalo_api_key: SecretStr | None = None
     decidalo_employee_type_id: int = 2
     """the employee type of new users, by id; it wins over the name if the name doesn't exist"""

@@ -36,7 +36,7 @@ HR-Sync überträgt beim Onboarding die Stammdaten neuer Mitarbeiter aus **Perso
 | E-Mail | wird nach weclapp und Decidalo übertragen (weclapp braucht sie zum Anlegen) |
 | Decidalo-displayName | `"Vorname Nachname"` |
 | Anlegen in Decidalo | über den **synchronen Import-Endpunkt** `POST /importapi/User/ImportSync` (Client: `import_users_sync`), nicht über `ImportAsync`. Die Ergebnisse pro Zeile kommen direkt in der Antwort, ohne Polling und ohne Callback |
-| Neue Decidalo-User | Neben den Stammdaten bekommt jeder neue User feste Werte nach dem Vorbild eines produktiven Users (AP 8): Mitarbeitertyp ID `2` / `"Internal"`, Berechtigungsrolle ID `2` / `"Employee"`, `location` und `countryCode` `"DE"`, `companyName` `"Hochfrequenz Unternehmensberatung GmbH"`, `includeInResourceManagement=true`, `hasLogin=true`. Alle außer `includeInResourceManagement` sind einstellbar, die Werte sind die Standardwerte von Hochfrequenz. `isImported` wird nicht gesetzt. Dazu kommen die Felder der Phase 2: `jobTitle`, `serviceCategoryName`, `mobilePhoneNumber` und `holidayListCode` (4.4). Weitere personenbezogene Felder wie Team kommen später (O19) |
+| Neue Decidalo-User | Neben den Stammdaten bekommt jeder neue User feste Werte nach dem Vorbild eines produktiven Users (AP 8): Mitarbeitertyp ID `2` / `"Internal"`, Berechtigungsrolle ID `2` / `"Employee"`, `location` und `countryCode` `"DE"`, `companyName` `"Hochfrequenz Unternehmensberatung GmbH"`, `includeInResourceManagement=true`, `hasLogin=true`. Alle außer `includeInResourceManagement` sind einstellbar, die Werte sind die Standardwerte von Hochfrequenz. `isImported` wird nicht gesetzt. Dazu kommen die Felder der Phase 2: `jobTitle`, `serviceCategoryName`, `mobilePhoneNumber`, `holidayListCode` und `standardWeeklyHours` (4.4). Weitere personenbezogene Felder wie Team kommen später (O19) |
 | Decidalo-Zeilenstatus | Nur `Created` ist ein Erfolg. Jeder andere Status, auch `Updated`, ist ein Fehler, weil HR-Sync nur neue User schickt |
 | Deaktivierter Decidalo-User | Gehört seine MA-Nummer einem relevanten Personio-Mitarbeiter (z. B. Wiedereintritt), ist das ein Datenproblem: Warn-Event `deactivated_in_target`, und nach dem Grundsatz passiert mit dem Mitarbeiter nichts |
 | Anlegen in Decidalo: ein Aufruf je Mitarbeiter | Beim Ausführen des Plans geht HR-Sync Mitarbeiter für Mitarbeiter durch: Jeder `ImportSync`-Aufruf legt genau einen User an, die Aufrufe laufen nacheinander. Es gibt keine Pakete mit mehreren Usern, eine Paketgröße spielt also keine Rolle (O7) |
@@ -72,6 +72,12 @@ HR-Sync überträgt beim Onboarding die Stammdaten neuer Mitarbeiter aus **Perso
 | Pflichtfelder | Alle übertragenen Felder sind Pflicht: Namen, E-Mail, MA-Nummer, Eintrittsdatum, Karrierestufe, Telefonnummer, Standort und Wochenstunden. Fehlt eins oder liegt sein Wert außerhalb der Mappings, ist das ein Datenproblem, und mit dem Mitarbeiter passiert in keinem System etwas. Das gilt auch für Felder, die nur ein Zielsystem braucht (4.4) |
 | Mappings der Phase 2 | fest im Code (`mappings.py`), nicht einstellbar: Karrierestufe → Service-Kategorie und Urlaubsanspruch, Standort-ID → Standort, Feiertagskalender und weclapp-Bundesland, Wochenstunden → Arbeitszeitprofil. Ebenso die festen weclapp-Werte (Lizenzen, Rollen, Kostensatz, IDs der Zusatzfelder). Das weicht von „Firmenspezifisches ist einstellbar“ ab (9.1, O15) |
 | Abweichungen der Phase-2-Felder | werden wie die anderen Felder verglichen und nur geloggt (4.2, 4.4) |
+| Wochenstunden in Decidalo (O22) | Decidalo bekommt die Wochenstunden als `standardWeeklyHours` und vergleicht sie. Sonst plant die Ressourcenplanung eine Teilzeitkraft womöglich mit voller Kapazität. Das geht über die Vorgabe für Decidalo hinaus, die das Feld nicht nennt (4.4) |
+| Personio-Attribute der Phase 2 (O22) | Variablen mit Hochfrequenz-Standard wie `PERSONIO_EMPLOYEE_NUMBER_ATTRIBUTE`: `PERSONIO_CAREER_LEVEL_ATTRIBUTE` und `PERSONIO_MOBILE_PHONE_ATTRIBUTE`. Die Attribut-IDs sind kein Mapping, also gilt „Firmenspezifisches ist einstellbar“ (7) |
+| `reason`-Werte der Phase 2 (O22) | drei allgemeine Werte: `missing_field` (Pflichtfeld fehlt), `unmapped_value` (Wert außerhalb der Mappings) und `invalid_phone_number`. `detail` nennt den Feldnamen des Modells, z. B. `reason=missing_field detail=career_level`. Ein späteres Feld braucht so keinen neuen Wert. Die bestehenden Werte wie `missing_email` bleiben (5) |
+| Ersatznummer im Test-Modus (O22) | `+49 000 <MA-Nummer>`, z. B. `+49 000 00165`. Nach `+49` beginnt keine deutsche Nummer mit `0`, die Ersatznummer gehört also sicher niemandem (8.2) |
+| Zugriff auf die Decidalo-Testumgebung (O25) | nur, wer auch die Produktion sieht. Dort stehen dieselben Felder ohnehin echt. Die pseudonymisierten Testdaten dürfen deshalb weiter in die Testumgebung (8) |
+| AP 8a in zwei PRs | PR 1 die Quelle: `mappings.py`, Modell und Datenprobleme, Personio, Anonymisierung, Konfiguration. PR 2 das Ziel: Decidalo senden und laden, Vergleich im Planner, Integrationstest (O24). Nur PR 2 schließt Issue #19 (12) |
 
 ## 2. Ablauf
 
@@ -191,28 +197,37 @@ Mitarbeiter in Deutschland sind. Der Loader bekommt das Datum als Parameter, dam
 - Vorname, Nachname, E-Mail: `first_name`, `last_name`, `email`.
 - Eintrittsdatum: `employment_start_date` des relevanten Employments.
 - Felder der Phase 2 (4.4, ab AP 8a):
-  - Karrierestufe: Custom Attribute `dynamic_625934eadbe629.22673150` (String, z. B. `"Senior Consultant"`).
-  - Telefonnummer: Custom Attribute `dynamic_6239d4b55575b2.63567609` (String, z. B. `"0151 27 409 444"`).
+  - Karrierestufe: Custom Attribute `dynamic_625934eadbe629.22673150` (String, z. B. `"Senior Consultant"`,
+    `PERSONIO_CAREER_LEVEL_ATTRIBUTE`).
+  - Telefonnummer: Custom Attribute `dynamic_6239d4b55575b2.63567609` (String, z. B. `"0151 27 409 444"`,
+    `PERSONIO_MOBILE_PHONE_ATTRIBUTE`).
   - Standort: `office.id` des relevanten Employments, über das Standort-Mapping zum Namen.
   - Wochenstunden: `weekly_working_hours` des relevanten Employments.
   - Wie MA-Nummer und E-Mail prüfen wir sie erst nach dem Relevanzfilter: Fehlt eins oder liegt sein Wert außerhalb
     der Mappings, ist das ein Datenproblem (Abschnitt 5).
-  - Ob die Attribut-IDs Variablen mit Hochfrequenz-Standard werden wie `PERSONIO_EMPLOYEE_NUMBER_ATTRIBUTE`, entscheidet
-    AP 8a (O22).
+  - Die Attribut-IDs sind Variablen mit Hochfrequenz-Standard wie `PERSONIO_EMPLOYEE_NUMBER_ATTRIBUTE` (O22).
 - Credentials nur mit dem Scope `personio:persons:read`.
 
-Umgesetzt in [`systems/personio.py`](../../src/hr_sync/systems/personio.py) (AP 4):
+Umgesetzt in [`systems/personio.py`](../../src/hr_sync/systems/personio.py) (AP 4, Felder der Phase 2 in AP 8a):
 
 - `fetch_persons(client)` holt die Personen und ihre Employments nacheinander, als Liste von `LoadedPerson`. Den
   Client öffnet und schließt die Funktion selbst in einem `asyncio.run`, auch bei einem Fehler.
-- `map_persons(persons, employee_number_attribute=…, today=…)` ist rein. Sie liefert den Snapshot sowie die Zahlen
-  `without_id` und `not_relevant` je Grund.
-- `load_personio(client, employee_number_attribute=…, today=…)` ruft beides auf und erzeugt das Event `sync.load` mit
-  `persons`, `without_id`, `records`, `notices` und `not_relevant`.
+- `map_persons(persons, attributes=…, today=…)` ist rein. Sie liefert den Snapshot sowie die Zahlen `without_id` und
+  `not_relevant` je Grund. `attributes` (`PersonioAttributes`) bündelt die IDs der Custom Attributes für MA-Nummer,
+  Karrierestufe und Telefonnummer, `sync.personio_attributes` füllt sie aus den Einstellungen.
+- `load_personio(client, attributes=…, today=…)` ruft beides auf und erzeugt das Event `sync.load` mit `persons`,
+  `without_id`, `records`, `notices` und `not_relevant`.
 - `relevant_employment(employments, today)` setzt die Relevanzregel um. Das Ergebnis ist das relevante Employment
   oder der Grund, warum es keines gibt.
-- `employee_number_of(person, attribute_id)` liest die MA-Nummer. Eine Zahl wird zum String, leere Werte gelten als
-  fehlend.
+- `map_person(person, employment, attributes=…, employee_number=…)` mappt einen relevanten Mitarbeiter und liefert
+  dazu die Probleme in seinen Feldern (`FieldProblem` mit Grund und Feldname), in der Reihenfolge der Felder. Die
+  Service-Kategorie und den Urlaubsanspruch füllt es aus dem Mapping der Karrierestufe, den Standort mit dem Namen aus
+  dem Standort-Mapping.
+- `attribute_value(person, attribute_id)` liest ein Custom Attribute, z. B. die MA-Nummer. Eine Zahl wird zum String,
+  leere Werte gelten als fehlend. Bis AP 8a hieß die Funktion `employee_number_of`.
+- Ein Mitarbeiter mit Problemen in seinen Feldern kommt mit diesen Problemen in den `SnapshotBuilder` (`add(…,
+  problems=…)`), nicht über `exclude()`. So zählen seine MA-Nummer und seine E-Mail bei den Dubletten mit (4.4).
+  Hat er eine doppelte MA-Nummer, eine fehlende oder eine doppelte E-Mail, gibt es nur diese Warnung (5).
 - `client` ist als Protocol `PersonioSource` typisiert (asynchroner Kontextmanager, `iter_persons`,
   `iter_employments`). mypy prüft, dass der echte `PersonioClient` das Protocol erfüllt.
 - Personen ohne `id` (laut Spec optional) lassen sich nicht abfragen. Sie werden übersprungen und in `without_id`
@@ -313,8 +328,8 @@ eigenen Variablen (siehe [Abschnitt 8](#8-testumgebungen-und-anonymisierung)). D
 **Laden:** `get_users()` ohne `top`. Laut Spec liefert der Endpunkt dann alle User, eine Höchstgrenze ist nicht
 dokumentiert. Danach prüft HR-Sync mit einer zweiten Anfrage (`top=1`, `skip=Anzahl`), dass nach dem letzten User keiner
 mehr kommt, sonst bricht der Lauf ab (siehe 1.1, O7). Wir lesen `employeeID`, `displayName`, `email` und `entryDate`,
-für den Vergleich der Phase 2 zusätzlich `jobTitle`, `serviceCategoryName`, `mobilePhoneNumber` und `holidayListCode`
-(4.4, AP 8a).
+für den Vergleich der Phase 2 zusätzlich `jobTitle`, `serviceCategoryName`, `mobilePhoneNumber`, `holidayListCode` und
+`standardWeeklyHours` (4.4, AP 8a).
 
 **Anlegen:** über den synchronen Import-Endpunkt `POST /importapi/User/ImportSync`, im Client
 `import_users_sync(UserBatchInput(users=[user]))`. HR-Sync geht Mitarbeiter für Mitarbeiter vor: Jeder Aufruf
@@ -345,6 +360,7 @@ UserInput(
     serviceCategoryName="Manging Consultant",  # aus dem Mapping der Karrierestufe, so in Decidalo geschrieben
     mobilePhoneNumber=record.mobile_phone,     # wie in Personio, im Test-Modus die Ersatznummer
     holidayListCode="DE-BY",          # aus dem Standort-Mapping, z. B. Grünwald
+    standardWeeklyHours=40,           # die Wochenstunden aus Personio (O22)
 )
 ```
 
@@ -489,7 +505,7 @@ damit die Vergleichsregeln an einer Stelle liegen.
 | System | verglichene Felder |
 |---|---|
 | weclapp | `first_name`, `last_name`, `email`, `entry_date`; ab AP 5 auch `mobile_phone`, `career_level`, `office`, `weekly_hours` und `vacation_days` (4.4) |
-| Decidalo | `display_name`, `email`, `entry_date`; ab AP 8a auch `mobile_phone`, `career_level`, `office` und `service_category` (4.4) |
+| Decidalo | `display_name`, `email`, `entry_date`; ab AP 8a auch `mobile_phone`, `career_level`, `office`, `service_category` und `weekly_hours` (4.4) |
 
 Vor dem Vergleich werden Leerzeichen am Anfang und Ende entfernt. E-Mails werden ohne Rücksicht auf Groß- und
 Kleinschreibung verglichen. Telefonnummern vergleicht der Planner in einer kanonischen Form: international mit `+` und
@@ -544,7 +560,7 @@ AP 8a (Personio, Decidalo), AP 2a (weclapp-client) und AP 5 (weclapp), siehe Abs
 | Karrierestufe | Custom Attribute `dynamic_625934eadbe629.22673150` | `career_level`, abgeleitet `service_category` | `jobTitle` unverändert, `serviceCategoryName` aus dem Mapping | Zusatzfeld 14175 (`stringValue`); das Standardfeld `title` bleibt leer |
 | Telefonnummer | Custom Attribute `dynamic_6239d4b55575b2.63567609`, z. B. `0151 27 409 444` | `mobile_phone` | `mobilePhoneNumber` wie in Personio | `mobilePhoneNumber` international (`+49 …`) |
 | Standort | `office.id` des relevanten Employments | `office` (Name) | `holidayListCode` (Feiertage); `location` bleibt fest `DE` | Zusatzfeld 9902 (`selectedValueId`, Bundesland für Feiertage) |
-| Wochenstunden | `weekly_working_hours` des relevanten Employments | `weekly_hours` | – (O22) | Arbeitszeitprofil der Personalakte; beim Vergleich das heute gültige (3.2) |
+| Wochenstunden | `weekly_working_hours` des relevanten Employments | `weekly_hours` | `standardWeeklyHours` (O22, über die Vorgabe hinaus) | Arbeitszeitprofil der Personalakte; beim Vergleich das heute gültige (3.2) |
 | Urlaubsanspruch | – (aus der Karrierestufe) | abgeleitet `vacation_days` | – | Zusatzfeld 9795 (`numberValue`, Tage pro Jahr) |
 
 **Mappings** (fest im Code in `mappings.py`, siehe 1.1). Erlaubt sind nur die Karrierestufen und Standorte dieser
@@ -593,9 +609,19 @@ Vorgaben vorliegen (O20). Der Status bleibt `ACTIVE` (`WECLAPP_NEW_USER_STATUS`)
   - Eine Nummer mit genau einer führenden `0` ist national: Die `0` wird zu `+49`, z. B. `0151 …` → `+49 151 …`.
   - Alles andere lässt sich nicht umwandeln. Das ist ein Datenproblem in Personio, damit der Mitarbeiter in keinem
     System angelegt wird.
+  - Außer Ziffern sind nur Leerzeichen und die Trennzeichen `-`, `/` und `.` erlaubt, ein `+` nur am Anfang. Klammern
+    gelten als nicht umwandelbar, so wird `+49 (0) 151 …` nie zur falschen Nummer `+49 0151 …`. Nach der Umwandlung
+    müssen 7 bis 15 Ziffern übrig sein, die erste nicht `0` (wie bei E.164). Diese Präzisierung kam mit AP 8a dazu.
 
   Die genaue Schreibweise (Leerzeichen) legt AP 5 fest, die Vorgabe zeigt `+49 151 23411444`. Verglichen wird in der
-  kanonischen Form ohne Leerzeichen (4.2).
+  kanonischen Form ohne Leerzeichen (4.2). Diese Form liefert `model.phone_number_key`, z. B. `+4915127409444` für
+  `0151 27 409 444`, bzw. `None`, wenn sich die Nummer nicht umwandeln lässt. Personio prüft damit die Nummer (AP 8a),
+  der Planner vergleicht damit (AP 8a, PR 2).
+
+Umgesetzt in [`mappings.py`](../../src/hr_sync/mappings.py) (AP 8a): `CAREER_LEVELS` (Service-Kategorie und
+Urlaubsanspruch je Karrierestufe), `OFFICES` (Name, `holidayListCode` und weclapp-Auswahlwert je `office.id`) und
+`WORK_SCHEDULE_PROFILES` (Profil je Wochenstunden). `work_schedule_profile(weekly_hours)` liefert das Profil oder
+`None`, z. B. für 37,5 Stunden. Ein Test prüft, dass sich jedes Mapping eindeutig zurückübersetzen lässt.
 - **Abweichungen:** Die neuen Felder werden bei bestehenden Personen verglichen und nur geloggt (4.2). Dafür mappt
   jeder Zieladapter seine Werte auf das gemeinsame Modell:
   - Eindeutig umkehrbare Mappings übersetzt er zurück, z. B. `DE-BY` → Grünwald oder Profil 7177 → 40 Wochenstunden.
@@ -605,8 +631,8 @@ Vorgaben vorliegen (O20). Der Status bleibt `ACTIVE` (`WECLAPP_NEW_USER_STATUS`)
     Jobtitel mit falscher Service-Kategorie auf.
   - Wird ein heute eindeutiges Mapping später mehrdeutig, etwa zwei Standorte in Bayern, bekommt der abgeleitete Wert
     ebenfalls ein eigenes Feld.
-- **Test-Modus:** Die Telefonnummer wird durch eine feste Ersatznummer aus der MA-Nummer ersetzt, alle anderen neuen
-  Felder bleiben echt (8.2).
+- **Test-Modus:** Die Telefonnummer wird durch die feste Ersatznummer `+49 000 <MA-Nummer>` ersetzt, alle anderen
+  neuen Felder bleiben echt (8.2).
 
 ## 5. Datenprobleme
 
@@ -617,9 +643,9 @@ Vorgaben vorliegen (O20). Der Status bleibt `ACTIVE` (`WECLAPP_NEW_USER_STATUS`)
 | E-Mail fehlt | Personio | Warn-Event (`reason=missing_email`), Person nicht im Plan |
 | E-Mail kommt bei mehreren Mitarbeitern vor (auch bei einem ohne MA-Nummer) | Personio | Warn-Event (`reason=duplicate_email`) für jeden Betroffenen; keiner von ihnen kommt in den Plan, auch nicht „der Erste“ |
 | Employment `ACTIVE`, aber ohne Startdatum, und kein anderes Employment erfüllt die Bedingungen | Personio | Warn-Event (`reason=missing_entry_date`), Person nicht im Plan. Geprüft wird vor dem Datumsfilter (siehe [3.1](#31-personio-quelle)) |
-| Pflichtfeld der Phase 2 fehlt oder ist leer: Vorname, Nachname, Karrierestufe, Telefonnummer, Standort, Wochenstunden (4.4) | Personio | Warn-Event mit dem Feldnamen, Person nicht im Plan. Die genauen `reason`-Werte legt AP 8a fest (O22) |
-| Wert außerhalb der Mappings: unbekannte Karrierestufe, Standort-ID oder Stundenzahl (4.4) | Personio | Warn-Event mit dem Feldnamen, Person nicht im Plan, bis das Mapping den Wert kennt |
-| Telefonnummer lässt sich nicht ins internationale Format umwandeln (4.4) | Personio | Warn-Event, Person nicht im Plan |
+| Pflichtfeld der Phase 2 fehlt oder ist leer: Vorname, Nachname, Karrierestufe, Telefonnummer, Standort, Wochenstunden (4.4) | Personio | Warn-Event (`reason=missing_field`, `detail` ist der Feldname, z. B. `career_level`), Person nicht im Plan |
+| Wert außerhalb der Mappings: unbekannte Karrierestufe, Standort-ID oder Stundenzahl (4.4) | Personio | Warn-Event (`reason=unmapped_value`, `detail` ist der Feldname), Person nicht im Plan, bis das Mapping den Wert kennt |
+| Telefonnummer lässt sich nicht ins internationale Format umwandeln (4.4) | Personio | Warn-Event (`reason=invalid_phone_number`, `detail=mobile_phone`), Person nicht im Plan |
 | Nicht relevant (kein aktives Employment oder Start in der Zukunft) | Personio | kein Warn-Event, weil das der Normalfall ist. Nur die Anzahl je Grund im `sync.load` |
 | Person steht nur im Zielsystem | weclapp, Decidalo | nur die Anzahl im Plan-Event (Offboarding kommt später) |
 | E-Mail des Mitarbeiters gehört im Zielsystem einem anderen User | weclapp, Decidalo | Warn-Event (`reason=email_in_use`) mit MA-Nummer und `system_id` des anderen Users; mit dem Mitarbeiter passiert in keinem System etwas (siehe 4.2) |
@@ -628,6 +654,10 @@ Vorgaben vorliegen (O20). Der Status bleibt `ACTIVE` (`WECLAPP_NEW_USER_STATUS`)
 Für alle Fälle gilt der **Grundsatz** aus 1.1: Mit einem Mitarbeiter, zu dem es ein Datenproblem gibt, passiert nichts,
 in keinem System. Angelegt wird nur, wer überall stimmig ist. Abweichungen zählen nicht dazu: Sie werden nur geloggt
 (Abschnitt 4.2).
+
+Für die Felder der Phase 2 gibt es je betroffenem Feld ein Warn-Event, so sieht man alle fehlenden Werte eines
+Mitarbeiters auf einmal. Hat er eine doppelte MA-Nummer, eine fehlende oder eine doppelte E-Mail, gibt es nur diese
+Warnung, wie bisher bei fehlender und doppelter E-Mail. Für die Dublettenprüfung zählt er in jedem Fall mit (4.4).
 
 In Personio werden MA-Nummer, E-Mail, doppelte MA-Nummern, doppelte E-Mails und die Pflichtfelder der Phase 2 nur bei
 relevanten Mitarbeitern geprüft. Einzige
@@ -719,6 +749,8 @@ Tabelle mit *(HF)* markiert und werden im README als solche dokumentiert, damit 
 |---|---|
 | `PERSONIO_CLIENT_ID`, `PERSONIO_CLIENT_SECRET`, `PERSONIO_APP_ID` | Personio-API. `PERSONIO_APP_ID` hat den Standard `HR_SYNC` |
 | `PERSONIO_EMPLOYEE_NUMBER_ATTRIBUTE` | Standard `company_employee_id` *(HF)* |
+| `PERSONIO_CAREER_LEVEL_ATTRIBUTE` | ID des Custom Attributes mit der Karrierestufe, Standard `dynamic_625934eadbe629.22673150` *(HF)* (Phase 2) |
+| `PERSONIO_MOBILE_PHONE_ATTRIBUTE` | ID des Custom Attributes mit der Telefonnummer, Standard `dynamic_6239d4b55575b2.63567609` *(HF)* (Phase 2) |
 | `WECLAPP_API_TOKEN`, `WECLAPP_BASE_URL` bzw. `WECLAPP_TENANT` | weclapp-API (wie `WeclappConfig.from_env()`) |
 | `WECLAPP_EMPLOYEE_NUMBER_ATTRIBUTE_ID` | ID der Custom-Attribute-Definition für die MA-Nummer am User. Pflicht, wenn weclapp Ziel ist; ohne Standardwert, weil die ID nur im eigenen Tenant gilt. Bei Hochfrequenz `7621` *(HF)* |
 | `WECLAPP_NEW_USER_STATUS` | Standard `ACTIVE` *(HF)* |
@@ -733,9 +765,8 @@ Tabelle mit *(HF)* markiert und werden im README als solche dokumentiert, damit 
 | `HR_SYNC_LOG_FORMAT` | `pretty` oder `json` |
 
 Die Mappings und festen weclapp-Werte der Phase 2 (Lizenzen, Rollen, Kostensatz, IDs der Zusatzfelder und
-Auswahlwerte) sind keine Variablen, sie stehen fest im Code (4.4). Ob die Personio-Attribute für Karrierestufe und
-Telefonnummer Variablen mit Hochfrequenz-Standard werden wie `PERSONIO_EMPLOYEE_NUMBER_ATTRIBUTE`, entscheidet AP 8a
-(O22).
+Auswahlwerte) sind keine Variablen, sie stehen fest im Code (4.4). Die Personio-Attribute für Karrierestufe und
+Telefonnummer sind dagegen Variablen, weil sie kein Mapping sind (O22).
 
 **CLI:** `hr-sync [--dry-run] [--only MA-NR ...] [--max-employees N] [--target weclapp|decidalo ...] [--env-file PFAD] [--log-format pretty|json]`,
 umgesetzt mit `argparse` (keine weitere Abhängigkeit).
@@ -870,7 +901,7 @@ Umgesetzt in [`config.py`](../../src/hr_sync/config.py) und [`sync.py`](../../sr
 | E-Mail | `test-<MA-Nummer>@example.com`. Die Domain ist für Beispiele reserviert, Mails dorthin werden nicht zugestellt |
 | Eintrittsdatum | bleibt echt |
 | Karrierestufe | bleibt echt (Phase 2) |
-| Telefonnummer | feste Ersatznummer aus der MA-Nummer (Phase 2). Das genaue Format legt AP 8a fest (O22) |
+| Telefonnummer | `+49 000 <MA-Nummer>`, z. B. `+49 000 00165` (Phase 2, O22). Nach `+49` beginnt keine deutsche Nummer mit `0`, die Ersatznummer gehört also niemandem |
 | Standort | bleibt echt (Phase 2) |
 | Wochenstunden | bleibt echt (Phase 2) |
 | Service-Kategorie, Urlaubsanspruch | bleiben echt, abgeleitet aus der Karrierestufe (Phase 2) |
@@ -889,9 +920,10 @@ Ein Test stellt sicher, dass jedes Feld von `EmployeeRecord` eine Anonymisierung
 „bleibt echt“ markiert ist. Ein neues Feld (siehe [4.3](#43-weitere-felder-ergänzen)) kann also nicht unbemerkt
 echte Werte in die Testumgebung tragen.
 
-Umgesetzt in [`anonymize.py`](../../src/hr_sync/anonymize.py) (AP 8):
+Umgesetzt in [`anonymize.py`](../../src/hr_sync/anonymize.py) (AP 8, Felder der Phase 2 in AP 8a):
 
-- `KEPT_FIELDS` (bleibt echt) und `SUBSTITUTES` (Ersatzwert je Feld aus der MA-Nummer) sind die Regeln.
+- `KEPT_FIELDS` (bleibt echt) und `SUBSTITUTES` (Ersatzwert je Feld aus der MA-Nummer) sind die Regeln. Ein Test
+  prüft, dass die Ersatznummer selbst eine gültige Telefonnummer ist (`phone_number_key`).
 - `anonymize_record` baut den Datensatz nur aus diesen Feldern neu auf (Positivliste). Ein Feld ohne Regel wird also
   verworfen statt echt übernommen. Der Test oben fällt dann auf.
 - `anonymize(snapshot)` ersetzt die Datensätze. `email_owners` enthält danach nur noch die Ersatzadressen, keine echte
@@ -943,6 +975,9 @@ Umgesetzt in [`unittests/integration`](../../unittests/integration) (AP 8):
   übersprungen. `HR_SYNC_IT_ALLOW_WRITES` kann in der Umgebung oder in der `.env` stehen.
 - **`integration`:** Personio wird einmal geladen. Der Test prüft, dass keiner der echten Werte im anonymisierten
   Snapshot und in den Events vorkommt. Dann plant er mit `max_employees=1` und führt den Plan als Dry-Run aus.
+  Gesucht wird nach Teilzeichenketten. Die Felder, die absichtlich echt bleiben (`KEPT_FIELDS`), durchsucht der Test im
+  Snapshot deshalb nicht: Seit AP 8a stehen dort echte Standorte, und ein kurzer Nachname kann Teil eines
+  Standortnamens sein. Das war beim ersten Lauf mit den Feldern der Phase 2 ein Fehlalarm.
 - **Keine personenbezogenen Daten in der Testausgabe**, auch wenn ein Test fehlschlägt:
   - pytest schreibt die Assertions dieses Moduls nicht um (`PYTEST_DONT_REWRITE`). Sonst zeigt es die Werte aller
     Teilausdrücke, z. B. bei `len(users)` die ganze Liste mit Namen. Jede Prüfung hat stattdessen eine eigene Meldung
@@ -1089,7 +1124,7 @@ Die Reihenfolge baut zuerst den Kern ohne IO und hängt dann die Systeme an:
 | 7 | **Orchestrierung, CLI** (inklusive `--only`, `--target` und `--env-file`), **Dry-Run, Exit-Codes**, Ende-zu-Ende-Tests. weclapp und der Test-Modus brechen bis AP 5 bzw. AP 8 ab (siehe 1.1) | `hr-sync --dry-run --target decidalo` läuft; Tests zeigen, dass `--only` alle anderen Personen aus dem Plan nimmt und `--target` die anderen Systeme nicht anfasst |
 | 7a | **Begrenzung des Plans** mit `--max-employees N` für überschaubare Testläufe (siehe 1.1 und 4.2) | `hr-sync --dry-run --target decidalo --max-employees 1` plant höchstens einen Mitarbeiter |
 | 8 | **Test-Modus und Integrationstest:** Anonymisierung, Prüfungen für den Test-Modus, Integrationstests gegen die Decidalo-Testumgebung mit wählbarem Aufräumen | `uv run pytest -m integration_write` legt den ersten Planeintrag anonymisiert in der Testumgebung an, prüft ihn und räumt auf |
-| 8a | **Felder der Phase 2 in Personio und Decidalo** (4.4): Modell, `mappings.py`, Personio-Mapping mit Pflichtfeldern und Datenproblemen, Decidalo-Felder (`jobTitle`, `serviceCategoryName`, `mobilePhoneNumber`, `holidayListCode`) samt Vergleich, Anonymisierung der Telefonnummer, Integrationstest (O24). Zu Beginn die Entscheidungen aus O22 | `uv run pytest -m integration_write` legt den ersten Planeintrag mit allen Decidalo-Feldern der Phase 2 an |
+| 8a | **Felder der Phase 2 in Personio und Decidalo** (4.4): Modell, `mappings.py`, Personio-Mapping mit Pflichtfeldern und Datenproblemen, Decidalo-Felder (`jobTitle`, `serviceCategoryName`, `mobilePhoneNumber`, `holidayListCode`, `standardWeeklyHours`) samt Vergleich, Anonymisierung der Telefonnummer, Integrationstest (O24). Entscheidungen aus O22 und O25 in 1.1. In zwei PRs: PR 1 die Quelle (`mappings.py`, Modell und Datenprobleme, Personio, Anonymisierung, Konfiguration), PR 2 das Ziel (Decidalo, Vergleich im Planner, Integrationstest). Nur PR 2 schließt Issue #19 | `uv run pytest -m integration_write` legt den ersten Planeintrag mit allen Decidalo-Feldern der Phase 2 an |
 | 9 | **Testlauf:** Dry-Run gegen die echten Systeme (nur lesend) und offene Punkte klären. Dann der erste echte Lauf, **nur mit `--only <MA-Nummer der Testperson>`**, vorher mit denselben Optionen als Dry-Run. Voraussetzung: Die Testperson steht mit MA-Nummer, E-Mail, allen Pflichtfeldern der Phase 2 und einem aktiven Employment (Start heute oder früher) in Personio. In weclapp prüfen: Lizenzen und Rollen, den von weclapp vergebenen `username` (gleich der E-Mail?, 3.2), Zuweisung zu den INT-Projekten nach etwa 15 Minuten, Anmeldung im Zeitportal | Go-live-Entscheidung |
 | 10 | **PyPI-Paket** (siehe [Abschnitt 9](#9-pypi-paket)): `LICENSE`, README als Nutzerdoku, Publish-Workflow aktivieren, Trusted Publisher auf PyPI und Environment `release` einrichten, Python-Obergrenze prüfen, Release als Pre-Release oder stabil je nach Clients. Zeitpunkt offen (O14) | `hochfrequenz-hr-sync` auf PyPI |
 
@@ -1124,10 +1159,10 @@ kann parallel zu AP 8a laufen.
 | O19 | **Teilweise erledigt:** Jobtitel, Service-Kategorie und Telefonnummer gehören zur Phase 2 (4.4). Offen sind Team, Geburtsjahr, Nationalität und Ausbildung: Woher kommen sie, welche sind gewünscht? Jedes Feld folgt dem Ablauf aus 4.3, mit Anonymisierungsregel | später | Abschnitt 4.3, 4.4 |
 | O20 | Kostensatz neuer weclapp-User: vorerst fest 8211 = 59 EUR/h und 8217 = „Erstanlage (weclapp)“ für alle. Die echten Vorgaben (z. B. je Karrierestufe) folgen, dann wird das Mapping angepasst | wenn die Vorgaben da sind | Abschnitt 4.4 |
 | O21 | Offboarding: Beim Austritt wird der weclapp-User deaktiviert, nie gelöscht, damit die Buchungen erhalten bleiben. Nicht im Umfang, für später | später | Abschnitt 1, 3.2 |
-| O22 | Entscheidungen zu Beginn von AP 8a: Bekommt Decidalo auch die Wochenstunden (`standardWeeklyHours`)? Werden die Personio-Attribute für Karrierestufe und Telefonnummer Variablen mit Hochfrequenz-Standard oder Konstanten? Welche `reason`-Werte bekommen die neuen Datenprobleme, und welches Format hat die Ersatznummer im Test-Modus? | AP 8a | Abschnitt 4.4, 5, 8.2 |
+| O22 | ~~Entscheidungen zu Beginn von AP 8a: Bekommt Decidalo auch die Wochenstunden (`standardWeeklyHours`)? Werden die Personio-Attribute für Karrierestufe und Telefonnummer Variablen mit Hochfrequenz-Standard oder Konstanten? Welche `reason`-Werte bekommen die neuen Datenprobleme, und welches Format hat die Ersatznummer im Test-Modus?~~ **Erledigt (2026-10-30):** Decidalo bekommt `standardWeeklyHours`; die Attribute sind Variablen mit Hochfrequenz-Standard; `missing_field`, `unmapped_value` und `invalid_phone_number` mit dem Feldnamen in `detail`; Ersatznummer `+49 000 <MA-Nummer>` (1.1) | – | Abschnitt 4.4, 5, 8.2 |
 | O23 | Heißt das Feld für die Arbeitszeitprofile an der weclapp-Personalakte `workScheduleProfileAssignments` (Vorgabe) oder `workingTimeRuleAssignments` (Testdaten des weclapp-client)? **Weitgehend geklärt:** Laut der API-Analyse des Clients gibt es beide als getrennte Felder, für die Arbeitszeitprofile ist es `workScheduleProfileAssignments`. Offen ist nur die lesende Bestätigung gegen die API | AP 2a | Abschnitt 3.2 |
 | O24 | In der Decidalo-Testumgebung heißen die Service-Kategorien intern anders als angezeigt (z. B. „DE Services 1“ für „Senior Consultant“). Klappt der Import über `serviceCategoryName` dort? Wenn nicht, braucht der Test-Modus eine Lösung | AP 8a | Abschnitt 3.3 |
-| O25 | Wer hat Zugriff auf die Decidalo-Testumgebung? Die Testdaten sind pseudonymisiert, nicht anonym (Abschnitt 8): Über die echte MA-Nummer lassen sie sich einem Mitarbeiter zuordnen. Der Zugriff muss deshalb auf Berechtigte beschränkt sein, wie in der Produktion. Bestätigen vor weiteren schreibenden Läufen in die Testumgebung | AP 8a | Abschnitt 8 |
+| O25 | ~~Wer hat Zugriff auf die Decidalo-Testumgebung? Die Testdaten sind pseudonymisiert, nicht anonym (Abschnitt 8): Über die echte MA-Nummer lassen sie sich einem Mitarbeiter zuordnen. Der Zugriff muss deshalb auf Berechtigte beschränkt sein, wie in der Produktion. Bestätigen vor weiteren schreibenden Läufen in die Testumgebung~~ **Erledigt (2026-10-30):** Zugriff hat nur, wer auch die Produktion sieht. Die pseudonymisierten Testdaten dürfen weiter dorthin (1.1) | – | Abschnitt 8 |
 
 Keiner der offenen Punkte blockiert AP 2–7:
 
@@ -1135,7 +1170,7 @@ Keiner der offenen Punkte blockiert AP 2–7:
 - O3 und O5 klären wir im ersten echten Lauf mit der Testperson (AP 9).
 - O9, O10 und O14 klären wir vor bzw. nach dem Go-live.
 - O16 und O18 liegen in anderen Repos. O19, O20 und O21 kommen nach Bedarf.
-- O22, O24 und O25 klären wir in AP 8a, O23 in AP 2a.
+- O22 und O25 sind zu Beginn von AP 8a geklärt. O24 klären wir in AP 8a, O23 in AP 2a.
 
 ## 14. Risiken
 

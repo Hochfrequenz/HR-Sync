@@ -37,7 +37,7 @@ from hr_sync.model import Notice, Snapshot, TargetSystem
 from hr_sync.plan import Operation, OperationResult, Outcome, SyncPlan
 from hr_sync.planner import build_plan
 from hr_sync.systems.decidalo import DecidaloTarget, NewUserDefaults, execute_decidalo, load_decidalo
-from hr_sync.systems.personio import PersonioSource, load_personio
+from hr_sync.systems.personio import PersonioAttributes, PersonioSource, load_personio
 
 
 class ExitCode(IntEnum):
@@ -171,9 +171,7 @@ def load_snapshots(systems: Systems, settings: Settings, targets: Collection[Tar
     An error while loading is raised, so that the run ends before planning: on incomplete data, existing employees
     would be created again.
     """
-    source = load_personio(
-        systems.personio, employee_number_attribute=settings.personio_employee_number_attribute, today=today
-    )
+    source = load_personio(systems.personio, attributes=personio_attributes(settings), today=today)
     if settings.test_mode:
         # right after loading, so that planning and executing only see substitutes
         source = anonymize(source)
@@ -242,6 +240,17 @@ def execute_plan(systems: Systems, sync_plan: SyncPlan, settings: Settings, *, d
         else:
             raise NotImplementedError(f"HR-Sync can't execute operations in {target} yet")
     return results
+
+
+def personio_attributes(settings: Settings) -> PersonioAttributes:
+    """
+    Returns the ids of the custom attributes that HR-Sync reads from Personio, from the settings.
+    """
+    return PersonioAttributes(
+        employee_number=settings.personio_employee_number_attribute,
+        career_level=settings.personio_career_level_attribute,
+        mobile_phone=settings.personio_mobile_phone_attribute,
+    )
 
 
 def new_decidalo_users(settings: Settings) -> NewUserDefaults:

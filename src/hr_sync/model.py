@@ -2,9 +2,12 @@
 The common data model. Every system is mapped onto it, so that the planner can compare the systems.
 """
 
+import re
 from collections import defaultdict
+from collections.abc import Sequence
 from datetime import date
 from enum import StrEnum
+from typing import Literal, NamedTuple
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -41,13 +44,34 @@ class EmployeeRecord(BaseModel):
     """Decidalo only has a display name; for Personio, it's derived with :func:`display_name_of`"""
     email: str | None = None
     entry_date: date | None = None
+    career_level: str | None = None
+    """e.g. ``Senior Consultant``, see :data:`hr_sync.mappings.CAREER_LEVELS`"""
+    mobile_phone: str | None = None
+    """the mobile phone number as in Personio; numbers are compared by :func:`phone_number_key`"""
+    office: str | None = None
+    """the name of the office, e.g. ``Grünwald``, see :data:`hr_sync.mappings.OFFICES`"""
+    weekly_hours: float | None = None
+    service_category: str | None = None
+    """the service category in Decidalo; for Personio, it's derived from the career level"""
+    vacation_days: int | None = None
+    """the vacation entitlement in days per year in weclapp; for Personio, it's derived from the career level"""
 
     @field_validator("employee_number", mode="before")
     @classmethod
     def _strip_employee_number(cls, value: object) -> object:
         return value.strip() if isinstance(value, str) else value
 
-    @field_validator("first_name", "last_name", "display_name", "email", mode="before")
+    @field_validator(
+        "first_name",
+        "last_name",
+        "display_name",
+        "email",
+        "career_level",
+        "mobile_phone",
+        "office",
+        "service_category",
+        mode="before",
+    )
     @classmethod
     def _strip_or_none(cls, value: object) -> object:
         if isinstance(value, str):
@@ -80,6 +104,12 @@ class NoticeReason(StrEnum):
     """several employees of the source share an e-mail address"""
     DEACTIVATED_IN_TARGET = "deactivated_in_target"
     """a relevant employee is deactivated in the target system, e.g. after a re-entry"""
+    MISSING_FIELD = "missing_field"
+    """a mandatory field is missing; the detail is the name of the field"""
+    UNMAPPED_VALUE = "unmapped_value"
+    """the value of a field is not part of the mappings (see :mod:`hr_sync.mappings`); the detail is the field"""
+    INVALID_PHONE_NUMBER = "invalid_phone_number"
+    """the phone number can't be converted to the international form (see :func:`phone_number_key`)"""
 
 
 class ExclusionReason(StrEnum):
@@ -91,6 +121,9 @@ class ExclusionReason(StrEnum):
     MISSING_EMAIL = "missing_email"
     DUPLICATE_EMAIL = "duplicate_email"
     DUPLICATE_EMPLOYEE_NUMBER = "duplicate_employee_number"
+    MISSING_FIELD = "missing_field"
+    UNMAPPED_VALUE = "unmapped_value"
+    INVALID_PHONE_NUMBER = "invalid_phone_number"
 
     @property
     def is_data_problem(self) -> bool:
@@ -98,6 +131,16 @@ class ExclusionReason(StrEnum):
         True for data problems, which are logged as notices; False if the employee is just not relevant (yet).
         """
         return self not in (ExclusionReason.EMPLOYMENT_NOT_ACTIVE, ExclusionReason.START_DATE_IN_FUTURE)
+
+
+class FieldProblem(BaseModel):
+    """A data problem with one field of a record, e.g. a missing career level."""
+
+    model_config = ConfigDict(frozen=True)
+
+    reason: Literal[ExclusionReason.MISSING_FIELD, ExclusionReason.UNMAPPED_VALUE, ExclusionReason.INVALID_PHONE_NUMBER]
+    field: str
+    """the name of the field in :class:`EmployeeRecord`, e.g. ``career_level``"""
 
 
 class Notice(BaseModel):
@@ -154,19 +197,58 @@ def email_key(email: str) -> str:
     return email.strip().casefold()
 
 
+_PHONE_NUMBER = re.compile(r"\+?[0-9 ./-]+")
+"""digits, spaces and the separators ``.``, ``/`` and ``-``, with ``+`` only at the start"""
+_PHONE_SEPARATORS = re.compile(r"[ ./-]")
+_INTERNATIONAL_PHONE_NUMBER = re.compile(r"\+[1-9][0-9]{6,14}")
+"""7 to 15 digits, the first of them not 0, like in E.164"""
+
+
+def phone_number_key(number: str) -> str | None:
+    """
+    Returns the phone number in the form in which numbers are compared: international, with ``+`` and only digits,
+    e.g. ``+4915127409444`` for ``0151 27 409 444``. Returns ``None`` if the number can't be converted.
+
+    A number with ``+`` keeps its country code, ``00`` before the country code becomes ``+``, and a single leading
+    ``0`` (a national number) becomes ``+49``, because all employees are in Germany. Besides digits, only spaces and
+    the separators ``.``, ``/`` and ``-`` are allowed. Parentheses are not: ``+49 (0) 151 …`` would otherwise become
+    the wrong number ``+490151…``.
+    """
+    number = number.strip()
+    if not _PHONE_NUMBER.fullmatch(number):
+        return None
+    digits = _PHONE_SEPARATORS.sub("", number)
+    if digits.startswith("+"):
+        key = digits
+    elif digits.startswith("00"):
+        key = "+" + digits[2:]
+    elif digits.startswith("0"):
+        key = "+49" + digits[1:]
+    else:
+        return None
+    return key if _INTERNATIONAL_PHONE_NUMBER.fullmatch(key) else None
+
+
+class _Candidate(NamedTuple):
+    system_id: str
+    record: EmployeeRecord
+    problems: tuple[FieldProblem, ...]
+
+
 class SnapshotBuilder:
     """
     Collects the mapped records of one system and sorts out the records with data problems.
 
     Records without employee number and records with duplicate employee numbers are not part of the snapshot. With
     ``require_email``, every employee needs an e-mail address of its own: records without e-mail address and records
-    whose address another loaded record uses as well are not part of the snapshot either. Each of them yields a notice.
+    whose address another loaded record uses as well are not part of the snapshot either. Records with problems in
+    their fields aren't either. Each of them yields a notice.
     """
 
     def __init__(self, system: System, *, require_email: bool = False) -> None:
         self._system = system
         self._require_email = require_email
-        self._candidates: dict[str, list[tuple[str, EmployeeRecord]]] = defaultdict(list)
+        self._candidates: dict[str, list[_Candidate]] = defaultdict(list)
         self._incomplete: set[str] = set()
         self._deactivated: set[str] = set()
         self._excluded: dict[str, ExclusionReason] = {}
@@ -174,12 +256,21 @@ class SnapshotBuilder:
         self._notices: list[Notice] = []
 
     def add(
-        self, system_id: str, record: EmployeeRecord, *, incomplete: bool = False, deactivated: bool = False
+        self,
+        system_id: str,
+        record: EmployeeRecord,
+        *,
+        incomplete: bool = False,
+        deactivated: bool = False,
+        problems: Sequence[FieldProblem] = (),
     ) -> None:
         """
         Adds a mapped record. Duplicate employee numbers and e-mail addresses are checked in :meth:`build`.
+
+        A record with ``problems`` in its fields is not part of the snapshot, but it still counts for the duplicates:
+        otherwise, another employee with the same employee number or e-mail address could be created.
         """
-        self._candidates[record.employee_number].append((system_id, record))
+        self._candidates[record.employee_number].append(_Candidate(system_id, record, tuple(problems)))
         if incomplete:
             self._incomplete.add(record.employee_number)
         if deactivated:
@@ -206,26 +297,37 @@ class SnapshotBuilder:
     def build(self) -> Snapshot:
         """
         Returns the snapshot of the records added so far.
+
+        A duplicate employee number, a missing and a duplicate e-mail address yield only their own notice. Otherwise,
+        there is one notice per problem in the fields, so that all of them can be fixed at once.
         """
         records: dict[str, EmployeeRecord] = {}
         system_ids: dict[str, str] = {}
         excluded = dict(self._excluded)
         notices = list(self._notices)
         for employee_number, candidates in self._candidates.items():
-            first_id, record = candidates[0]
+            first_id, record, problems = candidates[0]
             if len(candidates) > 1:
                 reason = ExclusionReason.DUPLICATE_EMPLOYEE_NUMBER
             elif self._require_email and record.email is None:
                 reason = ExclusionReason.MISSING_EMAIL
             elif self._require_email and self._shares_email(record):
                 reason = ExclusionReason.DUPLICATE_EMAIL
+            elif problems:
+                excluded[employee_number] = problems[0].reason
+                notices.extend(
+                    self._notice(NoticeReason(problem.reason.value), first_id, employee_number, problem.field)
+                    for problem in problems
+                )
+                continue
             else:
                 records[employee_number] = record
                 system_ids[employee_number] = first_id
                 continue
             excluded[employee_number] = reason
             notices.extend(
-                self._notice(NoticeReason(reason.value), system_id, employee_number) for system_id, _ in candidates
+                self._notice(NoticeReason(reason.value), candidate.system_id, employee_number)
+                for candidate in candidates
             )
         return Snapshot(
             system=self._system,
@@ -245,5 +347,9 @@ class SnapshotBuilder:
     def _shares_email(self, record: EmployeeRecord) -> bool:
         return record.email is not None and len(self._email_owners.get(email_key(record.email), [])) > 1
 
-    def _notice(self, reason: NoticeReason, system_id: str, employee_number: str | None = None) -> Notice:
-        return Notice(system=self._system, reason=reason, system_id=system_id, employee_number=employee_number)
+    def _notice(
+        self, reason: NoticeReason, system_id: str, employee_number: str | None = None, detail: str | None = None
+    ) -> Notice:
+        return Notice(
+            system=self._system, reason=reason, system_id=system_id, employee_number=employee_number, detail=detail
+        )

@@ -6,12 +6,14 @@ from pydantic import ValidationError
 from hr_sync.model import (
     EmployeeRecord,
     ExclusionReason,
+    FieldProblem,
     Notice,
     NoticeReason,
     SnapshotBuilder,
     System,
     display_name_of,
     email_key,
+    phone_number_key,
 )
 
 
@@ -37,22 +39,28 @@ class TestEmployeeRecord:
             last_name="Musterfrau ",
             display_name=" Erika Musterfrau",
             email=" erika.musterfrau@example.com ",
+            career_level=" Senior Consultant ",
+            mobile_phone=" 0151 27 409 444 ",
+            office=" Grünwald",
+            service_category="Senior Consultant ",
         )
         assert record.employee_number == "00165"
         assert record.first_name == "Erika"
         assert record.last_name == "Musterfrau"
         assert record.display_name == "Erika Musterfrau"
         assert record.email == "erika.musterfrau@example.com"
+        assert record.career_level == "Senior Consultant"
+        assert record.mobile_phone == "0151 27 409 444"
+        assert record.office == "Grünwald"
+        assert record.service_category == "Senior Consultant"
 
     @pytest.mark.parametrize("value", ["", "   "])
     def test_empty_strings_become_none(self, value: str) -> None:
-        record = EmployeeRecord(
-            employee_number="00165", first_name=value, last_name=value, display_name=value, email=value
+        fields = ("first_name", "last_name", "display_name", "email", "career_level", "mobile_phone", "office")
+        record = EmployeeRecord.model_validate(
+            {"employee_number": "00165", "service_category": value} | dict.fromkeys(fields, value)
         )
-        assert record.first_name is None
-        assert record.last_name is None
-        assert record.display_name is None
-        assert record.email is None
+        assert [field for field in (*fields, "service_category") if getattr(record, field) is not None] == []
 
     def test_leading_zeros_are_kept(self) -> None:
         assert EmployeeRecord(employee_number="00007").employee_number == "00007"
@@ -101,6 +109,9 @@ class TestExclusionReason:
             (ExclusionReason.MISSING_ENTRY_DATE, True),
             (ExclusionReason.MISSING_EMAIL, True),
             (ExclusionReason.DUPLICATE_EMPLOYEE_NUMBER, True),
+            (ExclusionReason.MISSING_FIELD, True),
+            (ExclusionReason.UNMAPPED_VALUE, True),
+            (ExclusionReason.INVALID_PHONE_NUMBER, True),
         ],
     )
     def test_is_data_problem(self, reason: ExclusionReason, is_data_problem: bool) -> None:
@@ -283,6 +294,61 @@ class TestSnapshotBuilder:
         assert snapshot.deactivated == frozenset({"00165"})
         assert snapshot.notices[0].reason == NoticeReason.DUPLICATE_EMPLOYEE_NUMBER
 
+    def test_problems_in_fields_yield_one_notice_each(self) -> None:
+        builder = SnapshotBuilder(System.PERSONIO, require_email=True)
+        problems = [
+            FieldProblem(reason=ExclusionReason.UNMAPPED_VALUE, field="career_level"),
+            FieldProblem(reason=ExclusionReason.MISSING_FIELD, field="office"),
+        ]
+        builder.add("1", _record("00165"), problems=problems)
+        snapshot = builder.build()
+        assert snapshot.records == {}
+        assert snapshot.system_ids == {}
+        assert snapshot.excluded == {"00165": ExclusionReason.UNMAPPED_VALUE}
+        assert snapshot.notices == [
+            Notice(
+                system=System.PERSONIO,
+                reason=NoticeReason.UNMAPPED_VALUE,
+                system_id="1",
+                employee_number="00165",
+                detail="career_level",
+            ),
+            Notice(
+                system=System.PERSONIO,
+                reason=NoticeReason.MISSING_FIELD,
+                system_id="1",
+                employee_number="00165",
+                detail="office",
+            ),
+        ]
+
+    @pytest.mark.parametrize(
+        ("other", "reason"),
+        [
+            pytest.param(_record("00165", "other@example.com"), NoticeReason.DUPLICATE_EMPLOYEE_NUMBER, id="number"),
+            pytest.param(_record("00200"), NoticeReason.DUPLICATE_EMAIL, id="e-mail address"),
+        ],
+    )
+    def test_records_with_problems_count_for_duplicates(self, other: EmployeeRecord, reason: NoticeReason) -> None:
+        builder = SnapshotBuilder(System.PERSONIO, require_email=True)
+        builder.add(
+            "1", _record("00165"), problems=[FieldProblem(reason=ExclusionReason.MISSING_FIELD, field="office")]
+        )
+        builder.add("2", other)
+        snapshot = builder.build()
+        assert snapshot.records == {}
+        # the duplicate wins over the problems in the fields, which are only named once it is solved
+        assert [(notice.reason, notice.system_id) for notice in snapshot.notices] == [(reason, "1"), (reason, "2")]
+
+    def test_missing_email_wins_over_problems_in_fields(self) -> None:
+        builder = SnapshotBuilder(System.PERSONIO, require_email=True)
+        builder.add(
+            "1", _record(email=None), problems=[FieldProblem(reason=ExclusionReason.MISSING_FIELD, field="office")]
+        )
+        snapshot = builder.build()
+        assert snapshot.excluded == {"00165": ExclusionReason.MISSING_EMAIL}
+        assert [notice.reason for notice in snapshot.notices] == [NoticeReason.MISSING_EMAIL]
+
 
 class TestEmailKey:
     """
@@ -291,3 +357,31 @@ class TestEmailKey:
 
     def test_email_key(self) -> None:
         assert email_key(" Erika.Musterfrau@Example.COM ") == "erika.musterfrau@example.com"
+
+
+class TestPhoneNumberKey:
+    """
+    Tests of the form in which phone numbers are compared, which also tells whether a number can be converted.
+    """
+
+    @pytest.mark.parametrize(
+        ("number", "expected"),
+        [
+            pytest.param("+49 151 23411444", "+4915123411444", id="international"),
+            pytest.param("0049 151 23411444", "+4915123411444", id="00 before the country code"),
+            pytest.param("0151 27 409 444", "+4915127409444", id="national"),
+            pytest.param(" 0151/274-09.444 ", "+4915127409444", id="separators"),
+            pytest.param("+43 1 2345678", "+4312345678", id="other country"),
+            pytest.param("+49 000 00165", "+4900000165", id="substitute of the test mode"),
+            pytest.param("+49 (0) 151 27409444", None, id="parentheses"),
+            pytest.param("151 27409444", None, id="without prefix"),
+            pytest.param("+49 151 2740+9444", None, id="plus inside"),
+            pytest.param("0151 2740 9444 ext", None, id="letters"),
+            pytest.param("000 151 27409444", None, id="000 before the country code"),
+            pytest.param("01234", None, id="too short"),
+            pytest.param("+49 151 2340 9444 1234", None, id="too long"),
+            pytest.param("", None, id="empty"),
+        ],
+    )
+    def test_phone_number_key(self, number: str, expected: str | None) -> None:
+        assert phone_number_key(number) == expected

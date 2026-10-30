@@ -19,12 +19,20 @@ import pytest
 from decidalo_client import DecidaloClient
 from decidalo_client.models import ImportItemStatusType, UserBatchInput, UserImportResults, UserInput, UserOverview
 
-from hr_sync.anonymize import SUBSTITUTES, anonymize
+from hr_sync.anonymize import KEPT_FIELDS, SUBSTITUTES, anonymize
 from hr_sync.config import Settings
 from hr_sync.events import error_fields
 from hr_sync.model import EmployeeRecord, Snapshot, TargetSystem
 from hr_sync.plan import Outcome
-from hr_sync.sync import Snapshots, Systems, connect, create_plan, execute_plan, load_snapshots
+from hr_sync.sync import (
+    Snapshots,
+    Systems,
+    connect,
+    create_plan,
+    execute_plan,
+    load_snapshots,
+    personio_attributes,
+)
 from hr_sync.systems.decidalo import load_decidalo
 from hr_sync.systems.personio import load_personio
 
@@ -137,13 +145,12 @@ def test_plan_with_anonymized_data(test_settings: Settings, events: list[dict[st
     Reads Personio and the Decidalo test environment, plans with anonymized data and executes the plan as a dry run.
     """
     systems = connect(test_settings, DECIDALO)
-    real = load_personio(
-        systems.personio, employee_number_attribute=test_settings.personio_employee_number_attribute, today=date.today()
-    )
+    real = load_personio(systems.personio, attributes=personio_attributes(test_settings), today=date.today())
     anonymized = anonymize(real)
     differing = sorted(real.records.keys() ^ anonymized.records.keys())
     assert differing == [], f"anonymizing changed the employees {differing}"
-    leaked = _leaked(real, anonymized.model_dump_json())
+    # without the fields that stay real on purpose: a short name may occur in one of them, e.g. in an office
+    leaked = _leaked(real, anonymized.model_dump_json(exclude={"records": {"__all__": set(KEPT_FIELDS)}}))
     assert leaked == [], f"real values left after anonymizing (employee number, field): {leaked}"
 
     snapshots = Snapshots(source=anonymized, targets={TargetSystem.DECIDALO: load_decidalo(_decidalo(systems))})
