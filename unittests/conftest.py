@@ -13,6 +13,14 @@ if TYPE_CHECKING:
     from loguru import Message
 
 
+def pytest_addoption(parser: pytest.Parser) -> None:
+    parser.addoption(
+        "--keep-test-data",
+        action="store_true",
+        help="keep the user that the integration test creates in the Decidalo test environment, instead of deleting it",
+    )
+
+
 @pytest.fixture(autouse=True)
 def isolated_configuration(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """

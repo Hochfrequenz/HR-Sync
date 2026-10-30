@@ -7,12 +7,19 @@ Everything that depends on the company is a setting. The defaults are the settin
 from collections.abc import Collection, Iterable
 from enum import StrEnum
 from pathlib import Path
+from urllib.parse import urlsplit
 
-from pydantic import SecretStr, ValidationError
+from pydantic import AnyHttpUrl, SecretStr, ValidationError
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from hr_sync.events import LogFormat
 from hr_sync.model import TargetSystem
+
+DECIDALO_PRODUCTION_URL = "https://import.decidalo.app"
+"""
+the production system of Decidalo, which the production mode always uses and the test mode never; the default URL of
+the decidalo-client, ``https://import.decidalo.dev``, is the test environment
+"""
 
 
 class Environment(StrEnum):
@@ -20,7 +27,10 @@ class Environment(StrEnum):
 
     PRODUCTION = "production"
     TEST = "test"
-    """test environments only get anonymized data; not available until the test mode exists (AP 8)"""
+    """
+    the test mode: the data from Personio is anonymized, and only test environments are written to, i.e. the Decidalo
+    test environment; there is no weclapp test tenant
+    """
 
 
 class Settings(BaseSettings):
@@ -44,12 +54,29 @@ class Settings(BaseSettings):
     personio_employee_number_attribute: str = "company_employee_id"
     """the id of the custom attribute that holds the employee number"""
     decidalo_api_key: SecretStr | None = None
+    decidalo_employee_type_id: int = 2
+    """the employee type of new users, by id; it wins over the name if the name doesn't exist"""
     decidalo_employee_type_name: str = "Internal"
-    """the employee type of new users"""
+    decidalo_authorization_role_id: int = 2
+    """the authorization role of new users, by id and name"""
+    decidalo_authorization_role_name: str = "Employee"
+    decidalo_location: str = "DE"
+    decidalo_country_code: str = "DE"
+    decidalo_company_name: str = "Hochfrequenz Unternehmensberatung GmbH"
     decidalo_has_login: bool = True
-    """whether new users get a login"""
+    """whether new users get a login; in the test mode, they never get one"""
+    decidalo_test_base_url: AnyHttpUrl | None = None
+    """the Decidalo test environment, which only the test mode uses"""
+    decidalo_test_api_key: SecretStr | None = None
     hr_sync_environment: Environment = Environment.PRODUCTION
     hr_sync_log_format: LogFormat = "pretty"
+
+    @property
+    def test_mode(self) -> bool:
+        """
+        True with ``HR_SYNC_ENVIRONMENT=test``, see :attr:`Environment.TEST`.
+        """
+        return self.hr_sync_environment == Environment.TEST
 
 
 class ConfigurationProblem(StrEnum):
@@ -60,8 +87,10 @@ class ConfigurationProblem(StrEnum):
     MISSING_VARIABLES = "missing_variables"
     TARGET_NOT_AVAILABLE = "target_not_available"
     """weclapp is selected, but its adapter doesn't exist yet (AP 5)"""
-    TEST_MODE_NOT_AVAILABLE = "test_mode_not_available"
-    """``HR_SYNC_ENVIRONMENT=test``, but the test mode doesn't exist yet (AP 8)"""
+    TARGET_NOT_ALLOWED_IN_TEST_MODE = "target_not_allowed_in_test_mode"
+    """weclapp is selected in the test mode, but has no test tenant"""
+    PRODUCTION_URL_IN_TEST_MODE = "production_url_in_test_mode"
+    """``DECIDALO_TEST_BASE_URL`` points to the production system"""
 
 
 class ConfigurationError(Exception):
@@ -107,17 +136,44 @@ def check_settings(settings: Settings, targets: Collection[TargetSystem]) -> Non
     """
     Checks that the settings allow a run with the given target systems, before any system is called.
 
+    The production mode needs the credentials of the production systems, the test mode those of the test
+    environments: ``DECIDALO_TEST_BASE_URL`` and ``DECIDALO_TEST_API_KEY`` instead of ``DECIDALO_API_KEY``.
+
     Raises:
-        ConfigurationError: if the test mode or weclapp is selected, which are not available yet, or if a credential
-            of Personio or a selected target system is missing.
+        ConfigurationError: if weclapp is selected, which is not available yet and never in the test mode, if a
+            credential of Personio or a selected target system is missing, or if the test mode would write to the
+            production system of Decidalo.
     """
-    if settings.hr_sync_environment is Environment.TEST:
-        raise ConfigurationError(ConfigurationProblem.TEST_MODE_NOT_AVAILABLE)
+    if settings.test_mode and TargetSystem.WECLAPP in targets:
+        raise ConfigurationError(ConfigurationProblem.TARGET_NOT_ALLOWED_IN_TEST_MODE)
     if TargetSystem.WECLAPP in targets:
         raise ConfigurationError(ConfigurationProblem.TARGET_NOT_AVAILABLE)
     required = ["personio_client_id", "personio_client_secret"]
     if TargetSystem.DECIDALO in targets:
-        required.append("decidalo_api_key")
+        required.extend(
+            ["decidalo_test_base_url", "decidalo_test_api_key"] if settings.test_mode else ["decidalo_api_key"]
+        )
     missing = [name.upper() for name in required if getattr(settings, name) is None]
     if missing:
         raise ConfigurationError(ConfigurationProblem.MISSING_VARIABLES, missing)
+    if settings.test_mode and TargetSystem.DECIDALO in targets:
+        decidalo_test_url(settings)
+
+
+def decidalo_test_url(settings: Settings) -> str:
+    """
+    Returns the URL of the Decidalo test environment.
+
+    It must not point to the production system (compared by the host), so that the test mode never writes anonymized
+    data or users without login to production.
+
+    Raises:
+        ConfigurationError: if ``DECIDALO_TEST_BASE_URL`` is missing or points to the production system.
+    """
+    url = settings.decidalo_test_base_url
+    if url is None:
+        raise ConfigurationError(ConfigurationProblem.MISSING_VARIABLES, ["DECIDALO_TEST_BASE_URL"])
+    # a trailing dot names the same host in the DNS, e.g. import.decidalo.app.
+    if (url.host or "").rstrip(".") == urlsplit(DECIDALO_PRODUCTION_URL).hostname:
+        raise ConfigurationError(ConfigurationProblem.PRODUCTION_URL_IN_TEST_MODE, ["DECIDALO_TEST_BASE_URL"])
+    return str(url)

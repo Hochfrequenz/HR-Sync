@@ -132,10 +132,14 @@ class FakeDecidalo:
         users: list[UserOverview] | None = None,
         responses: list[UserImportResults | Exception] | None = None,
         fail_get: bool = False,
+        limit: int | None = None,
     ) -> None:
         self.users = list(users or [])
         self._responses = responses or []
         self._fail_get = fail_get
+        self._limit = limit
+        self.user_requests: list[tuple[int | None, int | None]] = []
+        """``top`` and ``skip`` of every request for users"""
         self.batches: list[list[UserInput]] = []
         self.opened = 0
         self.closed = 0
@@ -153,10 +157,15 @@ class FakeDecidalo:
     ) -> None:
         self.closed += 1
 
-    async def get_users(self) -> list[UserOverview]:
+    async def get_users(self, *, top: int | None = None, skip: int | None = None) -> list[UserOverview]:
+        """Returns the users ordered by id, like Decidalo; with ``limit``, it cuts every list silently."""
+        self.user_requests.append((top, skip))
         if self._fail_get:
             raise DecidaloAPIError(401, "invalid API key")
-        return list(self.users)
+        users = sorted(self.users, key=lambda user: user.userID or 0)[skip or 0 :]
+        if top is not None:
+            users = users[:top]
+        return users[: self._limit] if self._limit is not None else users
 
     async def import_users_sync(self, batch: UserBatchInput) -> UserImportResults:
         self.batches.append(list(batch.users))

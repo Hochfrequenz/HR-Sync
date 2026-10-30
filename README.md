@@ -55,8 +55,26 @@ uv run hr-sync --dry-run --target decidalo
 | 2 | aborted, e.g. because of the configuration or an error while loading |
 
 > [!NOTE]
-> weclapp can't be a target yet, and the test mode (`HR_SYNC_ENVIRONMENT=test`) is not available yet. Both abort the
-> run with exit code 2, so for now, every run needs `--target decidalo`.
+> weclapp can't be a target yet: it aborts the run with exit code 2, so for now, every run needs `--target decidalo`.
+
+### Test Mode
+
+With `HR_SYNC_ENVIRONMENT=test`, HR-Sync writes anonymized data to the Decidalo test environment
+(`DECIDALO_TEST_BASE_URL`, `DECIDALO_TEST_API_KEY`) instead of production:
+
+- Right after loading from Personio, names and e-mail addresses are replaced by substitutes that only depend on the
+  employee number, e.g. `Test Person-00165` and `test-00165@example.com`. Employee number and entry date stay real.
+- New Decidalo users never get a login.
+- weclapp can't be a target, because there is no weclapp test tenant.
+- A test URL that points to the production system of Decidalo (`https://import.decidalo.app`) aborts the run. The
+  production mode always uses the production system and ignores the test variables. The test environment of Decidalo
+  is `https://import.decidalo.dev`, which is also the default URL of the `decidalo-client`.
+
+For a small test run, plan only one employee:
+
+```bash
+uv run hr-sync --target decidalo --max-employees 1 --dry-run
+```
 
 ## Development
 
@@ -77,6 +95,19 @@ uv run mypy --show-error-codes src/hr_sync --strict
 uv run mypy --show-error-codes unittests --strict
 uv run codespell --ignore-words=domain-specific-terms.txt src README.md
 ```
+
+The integration tests read Personio (production) and the Decidalo test environment with the credentials from the
+environment or the `.env` file in the root of the repository. They only run locally and only when selected:
+
+```bash
+uv run pytest -m integration
+uv run pytest -m integration_write
+uv run pytest -m integration_write --keep-test-data
+```
+
+`integration` plans with anonymized data and executes the plan as a dry run. `integration_write` additionally needs
+`HR_SYNC_IT_ALLOW_WRITES=1`: it creates the first employee of the plan anonymized in the Decidalo test environment,
+checks it and deletes it again, unless `--keep-test-data` keeps it.
 
 For details on the development setup (IDE setup etc.), see the
 [Hochfrequenz Python Template Repository](https://github.com/Hochfrequenz/python_template_repository).

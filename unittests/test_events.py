@@ -9,7 +9,7 @@ from pydantic import ValidationError
 from hr_sync.events import configure_logging, emit, emit_operation, error_fields, run_context, wide_event
 from hr_sync.model import EmployeeRecord, TargetSystem
 from hr_sync.plan import Operation, OperationResult, OperationType, Outcome
-from hr_sync.systems.decidalo import execute_decidalo
+from hr_sync.systems.decidalo import NewUserDefaults, execute_decidalo
 from unittests.fakes import FakeDecidalo
 
 _OPERATION = Operation(
@@ -141,8 +141,9 @@ class TestErrorFields:
         }
 
     def test_code_location_in_hr_sync(self) -> None:
-        with pytest.raises(ValueError, match="batch_size") as error_info:
-            execute_decidalo(FakeDecidalo(), [], employee_type_name=None, has_login=None, batch_size=0)
+        weclapp = _OPERATION.model_copy(update={"system": TargetSystem.WECLAPP})
+        with pytest.raises(ValueError, match="CREATE") as error_info:
+            execute_decidalo(FakeDecidalo(), [weclapp], defaults=NewUserDefaults())
         assert error_fields(error_info.value) == {
             "type": "ValueError",
             "module": "hr_sync.systems.decidalo",

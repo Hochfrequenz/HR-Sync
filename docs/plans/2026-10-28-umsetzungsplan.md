@@ -30,17 +30,19 @@ HR-Sync überträgt beim Onboarding die Stammdaten neuer Mitarbeiter aus **Perso
 | E-Mail | wird nach weclapp und Decidalo übertragen (weclapp braucht sie zum Anlegen) |
 | Decidalo-displayName | `"Vorname Nachname"` |
 | Anlegen in Decidalo | über den **synchronen Import-Endpunkt** `POST /importapi/User/ImportSync` (Client: `import_users_sync`), nicht über `ImportAsync`. Die Ergebnisse pro Zeile kommen direkt in der Antwort, ohne Polling und ohne Callback |
-| Neue Decidalo-User | `hasLogin=true`, `employeeTypeName="Internal"`. `isImported` wird nicht gesetzt. Vorerst nur diese und die Stammdatenfelder, weitere Felder sind noch offen (O5) |
+| Neue Decidalo-User | Neben den Stammdaten bekommt jeder neue User feste Werte nach dem Vorbild eines produktiven Users (AP 8): Mitarbeitertyp ID `2` / `"Internal"`, Berechtigungsrolle ID `2` / `"Employee"`, `location` und `countryCode` `"DE"`, `companyName` `"Hochfrequenz Unternehmensberatung GmbH"`, `includeInResourceManagement=true`, `hasLogin=true`. Alle außer `includeInResourceManagement` sind einstellbar, die Werte sind die Standardwerte von Hochfrequenz. `isImported` wird nicht gesetzt. Personenbezogene Felder wie Jobtitel oder Team kommen später (O19) |
 | Decidalo-Zeilenstatus | Nur `Created` ist ein Erfolg. Jeder andere Status, auch `Updated`, ist ein Fehler, weil HR-Sync nur neue User schickt |
 | Deaktivierter Decidalo-User | Gehört seine MA-Nummer einem relevanten Personio-Mitarbeiter (z. B. Wiedereintritt), ist das ein Datenproblem: Warn-Event `deactivated_in_target`, und nach dem Grundsatz passiert mit dem Mitarbeiter nichts |
-| Gescheiterter Aufruf | Scheitert ein Aufruf als Ganzes, sind die Operationen seines Pakets Fehler. Die restlichen Operationen dieses Systems werden übersprungen (`skipped`) |
+| Anlegen in Decidalo: ein Aufruf je Mitarbeiter | Beim Ausführen des Plans geht HR-Sync Mitarbeiter für Mitarbeiter durch: Jeder `ImportSync`-Aufruf legt genau einen User an, die Aufrufe laufen nacheinander. Es gibt keine Pakete mit mehreren Usern, eine Paketgröße spielt also keine Rolle (O7) |
+| Gescheiterter Aufruf | Scheitert ein Aufruf als Ganzes, ist die Operation dieses Mitarbeiters ein Fehler. Die restlichen Operationen dieses Systems werden übersprungen (`skipped`) |
+| Vollständiges Laden aus Decidalo | Nach dem Laden fragt HR-Sync nach, ob nach dem letzten User noch einer kommt (`top=1`, `skip=Anzahl`). Kommt einer, bricht der Lauf vor dem Planen ab (Exit-Code 2). Sonst würde ein fehlender User als neu geplant, und das Upsert von `ImportSync` würde den bestehenden User überschreiben (O7) |
 | Neue weclapp-User | `status=ACTIVE`. Aktive User kosten Lizenzgebühren, die Kosten sind eingeplant |
 | Relevante Personio-Mitarbeiter | **nur mit einem Employment im Status `ACTIVE`, dessen Startdatum heute oder in der Vergangenheit liegt** |
 | Eintrittsdatum | `employment_start_date` dieses Employments. Gibt es mehrere, gilt das mit dem neuesten Startdatum |
 | Datumswerte | tagesgenau als `datetime.date`, ohne Uhrzeit und ohne Zeitzonen. Alle Mitarbeiter sind in Deutschland. „Heute“ ist `date.today()` beim Start des Laufs |
 | Programmstruktur | synchron, gut wart- und debugbar. async nur gekapselt in den Adaptern für Personio und Decidalo, mit einem `asyncio.run` je Schritt (Laden, Ausführen) und System. Anfragen nacheinander. Jeder Adapter trennt Laden (IO) und Mappen (reine Logik), siehe Abschnitt 3 |
 | Logging | Wide Events mit Loguru. Ausgabe umschaltbar (lesbar oder JSON) |
-| Personenbezogene Daten in Logs | nein: nur MA-Nummer, systeminterne IDs, Feldnamen und Zahlen |
+| Personenbezogene Daten in Logs | nein: nur MA-Nummer, systeminterne IDs, Feldnamen und Zahlen. Die MA-Nummer allein ist unkritisch, problematisch wird sie erst zusammen mit weiteren Daten wie dem Namen. Meldet ein Scanner wie CodeQL die Ausgabe einer MA-Nummer allein, ist das ein Fehlalarm (AP 8) |
 | Betrieb | zeitgesteuert auf einem internen Server (Cron, Task Scheduler oder Container-Job), die Secrets liegen dort in einer `.env`. Welcher Server, welches Intervall und wer benachrichtigt wird, ist offen (O9) |
 | PyPI-Paket | `hochfrequenz-hr-sync`, Befehl `hr-sync`, Import-Paket `hr_sync`, Lizenz MIT wie die Clients. Der Zeitpunkt des ersten Releases ist offen (O14) |
 | Zielgruppe des Pakets | auch andere Firmen: Alles Firmenspezifische ist konfigurierbar und dokumentiert. CLI, Umgebungsvariablen, Exit-Codes und Event-Felder sind eine stabile Schnittstelle |
@@ -50,9 +52,13 @@ HR-Sync überträgt beim Onboarding die Stammdaten neuer Mitarbeiter aus **Perso
 | Zielsysteme | wählbar mit `--target weclapp` bzw. `--target decidalo`, Standard sind beide |
 | Testumgebungen | In Testumgebungen landen keine echten Namen oder E-Mails: Im Test-Modus (`HR_SYNC_ENVIRONMENT=test`) wird anonymisiert. MA-Nummer und Eintrittsdatum bleiben echt |
 | Decidalo im Test-Modus | eigene URL und eigener Key (`DECIDALO_TEST_BASE_URL`, `DECIDALO_TEST_API_KEY`), `hasLogin=false`. Die Testumgebung ist nur im Test-Modus erreichbar |
+| Decidalo-URLs | Produktion `https://import.decidalo.app`, Testumgebung `https://import.decidalo.dev`. Die Standard-URL des `decidalo-client` ist die Testumgebung, HR-Sync übergibt die URL deshalb immer ausdrücklich (O18). Bis AP 8 stand hier fälschlich `.dev` als Produktion |
 | Integrationstest | Personio produktiv lesen, nur den ersten Planeintrag in die Decidalo-Testumgebung schreiben. Danach die Testperson wahlweise automatisch löschen (erst nachdem geprüft ist, dass sie angelegt wurde) oder zum Ansehen liegen lassen. Läuft nur lokal |
 | weclapp vor AP 5 | `--target weclapp` ist wählbar und gehört zum Standard. Solange der weclapp-Adapter fehlt, bricht ein Lauf mit weclapp als Ziel mit Exit-Code 2 ab (`problem=target_not_available`). Bis AP 5 braucht jeder Lauf also `--target decidalo`. CLI und Standard ändern sich mit AP 5 nicht mehr |
-| Test-Modus vor AP 8 | `HR_SYNC_ENVIRONMENT=test` bricht mit Exit-Code 2 ab (`problem=test_mode_not_available`), bis der Test-Modus steht. So glaubt niemand, er laufe anonymisiert |
+| Test-Modus vor AP 8 | ~~`HR_SYNC_ENVIRONMENT=test` bricht mit Exit-Code 2 ab, bis der Test-Modus steht~~ **Erledigt mit AP 8:** Der Test-Modus steht (Abschnitt 8) |
+| Integrationstests im normalen Testlauf | nein: `uv run pytest` lässt sie immer aus, auch mit gefüllter `.env`. Sie laufen nur mit `-m integration` bzw. `-m integration_write`. Ein normaler Testlauf liest so nie Personio produktiv und braucht kein Netz |
+| Test-Modus ohne `--max-employees` | keine Sonderregel: Ohne Option legt ein Lauf im Test-Modus alle fehlenden Mitarbeiter anonymisiert in der Testumgebung an. Für einen kleinen Lauf setzt man `--max-employees 1` selbst |
+| Aufräumen in der Testumgebung | nur der Integrationstest löscht, und nur seine eigene Testperson. User aus einem Testlauf über die CLI bleiben liegen (anonymisiert, ohne Login), bei Bedarf löscht man sie in Decidalo. HR-Sync selbst bleibt „nur anlegen“ |
 | Unerwartete Fehler | Jeder Fehler beendet den Lauf mit einem `sync.run` mit `outcome=error` und Exit-Code 2, auch ein Programmierfehler. Geloggt werden Fehlertyp und Codestelle (Modul, Funktion, Zeile), nie Meldung, Traceback oder Dateipfad (siehe Abschnitt 6). Ein Abbruch mit Strg+C erscheint als `sync.run` mit `outcome=error` und `error.type=KeyboardInterrupt` und beendet den Prozess wie üblich |
 | Begrenzung des Plans | `--max-employees N` (N ≥ 1): Die Planung bricht ab, sobald N Mitarbeiter mit Operationen im Plan stehen, z. B. `--max-employees 1` für einen überschaubaren Testlauf. Gilt in jedem Modus, mit und ohne Dry-Run, und lässt sich mit `--only` kombinieren. Geladen und geprüft wird trotzdem alles: Hinweise aus dem Laden erscheinen für alle Mitarbeiter, Hinweise und Abweichungen aus der Planung nur bis zum Abbruch |
 
@@ -217,20 +223,24 @@ die Operation `COMPLETE`, die nur noch den Employee anlegt. Das ist kein Update,
 
 ### 3.3 Decidalo (Ziel)
 
-**Basis-URL:** Im Produktionsmodus nutzt der Sync fest die produktive URL `https://import.decidalo.dev`, sie lässt
-sich nicht umkonfigurieren. Die Testumgebung ist nur im Test-Modus erreichbar, mit eigenen Variablen (siehe
-[Abschnitt 8](#8-testumgebungen-und-anonymisierung)). Der Client nimmt die URL als `base_url` an.
+**Basis-URL:** Im Produktionsmodus nutzt der Sync fest die produktive URL `https://import.decidalo.app`, sie lässt
+sich nicht umkonfigurieren. Die Testumgebung (`https://import.decidalo.dev`) ist nur im Test-Modus erreichbar, mit
+eigenen Variablen (siehe [Abschnitt 8](#8-testumgebungen-und-anonymisierung)). Der Client nimmt die URL als
+`base_url` an. **Achtung:** Seine Standard-URL ist `https://import.decidalo.dev`, also die Testumgebung. HR-Sync
+übergibt die URL deshalb immer ausdrücklich (O18).
 
 **Laden:** `get_users()` ohne `top`. Laut Spec liefert der Endpunkt dann alle User, eine Höchstgrenze ist nicht
-dokumentiert (O7). Wir lesen `employeeID`, `displayName`, `email` und `entryDate`.
+dokumentiert. Danach prüft HR-Sync mit einer zweiten Anfrage (`top=1`, `skip=Anzahl`), dass nach dem letzten User keiner
+mehr kommt, sonst bricht der Lauf ab (siehe 1.1, O7). Wir lesen `employeeID`, `displayName`, `email` und `entryDate`.
 
 **Anlegen:** über den synchronen Import-Endpunkt `POST /importapi/User/ImportSync`, im Client
-`import_users_sync(UserBatchInput(users=[...]))`. Die neuen Personen gehen in Paketen von höchstens 100 an den Endpunkt.
-Eine Höchstgröße dokumentiert die Spec nicht, wir prüfen sie in der Testumgebung (O7). Den asynchronen Endpunkt
+`import_users_sync(UserBatchInput(users=[user]))`. HR-Sync geht Mitarbeiter für Mitarbeiter vor: Jeder Aufruf
+enthält genau einen User, die Aufrufe laufen nacheinander (siehe 1.1). Den asynchronen Endpunkt
 `ImportAsync` nutzen wir nicht: Dort müssten wir das Ergebnis über `ImportStatus` abfragen oder einen Callback anbieten.
 Bei `ImportSync` stehen die Ergebnisse direkt in der Antwort.
 
-`isImported` senden wir nicht. `includeInResourceManagement` ist beim Anlegen laut Spec standardmäßig `true`.
+`isImported` senden wir nicht. `includeInResourceManagement` ist beim Anlegen laut Spec standardmäßig `true`, wir
+senden es trotzdem ausdrücklich.
 
 ```python
 UserInput(
@@ -238,19 +248,35 @@ UserInput(
     displayName=record.display_name,  # "Vorname Nachname", siehe display_name_of
     email=record.email,
     entryDate=record.entry_date,
-    hasLogin=True,                 # im Test-Modus immer False
-    employeeTypeName="Internal",
+    employeeTypeID=2,                 # DECIDALO_EMPLOYEE_TYPE_ID
+    employeeTypeName="Internal",      # DECIDALO_EMPLOYEE_TYPE_NAME
+    authorizationRoleID=2,            # DECIDALO_AUTHORIZATION_ROLE_ID
+    authorizationRoleName="Employee", # DECIDALO_AUTHORIZATION_ROLE_NAME
+    location="DE",                    # DECIDALO_LOCATION
+    countryCode="DE",                 # DECIDALO_COUNTRY_CODE
+    companyName="Hochfrequenz Unternehmensberatung GmbH",  # DECIDALO_COMPANY_NAME
+    includeInResourceManagement=True,
+    hasLogin=True,                    # DECIDALO_HAS_LOGIN, im Test-Modus immer False
 )
 ```
 
-Die Antwort von `ImportSync` hat ein Ergebnis pro Zeile (`rowIndex`, `status`, `errorMessage`). Daraus wird ein
-Operation-Event pro Person. Scheitern einzelne Zeilen, antwortet die API mit HTTP 500 und den Ergebnissen pro Zeile.
-Der Client liefert diese Ergebnisse trotzdem zurück.
+Die festen Werte bündelt `NewUserDefaults`, `sync.new_decidalo_users` füllt sie aus den Einstellungen (AP 8).
+
+**Mitarbeitertyp und Rolle in der Testumgebung:** Die Typen heißen dort anders als in der Produktion: Typ 2 heißt
+„Regular Employee“, „Internal“ gibt es nicht. Mit dem Namen allein scheitert jede Zeile (`EmployeeTypeName='Internal'
+could not be found`). Mit ID und Name zusammen nimmt Decidalo die ID, der unbekannte Name stört nicht. Deshalb senden
+wir beides. Rolle 2 heißt in beiden Umgebungen „Employee“. Die Firma „Hochfrequenz Unternehmensberatung GmbH“ gibt es
+in der Testumgebung dreimal, der Import ordnet den Namen trotzdem zu.
+
+Die Antwort von `ImportSync` hat ein Ergebnis pro Zeile (`rowIndex`, `status`, `errorMessage`), bei uns also genau
+eines. Daraus wird ein Operation-Event pro Person. Scheitert die Zeile, antwortet die API mit HTTP 500 und dem Ergebnis
+der Zeile. Der Client liefert es trotzdem zurück.
 
 Umgesetzt in [`systems/decidalo.py`](../../src/hr_sync/systems/decidalo.py) (AP 6):
 
 - **Laden:**
-  - `fetch_users(client)` holt alle User.
+  - `fetch_users(client)` holt alle User und prüft danach, dass keiner fehlt. Sonst wirft es
+    `IncompleteUserListError`, der Lauf bricht vor dem Planen ab (AP 8).
   - `map_users(users)` mappt `employeeID`, `displayName`, `email` und `entryDate`. Die `system_id` ist die `userID`.
   - `load_decidalo(client)` ruft beides auf und erzeugt das Event `sync.load` mit `users`, `records`, `deactivated`
     und `notices`.
@@ -258,19 +284,19 @@ Umgesetzt in [`systems/decidalo.py`](../../src/hr_sync/systems/decidalo.py) (AP 
   markiert. Ein Problem sind sie nur, wenn ihre MA-Nummer einem relevanten Personio-Mitarbeiter gehört. Dann erzeugt
   der Planner ein Warn-Event `deactivated_in_target`, und mit dem Mitarbeiter passiert in keinem System etwas, z. B.
   bei einem Wiedereintritt, bis jemand den User reaktiviert. Ehemalige Mitarbeiter erzeugen so keine Warnungen.
-- **Anlegen:** `execute_decidalo(client, operations, employee_type_name=…, has_login=…, batch_size=100)`. Es nimmt nur
-  Decidalo-`CREATE` an, alles andere ist ein Programmierfehler (`ValueError`). `batch_size` muss zwischen 1 und
-  `MAX_BATCH_SIZE` (100) liegen, bis die echten Grenzen geprüft sind (O7).
-  - `user_input` baut die Zeile. Es sendet vorerst nur die festgelegten Felder (O5).
-  - `send_batches` schickt die Pakete nacheinander und hört nach dem ersten Aufruf auf, der als Ganzes scheitert:
-    `DecidaloClientError`, `aiohttp.ClientError` oder `TimeoutError`. Andere Exceptions sind Programmierfehler und
-    werden nicht abgefangen.
-  - `evaluate_batches` ordnet die Zeilen über die `employeeID` zu, nicht über `rowIndex`: Die Spec sagt nicht, ob
-    `rowIndex` bei 0 oder 1 beginnt.
+- **Anlegen:** `execute_decidalo(client, operations, defaults=…)`. Es nimmt nur Decidalo-`CREATE` an, alles andere
+  ist ein Programmierfehler (`ValueError`). Bis AP 8 bündelte es bis zu 100 User je Aufruf (`batch_size`), seit AP 8
+  gibt es je Mitarbeiter einen Aufruf.
+  - `user_input` baut die Zeile aus dem Datensatz und den festen Werten (`NewUserDefaults`).
+  - `send_users` schickt die User einzeln und nacheinander und hört nach dem ersten Aufruf auf, der als Ganzes
+    scheitert: `DecidaloClientError`, `aiohttp.ClientError` oder `TimeoutError`. Andere Exceptions sind
+    Programmierfehler und werden nicht abgefangen.
+  - `evaluate_responses` ordnet die n-te Antwort der n-ten Operation zu. Die Zeile darin findet es über die
+    `employeeID`, so zählt eine Zeile zu einem anderen Mitarbeiter nie als Erfolg. `rowIndex` braucht es nicht.
     - Nur der Zeilenstatus `Created` ist ein Erfolg. Jeder andere Status ist ein Fehler, denn HR-Sync schickt nur
       neue User. `Updated` oder `NotModified` hieße also, dass Decidalo einen bestehenden User getroffen hat.
     - Fehlt die Zeile, ist das ein Fehler mit `detail=no_result`.
-    - Bei einem gescheiterten Aufruf sind die Operationen seines Pakets Fehler und die restlichen `skipped`.
+    - Bei einem gescheiterten Aufruf ist die Operation ein Fehler, die restlichen sind `skipped`.
   - Die `errorMessage` von Decidalo wird nie geloggt, weil sie personenbezogene Daten enthalten kann.
 
 ## 4. Datenmodell und Plan
@@ -503,8 +529,11 @@ Tabelle mit *(HF)* markiert und werden im README als solche dokumentiert, damit 
 | `WECLAPP_EMPLOYEE_NUMBER_ATTRIBUTE_ID` | ID der Custom-Attribute-Definition für die MA-Nummer am User. Pflicht, wenn weclapp Ziel ist; ohne Standardwert, weil die ID nur im eigenen Tenant gilt. Bei Hochfrequenz `7621` *(HF)* |
 | `WECLAPP_NEW_USER_STATUS` | Standard `ACTIVE` *(HF)* |
 | `DECIDALO_API_KEY` | Decidalo-Import-API |
-| `DECIDALO_TEST_BASE_URL`, `DECIDALO_TEST_API_KEY` | Decidalo-Testumgebung. Werden nur im Test-Modus gelesen und sind dort Pflicht (siehe [Abschnitt 8](#8-testumgebungen-und-anonymisierung)) |
-| `DECIDALO_EMPLOYEE_TYPE_NAME` | Standard `Internal` *(HF)* |
+| `DECIDALO_TEST_BASE_URL`, `DECIDALO_TEST_API_KEY` | Decidalo-Testumgebung. Werden nur im Test-Modus genutzt und sind dort Pflicht (siehe [Abschnitt 8](#8-testumgebungen-und-anonymisierung)). `DECIDALO_TEST_BASE_URL` muss eine http(s)-URL sein |
+| `DECIDALO_EMPLOYEE_TYPE_ID`, `DECIDALO_EMPLOYEE_TYPE_NAME` | Mitarbeitertyp neuer User, Standard `2` / `Internal` *(HF)* (siehe 3.3) |
+| `DECIDALO_AUTHORIZATION_ROLE_ID`, `DECIDALO_AUTHORIZATION_ROLE_NAME` | Berechtigungsrolle neuer User, Standard `2` / `Employee` *(HF)* |
+| `DECIDALO_LOCATION`, `DECIDALO_COUNTRY_CODE` | Standort und Land neuer User, Standard `DE` / `DE` *(HF)* |
+| `DECIDALO_COMPANY_NAME` | Firma neuer User, Standard `Hochfrequenz Unternehmensberatung GmbH` *(HF)* |
 | `DECIDALO_HAS_LOGIN` | Standard `true` *(HF)*; im Test-Modus wirkungslos (immer `false`) |
 | `HR_SYNC_ENVIRONMENT` | `production` (Standard) oder `test`, siehe [Abschnitt 8](#8-testumgebungen-und-anonymisierung) |
 | `HR_SYNC_LOG_FORMAT` | `pretty` oder `json` |
@@ -559,17 +588,20 @@ Umgesetzt in [`config.py`](../../src/hr_sync/config.py), [`sync.py`](../../src/h
   - `Settings` liest jede Variable über das gleichnamige Feld in Kleinbuchstaben, z. B. `personio_client_id`.
   - Umgebungsvariablen haben Vorrang vor der `.env`. Leere Werte gelten als nicht gesetzt, eine aus `.env.example`
     kopierte `.env` behält also die Standardwerte. Andere Variablen werden ignoriert.
-  - Die weclapp-Variablen liest HR-Sync erst ab AP 5, die `DECIDALO_TEST_*`-Variablen erst ab AP 8.
+  - Die weclapp-Variablen liest HR-Sync erst ab AP 5. Die `DECIDALO_TEST_*`-Variablen nutzt es nur im Test-Modus
+    (AP 8).
   - `load_settings(env_file)` bricht ab, wenn die Datei aus `--env-file` fehlt (`problem=env_file_not_found`) oder
     eine Variable einen ungültigen Wert hat (`problem=invalid_variables`). Im Event stehen nur die Namen der
     Variablen, nie ihre Werte.
   - `check_settings(settings, targets)` prüft vor jedem Zugriff auf ein System:
-    - Test-Modus: `test_mode_not_available` (bis AP 8)
+    - weclapp als Ziel im Test-Modus: `target_not_allowed_in_test_mode` (siehe 8.1)
     - weclapp als Ziel: `target_not_available` (bis AP 5)
-    - fehlende Zugangsdaten: `missing_variables`. Die von Personio sind immer nötig, `DECIDALO_API_KEY` nur mit
-      Decidalo als Ziel.
+    - fehlende Zugangsdaten: `missing_variables`. Die von Personio sind immer nötig. Mit Decidalo als Ziel braucht
+      der Produktionsmodus `DECIDALO_API_KEY`, der Test-Modus `DECIDALO_TEST_BASE_URL` und `DECIDALO_TEST_API_KEY`.
+    - Test-URL zeigt auf die Produktion: `production_url_in_test_mode` (siehe 8.1)
 - **Orchestrierung:** Die Schritte lassen sich einzeln aufrufen, z. B. vom Integrationstest in AP 8:
-  - `connect` erzeugt die Clients ohne IO. Decidalo nutzt immer die Standard-URL des Clients, also die Produktion.
+  - `connect` erzeugt die Clients ohne IO. Decidalo ist im Produktionsmodus fest die Produktion
+    (`DECIDALO_PRODUCTION_URL`), im Test-Modus die Testumgebung (siehe 8.1).
   - `load_snapshots` lädt nacheinander und loggt die Hinweise jedes Snapshots, auch mit `--only`.
   - `create_plan` erstellt den Plan und loggt Hinweise, Abweichungen und `sync.plan`.
   - `execute_plan` führt den Plan aus, erst weclapp, dann Decidalo. Im Dry-Run gibt es je Operation ein
@@ -608,6 +640,23 @@ wir direkt in der Produktion, abgesichert durch Dry-Run und `--only` (AP 9).
 
 Kommt später ein weclapp-Testtenant dazu, gilt dasselbe Muster mit `WECLAPP_TEST_*`.
 
+Umgesetzt in [`config.py`](../../src/hr_sync/config.py) und [`sync.py`](../../src/hr_sync/sync.py) (AP 8):
+
+- `check_settings` bricht im Test-Modus vor jedem Zugriff ab:
+  - weclapp als Ziel: `problem=target_not_allowed_in_test_mode`. Ohne `--target` sind beide Ziele gewählt, ein Lauf
+    im Test-Modus braucht also `--target decidalo`.
+  - fehlende `DECIDALO_TEST_*`: `problem=missing_variables`. `DECIDALO_API_KEY` braucht der Test-Modus nicht.
+  - Test-URL zeigt auf die Produktion: `problem=production_url_in_test_mode`. Verglichen wird der Host ohne
+    Rücksicht auf Groß- und Kleinschreibung und ohne Punkt am Ende (`import.decidalo.app.` ist im DNS derselbe Host).
+    Schema, Port und Pfad zählen nicht.
+- `connect` prüft die Test-URL noch einmal (`decidalo_test_url`). So schreibt auch ein Aufruf ohne `check_settings`,
+  z. B. aus einem Test, nie in die Produktion. Der Produktionsmodus übergibt fest `DECIDALO_PRODUCTION_URL`
+  (`https://import.decidalo.app`) an den Client. Er verlässt sich nie auf dessen Standard-URL, denn die ist die
+  Testumgebung.
+- `load_snapshots` anonymisiert den Personio-Snapshot direkt nach `load_personio`. Das Event `sync.load` von Personio
+  enthält nur Zahlen, es entsteht vor der Anonymisierung.
+- `execute_plan` übergibt im Test-Modus `has_login=False`, egal was in `DECIDALO_HAS_LOGIN` steht.
+
 ### 8.2 Anonymisierung
 
 | Feld | im Test-Modus |
@@ -626,6 +675,14 @@ MA-Nummer steht.
 Ein Test stellt sicher, dass jedes Feld von `EmployeeRecord` eine Anonymisierungsregel hat oder ausdrücklich als
 „bleibt echt“ markiert ist. Ein neues Feld (siehe [4.3](#43-weitere-felder-ergänzen)) kann also nicht unbemerkt
 echte Werte in die Testumgebung tragen.
+
+Umgesetzt in [`anonymize.py`](../../src/hr_sync/anonymize.py) (AP 8):
+
+- `KEPT_FIELDS` (bleibt echt) und `SUBSTITUTES` (Ersatzwert je Feld aus der MA-Nummer) sind die Regeln.
+- `anonymize_record` baut den Datensatz nur aus diesen Feldern neu auf (Positivliste). Ein Feld ohne Regel wird also
+  verworfen statt echt übernommen. Der Test oben fällt dann auf.
+- `anonymize(snapshot)` ersetzt die Datensätze. `email_owners` enthält danach nur noch die Ersatzadressen, keine echte
+  Adresse bleibt übrig. IDs, Ausschlüsse und Hinweise enthalten ohnehin keine personenbezogenen Daten.
 
 ### 8.3 Integrationstest gegen die Decidalo-Testumgebung
 
@@ -662,6 +719,42 @@ Ablauf von `integration_write`:
 uv run pytest -m integration_write
 uv run pytest -m integration_write --keep-test-data
 ```
+
+Umgesetzt in [`unittests/integration`](../../unittests/integration) (AP 8):
+
+- **Auswahl:** `addopts` in `pyproject.toml` wählt beide Marker ab. Ein `-m` auf der Kommandozeile ersetzt diese
+  Auswahl. Die Coverage misst die Integrationstests nicht (`unittests/.coveragerc`), weil sie im normalen Lauf nicht
+  laufen.
+- **Konfiguration:** Gelesen werden die Umgebung und die `.env` im Wurzelverzeichnis des Repos. Der Test erzwingt den
+  Test-Modus mit dem Ziel Decidalo und prüft die Einstellungen mit `check_settings`. Fehlen Zugangsdaten, wird
+  übersprungen. `HR_SYNC_IT_ALLOW_WRITES` kann in der Umgebung oder in der `.env` stehen.
+- **`integration`:** Personio wird einmal geladen. Der Test prüft, dass keiner der echten Werte im anonymisierten
+  Snapshot und in den Events vorkommt. Dann plant er mit `max_employees=1` und führt den Plan als Dry-Run aus.
+- **Keine personenbezogenen Daten in der Testausgabe**, auch wenn ein Test fehlschlägt:
+  - pytest schreibt die Assertions dieses Moduls nicht um (`PYTEST_DONT_REWRITE`). Sonst zeigt es die Werte aller
+    Teilausdrücke, z. B. bei `len(users)` die ganze Liste mit Namen. Jede Prüfung hat stattdessen eine eigene Meldung
+    mit MA-Nummern, Feldnamen, Status oder Anzahlen.
+  - Eine gemeinsame Fehlergrenze (`_without_personal_data`) umschließt beide Tests einschließlich des Aufräumens. Sie
+    meldet einen Fehler nur mit dieser Meldung bzw. mit Typ und `error_fields`, ohne die ursprüngliche Exception, ihren
+    Traceback und verkettete Exceptions. Eine Meldung von Personio oder Decidalo mit Namen erscheint so nie.
+  - Das Standard-Logging der Client-Bibliotheken ist in den Integrationstests aus (`logging.disable`), weil pytest
+    deren Meldungen bei einem Fehlschlag ungefiltert zeigen würde. Die Events von HR-Sync laufen über Loguru und
+    bleiben.
+- **Schritt 6** lädt nur Decidalo neu und nutzt den anonymisierten Personio-Snapshot weiter, Personio hat sich ja nicht
+  geändert.
+- **Aufräumen:** Gelöscht wird nur ein User, den dieser Lauf angelegt hat: Der Import muss `Created` geliefert haben,
+  und Schritt 5 muss genau einen User gefunden haben. Gelöscht wird genau dieser User über seine `userID`, und nur, wenn
+  seine E-Mail genau die Ersatzadresse ist. Antwortet Decidalo mit einem anderen Status (z. B. `Updated`, weil ein
+  anderer Lauf denselben Mitarbeiter gerade angelegt hat), löscht der Test nichts. Erwartet wird der Zeilenstatus
+  `Deleted`, danach prüft der Test, dass der User weg ist.
+- **O13 prüfen:** den Test zweimal hintereinander laufen lassen. Nach dem Löschen ist derselbe Mitarbeiter wieder der
+  erste Planeintrag. Klappt das zweite Anlegen, lässt sich eine gelöschte `employeeID` wieder anlegen.
+- **Prüfung der festen Werte:** Der schreibende Test prüft am angelegten User auch Mitarbeitertyp- und Rollen-ID,
+  Standort, Land, Firma und `includeInResourceManagement`. Die Namen von Typ und Rolle vergleicht er nicht, weil sie in
+  der Testumgebung anders heißen können (siehe 3.3).
+- **Ergebnis (2026-10-30):** `integration` und `integration_write` laufen gegen die Testumgebung grün,
+  `integration_write` auch mehrfach hintereinander. Danach ist kein Testuser übrig. Geklärt sind damit O7, O12 und
+  O13.
 
 ## 9. PyPI-Paket
 
@@ -790,26 +883,28 @@ den Clients), das vor AP 10 erledigt sein sollte.
 | O2 | Verschickt weclapp beim Anlegen eines aktiven Users automatisch eine Einladung? Prüfen im ersten echten Lauf mit der Testperson (Postfach der Testperson beobachten) | AP 9 | [#6](https://github.com/Hochfrequenz/HR-Sync/issues/6) |
 | O3 | ~~Gibt es das Custom Attribute für die Personalnummer im weclapp-Tenant schon?~~ **Weitgehend erledigt:** Das Feld gibt es in der Produktion am User, die ID der Definition ist `7621` (`stringValue`, z. B. `"00165"`). Ob die bestehenden User eine Nummer haben, zeigt der erste Dry-Run: Fehlende Nummern erscheinen als Warnungen | AP 9 | [#7](https://github.com/Hochfrequenz/HR-Sync/issues/7) |
 | O4 | ~~Prüft weclapp E-Mail-Adressen auf Eindeutigkeit?~~ **Erledigt durch die Regel `email_in_use`:** HR-Sync legt keinen User mit einer E-Mail an, die in weclapp schon vergeben ist | – | [#5](https://github.com/Hochfrequenz/HR-Sync/issues/5), Abschnitt 4.2 |
-| O5 | Welche weiteren Felder braucht ein neuer Decidalo-User (Berechtigungsrolle, Team, Standort, Land, …)? Bekommt er bei `hasLogin=true` eine Mail? Laut Spec ist kein Feld Pflicht, und `includeInResourceManagement` ist beim Anlegen `true`. Die Mail lässt sich in der Testumgebung nicht prüfen, weil dort `hasLogin=false` gilt: also im ersten echten Lauf mit der Testperson oder beim Decidalo-Support | vor AP 9 | Brainstorming |
+| O5 | ~~Welche weiteren Felder braucht ein neuer Decidalo-User (Berechtigungsrolle, Team, Standort, Land, …)?~~ **Teilweise erledigt in AP 8:** Typ, Rolle, Standort, Land und Firma sind festgelegt (1.1, 3.3), personenbezogene Felder folgen später (O19). Offen: Bekommt er bei `hasLogin=true` eine Mail? Laut Spec ist kein Feld Pflicht, und `includeInResourceManagement` ist beim Anlegen `true`. Die Mail lässt sich in der Testumgebung nicht prüfen, weil dort `hasLogin=false` gilt: also im ersten echten Lauf mit der Testperson oder beim Decidalo-Support | vor AP 9 | Brainstorming |
 | O6 | ~~Woran erkennt der Decidalo-Import bestehende User?~~ **Erledigt durch die Regel `email_in_use`:** HR-Sync schickt nur MA-Nummern, die in Decidalo fehlen, und keine E-Mail, die dort schon vergeben ist. Damit trifft `ImportSync` keinen bestehenden User, egal wie es zuordnet | – | R3, Abschnitt 4.2 |
-| O7 | **Teilweise geklärt:** Ohne `top` liefert `GET /importapi/User` alle User, Grenzen sind nicht dokumentiert. Wir laden alle User mit einem Aufruf und schicken höchstens 100 Personen pro `ImportSync`-Aufruf (`MAX_BATCH_SIZE`, größere Werte lehnt `execute_decidalo` ab). Offen sind die tatsächlichen Grenzen und Timeouts sowie die Frage, ob `rowIndex` bei 0 oder 1 beginnt. HR-Sync ordnet die Zeilen deshalb über die `employeeID` zu. Beides prüfen wir in der Testumgebung | AP 8 | Abschnitt 3.3 |
+| O7 | ~~Grenzen und Timeouts von `GET /importapi/User` und `ImportSync`, Beginn von `rowIndex`~~ **Erledigt in AP 8:** **Paketgröße:** Es gibt keine Pakete mehr. Jeder `ImportSync`-Aufruf legt genau einen User an, Mitarbeiter für Mitarbeiter (1.1). **Laden:** Ohne `top` liefert `GET /importapi/User` laut Spec alle User, in der Testumgebung alle 51 in 0,2 s. Eine stille Kürzung fällt durch die Vollständigkeitsprüfung auf und bricht den Lauf vor dem Planen ab (1.1). **Timeouts:** Der Client setzt keines, es gilt das Standard-Timeout von aiohttp (5 Minuten je Anfrage). Ein Timeout beim Laden bricht den Lauf ab (Exit-Code 2), beim Anlegen wird die Operation zum Fehler und der Rest übersprungen (Exit-Code 1). **`rowIndex`** beginnt bei 0, HR-Sync braucht ihn nicht. Bei `Created` liefert die Antwort keine `userID`, `target_id` bleibt in `sync.operation` dann leer | – | Abschnitt 3.3 |
 | O8 | ~~Personio-Person ohne Employment oder Startdatum: ohne Eintrittsdatum anlegen oder überspringen?~~ **Erledigt:** Ohne aktives Employment mit Startdatum heute oder früher ist ein Mitarbeiter nicht relevant. Ein aktives Employment ohne Startdatum ist ein Datenproblem | – | Abschnitt 3.1, 5 |
 | O9 | **Richtung geklärt:** zeitgesteuert auf einem internen Server (Cron, Task Scheduler oder Container-Job), Secrets dort in einer `.env`. Offen: welcher Server, welches Intervall, wer bei Warnungen oder Fehlern benachrichtigt wird | vor dem Go-live | [#9](https://github.com/Hochfrequenz/HR-Sync/issues/9) |
 | O10 | Brauchen wir eine Ignore-Liste für technische User ohne MA-Nummer (Admins, API-User), damit die Warnungen nicht jedes Mal kommen? Wir entscheiden nach dem ersten Dry-Run, wenn die Zahl der Warnungen bekannt ist | nach dem ersten Dry-Run (AP 9) | Risiko R5 |
 | O11 | ~~Welche Python-Version? Laut weclapp-Plan (K3) die neueste~~ **Erledigt in AP 0:** Python 3.14 (CI 3.11–3.14), `requires-python = ">=3.11,<3.15"`, weil die Clients `aiohttp<3.14` verlangen (siehe O16) | – | AP 0 |
-| O12 | ~~URL und API-Key der Decidalo-Testumgebung~~ **Erledigt:** Sie liegen vor und kommen in die lokale `.env`. Offen ist nur noch, ob Decidalo E-Mails mit der Domain `example.com` annimmt. Das zeigt der erste Integrationstest | AP 8 | Abschnitt 8 |
-| O13 | **Teilweise geklärt:** `delete=true` löscht wirklich. Deaktivieren ist ein eigenes Flag (`deactivate`), und die Antwort unterscheidet `Deleted` und `Deactivated`. Offen: Lässt sich dieselbe `employeeID` danach wieder anlegen? Das prüfen wir in der Testumgebung | AP 8 | Abschnitt 8.3 |
+| O12 | ~~URL und API-Key der Decidalo-Testumgebung, nimmt Decidalo E-Mails mit `example.com` an?~~ **Erledigt in AP 8:** URL und Key liegen in der lokalen `.env` (Testumgebung `https://import.decidalo.dev`). Decidalo nimmt die Ersatzadressen `test-<MA-Nummer>@example.com` an | – | Abschnitt 8 |
+| O13 | **Teilweise geklärt:** `delete=true` löscht wirklich. Deaktivieren ist ein eigenes Flag (`deactivate`), und die Antwort unterscheidet `Deleted` und `Deactivated`. ~~Lässt sich dieselbe `employeeID` danach wieder anlegen?~~ **Erledigt in AP 8:** Ja. `integration_write` lief mehrfach hintereinander mit derselben MA-Nummer, jedes Mal wurde sie angelegt und mit `Deleted` gelöscht | – | Abschnitt 8.3 |
 | O14 | Wann erscheint das erste Pre-Release auf PyPI? Das hängt mit O9 zusammen: Wird HR-Sync auf dem Server als Paket installiert, muss es vor dem Go-live erscheinen | später | Abschnitt 9 |
 | O15 | Brauchen andere Firmen weitere Einstellungen, z. B. für das displayName-Format oder die Relevanzregel? | nach Bedarf | Abschnitt 9.1 |
 | O16 | `aiohttp`-Grenze in `personio-client` und `decidalo-client` auf `<3.15` anheben und neu releasen (`aiohttp 3.14` unterstützt Python 3.15). Danach entfällt die Obergrenze `<3.15` in HR-Sync. Stand 2026-10-28: Beide Clients verlangen weiterhin `aiohttp<3.14` (`personio-client` 0.1.0a1, `decidalo-client` 0.3.1) | vor AP 10 | Abschnitt 9.3, O11 |
 | O17 | Lässt sich die weclapp-Mitarbeiternummer (`employeeNumber`) per API setzen? Dann könnte sie die MA-Nummer tragen. Bis dahin trägt das Custom Attribute die Personalnummer; der Sync braucht die Antwort nicht | nach Bedarf | [#8](https://github.com/Hochfrequenz/HR-Sync/issues/8) |
+| O18 | Die Standard-URL des `decidalo-client` (`https://import.decidalo.dev`) ist die Testumgebung, die Produktion ist `https://import.decidalo.app`. Die Doku des Clients nennt `.dev` als „die“ Import-API. Soll der Client das dokumentieren oder ohne Standard-URL auskommen? HR-Sync übergibt die URL schon immer ausdrücklich und braucht die Antwort nicht | nach Bedarf | Abschnitt 3.3, Repo `decidalo_client.py` |
+| O19 | Personenbezogene Felder für neue Decidalo-User nach dem Vorbild des produktiven Users: `jobTitle`, `serviceCategoryName`, Team, Telefonnummern, Geburtsjahr, Nationalität, Ausbildung. Woher kommen sie (Personio?), welche sind gewünscht? Jedes Feld folgt dem Ablauf aus 4.3, mit Anonymisierungsregel | später | Abschnitt 4.3, AP 8 |
 
 Keiner der offenen Punkte blockiert AP 2–7:
 
-- O7, O12 und O13 klären wir in der Decidalo-Testumgebung (AP 8).
+- O7, O12 und O13 sind geklärt (AP 8).
 - O2, O3 und O5 klären wir im ersten echten Lauf mit der Testperson (AP 9).
 - O9, O10 und O14 klären wir vor bzw. nach dem Go-live.
-- O16 und O17 liegen in anderen Repos bzw. bei weclapp.
+- O16, O17 und O18 liegen in anderen Repos bzw. bei weclapp. O19 kommt nach Bedarf.
 
 ## 14. Risiken
 
@@ -821,7 +916,7 @@ Keiner der offenen Punkte blockiert AP 2–7:
 | R4 | Die Clients sind Pre-Releases, weclapp ist noch nicht gegen einen echten Tenant getestet | auf Minor-Version pinnen; AP 9 zuerst nur lesend |
 | R5 | Viele Warnungen durch technische User ohne MA-Nummer verdecken die wichtigen | Warnungen gezielt auswerten; bei Bedarf Ignore-Liste (O10) |
 | R6 | Personenbezogene Daten gelangen über Fehlertexte oder Client-Logs ins Log | Event-Felder fest definiert, keine Fehlertexte, `diagnose=False`; Test auf personenbezogene Daten in der Ausgabe; Client-Logs nur ab WARNING und ohne Meldungstext |
-| R7 | Laden schlägt teilweise fehl, der Sync legt bestehende Personen doppelt an | Abbruch vor der Planung, wenn ein System nicht vollständig geladen wurde |
+| R7 | Laden schlägt teilweise fehl, der Sync legt bestehende Personen doppelt an | Abbruch vor der Planung, wenn ein System nicht vollständig geladen wurde. Bei Decidalo prüft eine zweite Anfrage, dass die Liste nicht still gekürzt ist (1.1) |
 | R8 | Echte Namen oder E-Mails gelangen in die Testumgebung, z. B. weil `HR_SYNC_ENVIRONMENT=test` vergessen wurde | Die Testumgebung ist nur im Test-Modus erreichbar, weil der Produktionsmodus fest die produktive URL nutzt; der Test-Modus erzwingt Anonymisierung und `hasLogin=false`; ein Test prüft, dass jedes Feld eine Regel hat; ein Payload-Test findet keine echten Werte |
 | R9 | Ein Lauf im Test-Modus schreibt in eine produktive Umgebung | Abbruch bei der produktiven Decidalo-URL und bei weclapp als Ziel; Test-Modus und Integrationstests nutzen nur die `DECIDALO_TEST_*`-Variablen |
 | R10 | Das automatische Aufräumen löscht einen echten User | Gelöscht wird nur im Test-Modus, nur nach der Prüfung, dass der User angelegt wurde, und nur ein User mit genau der anonymisierten E-Mail |

@@ -4,11 +4,13 @@ import pytest
 from pydantic import SecretStr
 
 from hr_sync.config import (
+    DECIDALO_PRODUCTION_URL,
     ConfigurationError,
     ConfigurationProblem,
     Environment,
     Settings,
     check_settings,
+    decidalo_test_url,
     load_settings,
 )
 from hr_sync.model import TargetSystem
@@ -29,6 +31,17 @@ def _settings(**changes: object) -> Settings:
     return Settings.model_validate(values | changes)
 
 
+def _test_settings(**changes: object) -> Settings:
+    """settings of the test mode, without the key of the production system"""
+    values: dict[str, object] = {
+        "hr_sync_environment": Environment.TEST,
+        "decidalo_api_key": None,
+        "decidalo_test_base_url": "https://test.decidalo.example",
+        "decidalo_test_api_key": SecretStr("test-key"),
+    }
+    return _settings(**(values | changes))
+
+
 class TestLoadSettings:
     """
     Tests of reading the settings from the environment and the .env file.
@@ -39,7 +52,12 @@ class TestLoadSettings:
         assert settings.personio_client_id is None
         assert settings.personio_app_id == "HR_SYNC"
         assert settings.personio_employee_number_attribute == "company_employee_id"
+        assert settings.decidalo_employee_type_id == 2
         assert settings.decidalo_employee_type_name == "Internal"
+        assert settings.decidalo_authorization_role_id == 2
+        assert settings.decidalo_authorization_role_name == "Employee"
+        assert (settings.decidalo_location, settings.decidalo_country_code) == ("DE", "DE")
+        assert settings.decidalo_company_name == "Hochfrequenz Unternehmensberatung GmbH"
         assert settings.decidalo_has_login is True
         assert settings.hr_sync_environment == Environment.PRODUCTION
         assert settings.hr_sync_log_format == "pretty"
@@ -86,6 +104,23 @@ class TestLoadSettings:
         assert error_info.value.problem == ConfigurationProblem.ENV_FILE_NOT_FOUND
         assert error_info.value.variables == ()
 
+    def test_test_environment(self) -> None:
+        Path(".env").write_text(
+            "HR_SYNC_ENVIRONMENT=test\nDECIDALO_TEST_BASE_URL=https://test.decidalo.example\nDECIDALO_TEST_API_KEY=key\n",
+            encoding="utf-8",
+        )
+        settings = load_settings()
+        assert settings.test_mode
+        assert str(settings.decidalo_test_base_url) == "https://test.decidalo.example/"
+        assert settings.decidalo_test_api_key == SecretStr("key")
+
+    def test_test_url_must_be_a_url(self) -> None:
+        Path(".env").write_text("DECIDALO_TEST_BASE_URL=test.decidalo.example\n", encoding="utf-8")
+        with pytest.raises(ConfigurationError) as error_info:
+            load_settings()
+        assert error_info.value.problem == ConfigurationProblem.INVALID_VARIABLES
+        assert error_info.value.variables == ("DECIDALO_TEST_BASE_URL",)
+
     def test_invalid_values_name_only_the_variables(self) -> None:
         Path(".env").write_text(
             "HR_SYNC_ENVIRONMENT=prod\nDECIDALO_HAS_LOGIN=maybe-secret\nHR_SYNC_LOG_FORMAT=json\n", encoding="utf-8"
@@ -127,10 +162,66 @@ class TestCheckSettings:
             check_settings(_settings(), list(TargetSystem))
         assert error_info.value.problem == ConfigurationProblem.TARGET_NOT_AVAILABLE
 
-    def test_test_mode_is_not_available_yet(self) -> None:
+    def test_test_mode(self) -> None:
+        # without the key of the production system
+        check_settings(_test_settings(), [TargetSystem.DECIDALO])
+
+    def test_test_mode_needs_the_test_environment(self) -> None:
+        settings = _test_settings(decidalo_test_base_url=None, decidalo_test_api_key=None, decidalo_api_key="key")
         with pytest.raises(ConfigurationError) as error_info:
-            check_settings(_settings(hr_sync_environment=Environment.TEST), [TargetSystem.DECIDALO])
-        assert error_info.value.problem == ConfigurationProblem.TEST_MODE_NOT_AVAILABLE
+            check_settings(settings, [TargetSystem.DECIDALO])
+        assert error_info.value.problem == ConfigurationProblem.MISSING_VARIABLES
+        assert error_info.value.variables == ("DECIDALO_TEST_BASE_URL", "DECIDALO_TEST_API_KEY")
+
+    def test_production_mode_ignores_the_test_environment(self) -> None:
+        settings = _settings(decidalo_api_key=None, decidalo_test_base_url=DECIDALO_PRODUCTION_URL)
+        with pytest.raises(ConfigurationError) as error_info:
+            check_settings(settings, [TargetSystem.DECIDALO])
+        assert error_info.value.variables == ("DECIDALO_API_KEY",)
+
+    def test_production_url(self) -> None:
+        # the default URL of the decidalo-client, import.decidalo.dev, is the test environment
+        assert DECIDALO_PRODUCTION_URL == "https://import.decidalo.app"
+
+    def test_test_environment_of_decidalo(self) -> None:
+        check_settings(_test_settings(decidalo_test_base_url="https://import.decidalo.dev"), [TargetSystem.DECIDALO])
+
+    def test_weclapp_is_not_allowed_in_test_mode(self) -> None:
+        with pytest.raises(ConfigurationError) as error_info:
+            check_settings(_test_settings(), list(TargetSystem))
+        assert error_info.value.problem == ConfigurationProblem.TARGET_NOT_ALLOWED_IN_TEST_MODE
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            DECIDALO_PRODUCTION_URL,
+            "https://IMPORT.decidalo.app/",
+            "https://import.decidalo.app:443/importapi",
+            "http://import.decidalo.app",
+            # the trailing dot names the same host in the DNS
+            "https://import.decidalo.app./",
+            "https://IMPORT.decidalo.APP.:443",
+        ],
+    )
+    def test_test_mode_never_writes_to_production(self, url: str) -> None:
+        with pytest.raises(ConfigurationError) as error_info:
+            check_settings(_test_settings(decidalo_test_base_url=url), [TargetSystem.DECIDALO])
+        assert error_info.value.problem == ConfigurationProblem.PRODUCTION_URL_IN_TEST_MODE
+        assert error_info.value.variables == ("DECIDALO_TEST_BASE_URL",)
+
+
+class TestDecidaloTestUrl:
+    """
+    Tests of the URL of the Decidalo test environment.
+    """
+
+    def test_url(self) -> None:
+        assert decidalo_test_url(_test_settings()) == "https://test.decidalo.example/"
+
+    def test_missing(self) -> None:
+        with pytest.raises(ConfigurationError) as error_info:
+            decidalo_test_url(_test_settings(decidalo_test_base_url=None))
+        assert error_info.value.problem == ConfigurationProblem.MISSING_VARIABLES
 
 
 class TestConfigurationError:
