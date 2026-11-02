@@ -1293,6 +1293,7 @@ den Kollegen:
 | O25 | ~~Wer hat Zugriff auf die Decidalo-Testumgebung? Die Testdaten sind pseudonymisiert, nicht anonym (Abschnitt 8): Über die echte MA-Nummer lassen sie sich einem Mitarbeiter zuordnen. Der Zugriff muss deshalb auf Berechtigte beschränkt sein, wie in der Produktion. Bestätigen vor weiteren schreibenden Läufen in die Testumgebung~~ **Erledigt (2026-10-30):** Zugriff hat nur, wer auch die Produktion sieht. Die pseudonymisierten Testdaten dürfen weiter dorthin (1.1) | – | Abschnitt 8 |
 | O26 | Karrierestufen außerhalb des Mappings: In Personio gibt es Karrierestufen, die das Mapping nicht kennt (welche, steht in der lokalen Auswertung, 12.1). Bis das Mapping sie kennt, erzeugen sie bei jedem Lauf eine Warnung `unmapped_value`, und mit diesen Mitarbeitern passiert nichts. Vorläufige Richtung: einzelne Rollen bewusst ausnehmen (ohne Warnung, Anlage per Hand), die übrigen ins Mapping, nach Decidalo wie alle. Offen: je Rolle Decidalo-Service-Kategorie (muss in der Produktion existieren) und Urlaubsanspruch. Bis dahin bleibt das Mapping bei den vier Beraterstufen | später | Abschnitt 4.4 |
 | O27 | Darf der Kostensatz (8211) beim Anlegen eines weclapp-Users leer bleiben? Bis das geklärt ist, setzt HR-Sync 1 EUR/h als Platzhalter (O20). Darf das Feld leer bleiben, schickt HR-Sync es nicht mehr mit. Zu klären mit dem weclapp-Admin, z. B. ob Zeitbuchungen oder die automatische Zuweisung zu den INT-Projekten einen Kostensatz brauchen | vor dem Go-live | Abschnitt 4.4, O20 |
+| O28 | Soll HR-Sync neue weclapp-User selbst einladen? Beim Anlegen per API verschickt weclapp keine Einladungsmail (O2), bisher stößt sie jemand per Hand in der Weboberfläche an. Die API v2 hat dafür `POST /user/id/{id}/invite` (leerer Body, ohne `dryRun`, ein Aufruf schickt also echt eine Mail). Voraussetzung: Der `weclapp-client` kann die Aktion (Hochfrequenz/weclapp_client.py#35, Pre-Release `v0.1.0a4`). Vorläufige Richtung: Einladung als letzter Schritt von `CREATE`, nach User und Personalakte. Zu entscheiden: wie HR-Sync eine fehlgeschlagene Einladung meldet (User angelegt, Einladung fehlt) und ob es sie später erneut versucht. Ob ein zweiter Aufruf eine zweite Mail schickt, klärt das Client-Issue. Bis dahin wird weiter per Hand eingeladen | nach `v0.1.0a4` des Clients | [weclapp_client.py#35](https://github.com/Hochfrequenz/weclapp_client.py/issues/35), O2, O5 |
 
 Keiner der offenen Punkte blockiert AP 2–7:
 
@@ -1303,6 +1304,7 @@ Keiner der offenen Punkte blockiert AP 2–7:
 - O22, O24 und O25 sind in AP 8a geklärt. O23 klären wir in AP 2a.
 - O26 (weitere Karrierestufen) kommt später. Bis dahin bleibt das Mapping bei den vier Beraterstufen.
 - O27 (leerer Kostensatz) klären wir mit dem weclapp-Admin. Bis dahin setzt HR-Sync 1 EUR/h.
+- O28 (Einladung in weclapp per API) kommt nach `v0.1.0a4` des `weclapp-client`. Bis dahin wird per Hand eingeladen.
 
 ## 14. Risiken
 
