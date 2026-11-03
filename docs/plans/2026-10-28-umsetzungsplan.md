@@ -46,6 +46,7 @@ HR-Sync überträgt beim Onboarding die Stammdaten neuer Mitarbeiter aus **Perso
 | Erster echter Lauf (AP 9) | Statt einer Testperson ist der erste echte Lauf ein Live-Lauf mit dem ersten echten neuen Mitarbeiter, sobald er in Personio bereit ist (Abweichung von AP 9). Ablauf: erst ein Dry-Run mit `--only <MA-Nummer>` gegen beide Ziele, dann der echte Lauf mit denselben Optionen, jeweils nur mit ausdrücklicher Zustimmung. Beide Ziele in einem Lauf, Decidalo mit Login (`hasLogin=true`) wie im Betrieb. Was angelegt wird, bleibt; das Ergebnis prüft der Auftraggeber mit den Kollegen. Das Ergebnis geht als lokale Datei an den Auftraggeber, nicht ins Repo. **Erledigt (2026-11-02):** Dry-Run und echter Lauf liefen so, jeweils mit ausdrücklicher Zustimmung (12.1) |
 | Produktionsdaten im Repo | Auswertungen von Produktionsdaten (Ergebnisse von Läufen, Zahlen, MA-Nummern, Listen aus Personio, weclapp oder Decidalo) stehen nie im öffentlichen Repo: nicht im Plan, in Commit-Nachrichten, PRs oder Issues. Sie gehen als lokale Datei an den Auftraggeber. Beispiele im Repo nutzen ausgedachte Werte, etwa die MA-Nummern 00965 und 00974 (2026-10-30, 12.1) |
 | Kostensatz neuer weclapp-User | fest 1 EUR/h (8211) als Platzhalter, der echte Kostensatz wird später per Hand in weclapp gepflegt (O20). Der Grund 8217 bleibt „Erstanlage (weclapp)“ |
+| Einladung neuer weclapp-User (O28) | HR-Sync lädt einen User, den es angelegt hat, gleich nach der Personalakte ein (`users.invite`, `weclapp-client` `0.1.0`). Nur bei `CREATE`: Bei `COMPLETE` kann der User von Hand angelegt und schon eingeladen sein. Scheitert die Personalakte, lädt auch der nächste Lauf nicht ein. Scheitert die Einladung, endet die Operation mit `outcome=error` und `detail=invitation_not_sent` (Exit-Code 1); kein Lauf wiederholt sie, eingeladen wird dann per Hand. War der Ausgang unklar (z. B. Timeout), kann die Mail trotzdem rausgegangen sein. Ein Fehler, der weclapp als Ganzes betrifft, überspringt wie bisher die übrigen Operationen. Kein Schalter, die Einladung ist immer an. Die erste echte Einladung prüfen wir beim nächsten echten Lauf (O28) |
 | Neue weclapp-Personalakte | `POST employee` mit `userId` und einem Arbeitszeitprofil (`workScheduleProfileAssignments`): Profil aus den Wochenstunden, `startDate` = Eintrittsdatum. `entryDate` setzt HR-Sync nicht, die `employeeNumber` vergibt weclapp selbst (O17) |
 | Relevante Personio-Mitarbeiter | **nur mit einem Employment im Status `ACTIVE`, dessen Startdatum heute oder in der Vergangenheit liegt** |
 | Eintrittsdatum | `employment_start_date` dieses Employments. Gibt es mehrere, gilt das mit dem neuesten Startdatum |
@@ -282,7 +283,7 @@ Umgesetzt in [`systems/personio.py`](../../src/hr_sync/systems/personio.py) (AP 
 1. `POST user` mit `firstName`, `lastName`, `email`, `status=ACTIVE`, `mobilePhoneNumber` (international),
    `licenses`, `userRoles` und den Zusatzfeldern 7621 (MA-Nummer), 8211 und 8217 (Kostensatz), 9795 (Urlaubsanspruch),
    9902 (Bundesland) und 14175 (Karrierestufe), siehe 4.4. Das Standardfeld `title` bleibt leer. weclapp verschickt
-   dabei keine Einladungsmail (O2).
+   dabei keine Einladungsmail (O2), deshalb lädt HR-Sync in Schritt 3 ein.
 
    **Abweichung von der Vorgabe:** Die Vorgabe nennt auch `username` = E-Mail. Per API lässt sich `username` aber nicht
    setzen: weclapp weist einen `POST user` damit ab (400, `platform.read_only_property`, Befund P4 im Repo des
@@ -311,6 +312,9 @@ Umgesetzt in [`systems/personio.py`](../../src/hr_sync/systems/personio.py) (AP 
 2. `POST employee` mit `userId` und `workScheduleProfileAssignments: [{"workScheduleProfileId": …, "startDate": …}]`:
    das Arbeitszeitprofil aus den Wochenstunden, `startDate` ist das Eintrittsdatum als Zeitstempel in Millisekunden.
    `entryDate` setzt HR-Sync nicht, die `employeeNumber` vergibt weclapp selbst (O17).
+3. `POST user/id/{id}/invite` mit leerem Body: weclapp schickt dem neuen User die Einladungsmail (O28). Die API hat
+   dafür kein `dryRun`, jeder Aufruf schickt also echt eine Mail. Nur für einen User, den HR-Sync im selben Lauf
+   angelegt hat, nicht bei `COMPLETE`.
 
 **Vor dem Anlegen prüfen, ob es den User schon gibt:** Die Vorgabe verlangt das, weil jede Projekt-Lizenz kostet.
 HR-Sync lädt dafür alle User und prüft MA-Nummer und E-Mail (`email_in_use`, auch bei Usern ohne MA-Nummer, 4.2). Das
@@ -323,7 +327,8 @@ er mit seiner Microsoft-Anmeldung, sobald er als aktiver User angelegt ist (glei
 **Halb angelegte Personen:** Scheitert Schritt 2, gibt es einen User mit MA-Nummer, aber ohne Personalakte. Der
 Client wiederholt einen `POST` mit unklarem Ausgang bewusst nicht. Der nächste Lauf erkennt diesen Zustand und plant
 die Operation `COMPLETE`, die nur noch die Personalakte samt Arbeitszeitprofil anlegt. Das ist kein Update, sondern der
-Abschluss der Anlage.
+Abschluss der Anlage. Einladen muss man einen solchen User per Hand, `COMPLETE` lädt nicht ein. Ebenso, wenn erst
+Schritt 3 scheitert (`detail=invitation_not_sent`, O28).
 
 **Voraussetzung:** Der `weclapp-client` muss erweitert und neu released werden (AP 2a). Stand von `main` im Repo
 des Clients am 2026-10-30: Auf PyPI gibt es nur `0.1.0a1`. `entry_date` aus AP 2 ist gemergt, aber nicht released.
@@ -395,6 +400,10 @@ Umgesetzt in [`systems/weclapp.py`](../../src/hr_sync/systems/weclapp.py) (AP 5,
   die Telefonnummer in der Schreibweise der bestehenden weclapp-User (`weclapp_phone_number`, z. B.
   `+49 151 46414222`), gelesen wird sie aus `mobilePhoneNumber` und in der kanonischen Form verglichen. `check_setup`
   prüft zusätzlich die Auswahlwerte von 9902.
+- **Seit O28 (`0.1.0`):** `send_employees` lädt einen neu angelegten User nach der Personalakte ein
+  (`users.invite`), bei `COMPLETE` nicht. Scheitert die Einladung, ist die Operation ein Fehler mit
+  `detail=invitation_not_sent`, User und Personalakte bleiben. Ein Fehler, der weclapp als Ganzes betrifft, beendet
+  wie bisher die übrigen Operationen.
 - `client` ist der echte `WeclappClient`, kein eigenes Protocol: Der `FakeWeclapp` des Clients liefert einen
   `WeclappClient` mit einem Mock-Transport.
 
@@ -1298,7 +1307,7 @@ haben wir verzichtet. Einzelheiten liegen lokal beim Auftraggeber (1.1).
 | O25 | ~~Wer hat Zugriff auf die Decidalo-Testumgebung? Die Testdaten sind pseudonymisiert, nicht anonym (Abschnitt 8): Über die echte MA-Nummer lassen sie sich einem Mitarbeiter zuordnen. Der Zugriff muss deshalb auf Berechtigte beschränkt sein, wie in der Produktion. Bestätigen vor weiteren schreibenden Läufen in die Testumgebung~~ **Erledigt (2026-10-30):** Zugriff hat nur, wer auch die Produktion sieht. Die pseudonymisierten Testdaten dürfen weiter dorthin (1.1) | – | Abschnitt 8 |
 | O26 | Karrierestufen außerhalb des Mappings: In Personio gibt es Karrierestufen, die das Mapping nicht kennt (welche, steht in der lokalen Auswertung, 12.1). Bis das Mapping sie kennt, erzeugen sie bei jedem Lauf eine Warnung `unmapped_value`, und mit diesen Mitarbeitern passiert nichts. Vorläufige Richtung: einzelne Rollen bewusst ausnehmen (ohne Warnung, Anlage per Hand), die übrigen ins Mapping, nach Decidalo wie alle. Offen: je Rolle Decidalo-Service-Kategorie (muss in der Produktion existieren) und Urlaubsanspruch. Bis dahin bleibt das Mapping bei den vier Beraterstufen | später | Abschnitt 4.4 |
 | O27 | Darf der Kostensatz (8211) beim Anlegen eines weclapp-Users leer bleiben? Bis das geklärt ist, setzt HR-Sync 1 EUR/h als Platzhalter (O20). Darf das Feld leer bleiben, schickt HR-Sync es nicht mehr mit. Zu klären mit dem weclapp-Admin, z. B. ob Zeitbuchungen oder die automatische Zuweisung zu den INT-Projekten einen Kostensatz brauchen | vor dem Go-live | Abschnitt 4.4, O20 |
-| O28 | Soll HR-Sync neue weclapp-User selbst einladen? Beim Anlegen per API verschickt weclapp keine Einladungsmail (O2), bisher stößt sie jemand per Hand in der Weboberfläche an. Die API v2 hat dafür `POST /user/id/{id}/invite` (leerer Body, ohne `dryRun`, ein Aufruf schickt also echt eine Mail). Voraussetzung: Der `weclapp-client` kann die Aktion (Hochfrequenz/weclapp_client.py#35, Pre-Release `v0.1.0a4`). Vorläufige Richtung: Einladung als letzter Schritt von `CREATE`, nach User und Personalakte. Zu entscheiden: wie HR-Sync eine fehlgeschlagene Einladung meldet (User angelegt, Einladung fehlt) und ob es sie später erneut versucht. Ob ein zweiter Aufruf eine zweite Mail schickt, klärt das Client-Issue. Bis dahin wird weiter per Hand eingeladen | nach `v0.1.0a4` des Clients | [weclapp_client.py#35](https://github.com/Hochfrequenz/weclapp_client.py/issues/35), O2, O5 |
+| O28 | ~~Soll HR-Sync neue weclapp-User selbst einladen? Beim Anlegen per API verschickt weclapp keine Einladungsmail (O2), bisher stößt sie jemand per Hand in der Weboberfläche an. Die API v2 hat dafür `POST /user/id/{id}/invite` (leerer Body, ohne `dryRun`, ein Aufruf schickt also echt eine Mail). Voraussetzung: Der `weclapp-client` kann die Aktion (Hochfrequenz/weclapp_client.py#35, Pre-Release `v0.1.0a4`). Vorläufige Richtung: Einladung als letzter Schritt von `CREATE`, nach User und Personalakte. Zu entscheiden: wie HR-Sync eine fehlgeschlagene Einladung meldet (User angelegt, Einladung fehlt) und ob es sie später erneut versucht. Ob ein zweiter Aufruf eine zweite Mail schickt, klärt das Client-Issue. Bis dahin wird weiter per Hand eingeladen~~ **Erledigt (2026-11-03):** Der Client kann es seit `0.1.0` (statt des geplanten Pre-Release `0.1.0a4`). HR-Sync lädt nach der Personalakte ein, nur bei `CREATE`; eine gescheiterte Einladung meldet es mit `detail=invitation_not_sent` und wiederholt sie nicht (1.1, 3.2). Offen: Die erste echte Einladung prüfen wir beim nächsten echten Lauf. Kommt die Mail an, und lädt niemand zusätzlich per Hand ein? Bis dahin ist ungeprüft, ob weclapp für die Einladung etwas am User voraussetzt | nächster echter Lauf | [weclapp_client.py#35](https://github.com/Hochfrequenz/weclapp_client.py/issues/35), O2, O5 |
 
 Keiner der offenen Punkte blockiert AP 2–7:
 
@@ -1309,7 +1318,7 @@ Keiner der offenen Punkte blockiert AP 2–7:
 - O22, O24 und O25 sind in AP 8a geklärt. O23 klären wir in AP 2a.
 - O26 (weitere Karrierestufen) kommt später. Bis dahin bleibt das Mapping bei den vier Beraterstufen.
 - O27 (leerer Kostensatz) klären wir mit dem weclapp-Admin. Bis dahin setzt HR-Sync 1 EUR/h.
-- O28 (Einladung in weclapp per API) kommt nach `v0.1.0a4` des `weclapp-client`. Bis dahin wird per Hand eingeladen.
+- O28 (Einladung in weclapp per API) ist umgesetzt. Die erste echte Einladung prüfen wir beim nächsten echten Lauf.
 
 ## 14. Risiken
 
