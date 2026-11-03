@@ -43,7 +43,7 @@ HR-Sync überträgt beim Onboarding die Stammdaten neuer Mitarbeiter aus **Perso
 | Gescheiterter Aufruf | Scheitert ein Aufruf als Ganzes, ist die Operation dieses Mitarbeiters ein Fehler. Die restlichen Operationen dieses Systems werden übersprungen (`skipped`) |
 | Vollständiges Laden aus Decidalo | Nach dem Laden fragt HR-Sync nach, ob nach dem letzten User noch einer kommt (`top=1`, `skip=Anzahl`). Kommt einer, bricht der Lauf vor dem Planen ab (Exit-Code 2). Sonst würde ein fehlender User als neu geplant, und das Upsert von `ImportSync` würde den bestehenden User überschreiben (O7) |
 | Neue weclapp-User | nach der Vorgabe von Hochfrequenz (3.2, 4.4): `status=ACTIVE`, `mobilePhoneNumber`, Lizenzen `WECLAPP_PROJECT` und `ADDON_HUMAN_RESOURCES`, Rollen `7166` (Zeiterfassung) und `4329` (weclapp Projekt), Zusatzfelder 7621 (MA-Nummer), 8211 und 8217 (Kostensatz, fest 1 EUR/h und „Erstanlage (weclapp)“, O20), 9795 (Urlaubsanspruch), 9902 (Bundesland) und 14175 (Karrierestufe). Das Standardfeld `title` bleibt leer, sonst steht es auf Rechnungen vor dem Namen. Den `username` vergibt weclapp selbst, per API lässt er sich nicht setzen (3.2). weclapp verschickt beim Anlegen per API keine Einladungsmail (O2). Aktive User kosten Lizenzgebühren, die Kosten sind eingeplant |
-| Erster echter Lauf (AP 9) | Statt einer Testperson ist der erste echte Lauf ein Live-Lauf mit dem ersten echten neuen Mitarbeiter, sobald er in Personio bereit ist (Abweichung von AP 9). Ablauf: erst ein Dry-Run mit `--only <MA-Nummer>` gegen beide Ziele, dann der echte Lauf mit denselben Optionen, jeweils nur mit ausdrücklicher Zustimmung. Beide Ziele in einem Lauf, Decidalo mit Login (`hasLogin=true`) wie im Betrieb. Was angelegt wird, bleibt; das Ergebnis prüft der Auftraggeber mit den Kollegen. Das Ergebnis geht als lokale Datei an den Auftraggeber, nicht ins Repo |
+| Erster echter Lauf (AP 9) | Statt einer Testperson ist der erste echte Lauf ein Live-Lauf mit dem ersten echten neuen Mitarbeiter, sobald er in Personio bereit ist (Abweichung von AP 9). Ablauf: erst ein Dry-Run mit `--only <MA-Nummer>` gegen beide Ziele, dann der echte Lauf mit denselben Optionen, jeweils nur mit ausdrücklicher Zustimmung. Beide Ziele in einem Lauf, Decidalo mit Login (`hasLogin=true`) wie im Betrieb. Was angelegt wird, bleibt; das Ergebnis prüft der Auftraggeber mit den Kollegen. Das Ergebnis geht als lokale Datei an den Auftraggeber, nicht ins Repo. **Erledigt (2026-11-02):** Dry-Run und echter Lauf liefen so, jeweils mit ausdrücklicher Zustimmung (12.1) |
 | Produktionsdaten im Repo | Auswertungen von Produktionsdaten (Ergebnisse von Läufen, Zahlen, MA-Nummern, Listen aus Personio, weclapp oder Decidalo) stehen nie im öffentlichen Repo: nicht im Plan, in Commit-Nachrichten, PRs oder Issues. Sie gehen als lokale Datei an den Auftraggeber. Beispiele im Repo nutzen ausgedachte Werte, etwa die MA-Nummern 00965 und 00974 (2026-10-30, 12.1) |
 | Kostensatz neuer weclapp-User | fest 1 EUR/h (8211) als Platzhalter, der echte Kostensatz wird später per Hand in weclapp gepflegt (O20). Der Grund 8217 bleibt „Erstanlage (weclapp)“ |
 | Neue weclapp-Personalakte | `POST employee` mit `userId` und einem Arbeitszeitprofil (`workScheduleProfileAssignments`): Profil aus den Wochenstunden, `startDate` = Eintrittsdatum. `entryDate` setzt HR-Sync nicht, die `employeeNumber` vergibt weclapp selbst (O17) |
@@ -287,7 +287,8 @@ Umgesetzt in [`systems/personio.py`](../../src/hr_sync/systems/personio.py) (AP 
    **Abweichung von der Vorgabe:** Die Vorgabe nennt auch `username` = E-Mail. Per API lässt sich `username` aber nicht
    setzen: weclapp weist einen `POST user` damit ab (400, `platform.read_only_property`, Befund P4 im Repo des
    `weclapp-client` vom 2026-10-29). weclapp vergibt den `username` selbst, bei fast allen bestehenden Usern ist er
-   gleich der E-Mail. HR-Sync sendet ihn deshalb nicht. Ob er bei einem neuen User der E-Mail entspricht, prüft AP 9.
+   gleich der E-Mail. HR-Sync sendet ihn deshalb nicht. Ob er bei einem neuen User der E-Mail entspricht, hat AP 9 geprüft, ohne
+   Auffälligkeit (12.1).
 
    ```json
    {
@@ -1237,23 +1238,23 @@ Die Reihenfolge baut zuerst den Kern ohne IO und hängt dann die Systeme an:
 | 7a | **Begrenzung des Plans** mit `--max-employees N` für überschaubare Testläufe (siehe 1.1 und 4.2) | `hr-sync --dry-run --target decidalo --max-employees 1` plant höchstens einen Mitarbeiter |
 | 8 | **Test-Modus und Integrationstest:** Anonymisierung, Prüfungen für den Test-Modus, Integrationstests gegen die Decidalo-Testumgebung mit wählbarem Aufräumen | `uv run pytest -m integration_write` legt den ersten Planeintrag anonymisiert in der Testumgebung an, prüft ihn und räumt auf |
 | 8a | **Felder der Phase 2 in Personio und Decidalo** (4.4): Modell, `mappings.py`, Personio-Mapping mit Pflichtfeldern und Datenproblemen, Decidalo-Felder (`jobTitle`, `serviceCategoryName`, `mobilePhoneNumber`, `holidayListCode`, `standardWeeklyHours`) samt Vergleich, Anonymisierung der Telefonnummer, Integrationstest (O24). Entscheidungen aus O22 und O25 in 1.1. In zwei PRs: PR 1 die Quelle (`mappings.py`, Modell und Datenprobleme, Personio, Anonymisierung, Konfiguration), PR 2 das Ziel (Decidalo, Vergleich im Planner, Integrationstest). Nur PR 2 schließt Issue #19 | `uv run pytest -m integration_write` legt den ersten Planeintrag mit allen Decidalo-Feldern der Phase 2 an |
-| 9 | **Testlauf:** Dry-Run gegen die echten Systeme (nur lesend) und offene Punkte klären. Dann der erste echte Lauf, **nur mit `--only <MA-Nummer>`**, vorher mit denselben Optionen als Dry-Run. **Seit 2026-10-30:** kein Testmitarbeiter, sondern ein Live-Lauf mit dem ersten echten neuen Mitarbeiter, was angelegt wird, bleibt (1.1). Voraussetzung: Die Testperson steht mit MA-Nummer, E-Mail, allen Pflichtfeldern der Phase 2 und einem aktiven Employment (Start heute oder früher) in Personio. In weclapp prüfen: Lizenzen und Rollen, den von weclapp vergebenen `username` (gleich der E-Mail?, 3.2), Zuweisung zu den INT-Projekten nach etwa 15 Minuten, Anmeldung im Zeitportal | Go-live-Entscheidung |
+| 9 | **Testlauf:** Dry-Run gegen die echten Systeme (nur lesend) und offene Punkte klären. Dann der erste echte Lauf, **nur mit `--only <MA-Nummer>`**, vorher mit denselben Optionen als Dry-Run. **Seit 2026-10-30:** kein Testmitarbeiter, sondern ein Live-Lauf mit dem ersten echten neuen Mitarbeiter, was angelegt wird, bleibt (1.1). Voraussetzung: Die Testperson steht mit MA-Nummer, E-Mail, allen Pflichtfeldern der Phase 2 und einem aktiven Employment (Start heute oder früher) in Personio. In weclapp prüfen: Lizenzen und Rollen, den von weclapp vergebenen `username` (gleich der E-Mail?, 3.2), Zuweisung zu den INT-Projekten nach etwa 15 Minuten, Anmeldung im Zeitportal. **Erledigt (2026-11-02):** erster echter Lauf, vorher der Dry-Run, Prüfung in weclapp ohne Auffälligkeiten (12.1). Offen bleibt der Teil für Decidalo (O5) | Go-live-Entscheidung |
 | 10 | **PyPI-Paket** (siehe [Abschnitt 9](#9-pypi-paket)): `LICENSE`, README als Nutzerdoku, Publish-Workflow aktivieren, Trusted Publisher auf PyPI und Environment `release` einrichten, Python-Obergrenze prüfen, Release als Pre-Release oder stabil je nach Clients. Zeitpunkt offen (O14) | `hochfrequenz-hr-sync` auf PyPI |
 
 AP 2 liegt in einem anderen Repo und kann parallel zu AP 1, 3 und 4 laufen. Dasselbe gilt für O16 (aiohttp-Grenze in
 den Clients), das vor AP 10 erledigt sein sollte.
 
 Reihenfolge ab den Feldern der Phase 2: AP 8a, AP 2a, AP 5, AP 9, AP 10. AP 8a ist erledigt (#20, #21). AP 2a liegt
-im Repo des weclapp-client.
+im Repo des weclapp-client. AP 2a, AP 5 und AP 9 sind erledigt, offen ist AP 10 (Zeitpunkt O14).
 
-### 12.1 AP 9: Dry-Runs gegen die Produktion (2026-10-30)
+### 12.1 AP 9: Dry-Runs und erster echter Lauf gegen die Produktion (2026-10-30 bis 2026-11-02)
 
 Mit ausdrücklicher Zustimmung liefen je ein Dry-Run gegen weclapp und gegen Decidalo, beide nur lesend. Die Ergebnisse
 stehen nicht in diesem öffentlichen Repo, sondern liegen lokal beim Auftraggeber (1.1). Offene Folgepunkte stehen in
 Abschnitt 13 (O10, O26).
 
-Als Nächstes folgt der erste echte Lauf mit dem ersten echten neuen Mitarbeiter (1.1). Geprüft wird danach, auch mit
-den Kollegen:
+Am 2026-11-02 lief der erste echte Lauf mit dem ersten echten neuen Mitarbeiter (1.1), vorher ein Dry-Run mit
+denselben Optionen, beides mit ausdrücklicher Zustimmung. Geprüft wurde danach, auch mit den Kollegen:
 
 - **weclapp:** User aktiv mit Lizenzen, Rollen, Zusatzfeldern (MA-Nummer, Kostensatz-Platzhalter, Urlaubsanspruch,
   Bundesland, Karrierestufe) und Telefonnummer; vergebener `username` (gleich der E-Mail?); Personalakte mit dem
@@ -1261,6 +1262,10 @@ den Kollegen:
   Zeitportal.
 - **Decidalo:** User mit allen Feldern der Phase 2, Typ, Rolle, Firma und Login; ob eine Einladungsmail kommt (O5).
 - **HR-Sync:** Ein Dry-Run danach plant für den Mitarbeiter nichts mehr und meldet keine Abweichung.
+
+Ergebnis: Die Prüfung in weclapp war ohne Auffälligkeiten. In Decidalo war beim ersten Lauf niemand anzulegen. Die
+Punkte für Decidalo prüfen wir deshalb beim ersten Mitarbeiter, den HR-Sync dort anlegt (O5). Auf den Dry-Run danach
+haben wir verzichtet. Einzelheiten liegen lokal beim Auftraggeber (1.1).
 
 ## 13. Offene Punkte
 
@@ -1270,7 +1275,7 @@ den Kollegen:
 | O2 | ~~Verschickt weclapp beim Anlegen eines aktiven Users automatisch eine Einladung?~~ **Erledigt (Vorgabe vom 2026-10-30):** Beim Anlegen per API verschickt weclapp keine Einladungsmail | – | [#6](https://github.com/Hochfrequenz/HR-Sync/issues/6) |
 | O3 | ~~Gibt es das Custom Attribute für die Personalnummer im weclapp-Tenant schon?~~ **Erledigt:** Das Feld gibt es in der Produktion am User, die ID der Definition ist `7621` (`stringValue`, z. B. `"00965"`). Ob die bestehenden User eine Nummer haben, hat der erste Dry-Run gezeigt (12.1, Ergebnis lokal) | – | [#7](https://github.com/Hochfrequenz/HR-Sync/issues/7) |
 | O4 | ~~Prüft weclapp E-Mail-Adressen auf Eindeutigkeit?~~ **Erledigt durch die Regel `email_in_use`:** HR-Sync legt keinen User mit einer E-Mail an, die in weclapp schon vergeben ist. weclapp selbst prüft das nicht, im Tenant teilen sich schon mehrere User eine E-Mail (Befund P4 im Repo des `weclapp-client`) | – | [#5](https://github.com/Hochfrequenz/HR-Sync/issues/5), Abschnitt 4.2 |
-| O5 | ~~Welche weiteren Felder braucht ein neuer Decidalo-User (Berechtigungsrolle, Team, Standort, Land, …)?~~ **Teilweise erledigt in AP 8:** Typ, Rolle, Standort, Land und Firma sind festgelegt (1.1, 3.3). Jobtitel, Service-Kategorie, Telefonnummer und Feiertagskalender kommen mit der Phase 2 (4.4), weitere personenbezogene Felder später (O19). Offen: Bekommt er bei `hasLogin=true` eine Mail? Laut Spec ist kein Feld Pflicht, und `includeInResourceManagement` ist beim Anlegen `true`. Die Mail lässt sich in der Testumgebung nicht prüfen, weil dort `hasLogin=false` gilt: also im ersten echten Lauf mit der Testperson oder beim Decidalo-Support | vor AP 9 | Brainstorming |
+| O5 | ~~Welche weiteren Felder braucht ein neuer Decidalo-User (Berechtigungsrolle, Team, Standort, Land, …)?~~ **Teilweise erledigt in AP 8:** Typ, Rolle, Standort, Land und Firma sind festgelegt (1.1, 3.3). Jobtitel, Service-Kategorie, Telefonnummer und Feiertagskalender kommen mit der Phase 2 (4.4), weitere personenbezogene Felder später (O19). Offen: Bekommt er bei `hasLogin=true` eine Mail? Laut Spec ist kein Feld Pflicht, und `includeInResourceManagement` ist beim Anlegen `true`. Die Mail lässt sich in der Testumgebung nicht prüfen, weil dort `hasLogin=false` gilt: also im ersten echten Lauf mit der Testperson oder beim Decidalo-Support. **Stand 2026-11-02:** Im ersten echten Lauf (AP 9) war in Decidalo niemand anzulegen. Wir klären es deshalb beim ersten Mitarbeiter, den HR-Sync in Decidalo anlegt, oder beim Decidalo-Support | beim ersten Anlegen in Decidalo | Brainstorming |
 | O6 | ~~Woran erkennt der Decidalo-Import bestehende User?~~ **Erledigt durch die Regel `email_in_use`:** HR-Sync schickt nur MA-Nummern, die in Decidalo fehlen, und keine E-Mail, die dort schon vergeben ist. Damit trifft `ImportSync` keinen bestehenden User, egal wie es zuordnet | – | R3, Abschnitt 4.2 |
 | O7 | ~~Grenzen und Timeouts von `GET /importapi/User` und `ImportSync`, Beginn von `rowIndex`~~ **Erledigt in AP 8:** **Paketgröße:** Es gibt keine Pakete mehr. Jeder `ImportSync`-Aufruf legt genau einen User an, Mitarbeiter für Mitarbeiter (1.1). **Laden:** Ohne `top` liefert `GET /importapi/User` laut Spec alle User, in der Testumgebung alle 51 in 0,2 s. Eine stille Kürzung fällt durch die Vollständigkeitsprüfung auf und bricht den Lauf vor dem Planen ab (1.1). **Timeouts:** Der Client setzt keines, es gilt das Standard-Timeout von aiohttp (5 Minuten je Anfrage). Ein Timeout beim Laden bricht den Lauf ab (Exit-Code 2), beim Anlegen wird die Operation zum Fehler und der Rest übersprungen (Exit-Code 1). **`rowIndex`** beginnt bei 0, HR-Sync braucht ihn nicht. Bei `Created` liefert die Antwort keine `userID`, `target_id` bleibt in `sync.operation` dann leer | – | Abschnitt 3.3 |
 | O8 | ~~Personio-Person ohne Employment oder Startdatum: ohne Eintrittsdatum anlegen oder überspringen?~~ **Erledigt:** Ohne aktives Employment mit Startdatum heute oder früher ist ein Mitarbeiter nicht relevant. Ein aktives Employment ohne Startdatum ist ein Datenproblem | – | Abschnitt 3.1, 5 |
@@ -1297,8 +1302,8 @@ den Kollegen:
 
 Keiner der offenen Punkte blockiert AP 2–7:
 
-- O2, O7, O12, O13 und O17 sind geklärt.
-- O3 und O5 klären wir im ersten echten Lauf mit der Testperson (AP 9).
+- O2, O3, O7, O12, O13 und O17 sind geklärt.
+- O5 klären wir beim ersten Mitarbeiter, den HR-Sync in Decidalo anlegt.
 - O9, O10 und O14 klären wir vor bzw. nach dem Go-live.
 - O16 und O18 liegen in anderen Repos. O19, O20 und O21 kommen nach Bedarf.
 - O22, O24 und O25 sind in AP 8a geklärt. O23 klären wir in AP 2a.
