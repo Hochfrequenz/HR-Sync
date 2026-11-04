@@ -37,9 +37,9 @@ hr-sync = "hr_sync.cli:main"
 Homepage = "https://github.com/Hochfrequenz/HR-Sync"
 
 [dependency-groups]
-tests = ["pytest==9.1.1"]
-linting = [{ include-group = "tests" }, "ruff==0.17.2"]
-type_check = [{ include-group = "tests" }, "mypy==2.4.0"]
+tests = ["pytest==9.2.0"]
+linting = [{ include-group = "tests" }, "ruff==0.17.3"]
+type_check = [{ include-group = "tests" }, "mypy==2.4.1"]
 spell_check = ["codespell==2.4.3"]
 coverage = [{ include-group = "tests" }, "coverage==7.17.0"]
 # build/twine are only needed to build & publish this package to PyPI, not by users installing it, so they live
