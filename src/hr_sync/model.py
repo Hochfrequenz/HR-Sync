@@ -4,7 +4,7 @@ The common data model. Every system is mapped onto it, so that the planner can c
 
 import re
 from collections import defaultdict
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from datetime import date
 from enum import StrEnum
 from typing import Literal, NamedTuple
@@ -196,6 +196,18 @@ class Snapshot(BaseModel):
     problems; the planner uses it to find e-mail addresses that belong to another user
     """
     notices: list[Notice] = Field(default_factory=list)
+
+
+def without_ignored_notices(snapshot: Snapshot, ignored_ids: Collection[str]) -> tuple[Snapshot, int]:
+    """
+    Returns the snapshot without the notices about the records with the ignored ids, e.g. technical users without
+    employee number (O10), and the number of dropped notices.
+
+    Only the notices are dropped. The records, their e-mail addresses and the excluded employee numbers stay, so that
+    ignoring a record can't lead to a duplicate, even if it's a real employee by mistake.
+    """
+    kept = [notice for notice in snapshot.notices if notice.system_id not in ignored_ids]
+    return snapshot.model_copy(update={"notices": kept}), len(snapshot.notices) - len(kept)
 
 
 def email_key(email: str) -> str:

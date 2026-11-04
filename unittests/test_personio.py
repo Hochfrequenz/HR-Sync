@@ -451,7 +451,22 @@ class TestLoadPersonio:
         assert event["without_id"] == 1
         assert event["records"] == 1
         assert event["notices"] == 1
+        assert event["ignored_notices"] == 0
         assert event["not_relevant"] == {"employment_not_active": 2, "start_date_in_future": 1}
+
+    def test_ignored_persons(self, events: list[dict[str, object]]) -> None:
+        client = FakePersonio(
+            [
+                (personio_person("1", "00100"), [personio_employment()]),
+                (personio_person("2", None, email="admin@example.com"), [personio_employment()]),
+                (personio_person("3", None, email="max@example.com"), [personio_employment()]),
+            ]
+        )
+        snapshot = load_personio(client, attributes=ATTRIBUTES, today=TODAY, ignored_ids={"2"})
+        assert [(notice.reason, notice.system_id) for notice in snapshot.notices] == [
+            (NoticeReason.MISSING_EMPLOYEE_NUMBER, "3")
+        ]
+        assert (events[0]["notices"], events[0]["ignored_notices"]) == (1, 1)
 
     def test_error_aborts_the_load(self, events: list[dict[str, object]]) -> None:
         client = FakePersonio(

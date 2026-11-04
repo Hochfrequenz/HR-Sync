@@ -30,6 +30,12 @@ and the phone number must be convertible to the international form. An employee 
 not created in any system; instead, HR-Sync logs a notice with the name of the field, e.g.
 `reason=missing_field detail=career_level`.
 
+Records that are known to have no employee number, e.g. technical users, would yield the same notice in every run. To
+silence them, list their ids, separated by commas, in `PERSONIO_IGNORED_PERSON_IDS`, `WECLAPP_IGNORED_USER_IDS` or
+`DECIDALO_IGNORED_USER_IDS`. Only their notices are dropped, counted as `ignored_notices` in the event `sync.load`:
+their e-mail addresses still count, and a listed record with a valid employee number is still compared, so that the
+list can't lead to a duplicate.
+
 HR-Sync uses these clients for the APIs:
 
 - [`personio-client`](https://github.com/Hochfrequenz/personio_client.py)

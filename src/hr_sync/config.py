@@ -7,10 +7,11 @@ Everything that depends on the company is a setting. The defaults are the settin
 from collections.abc import Collection, Iterable
 from enum import StrEnum
 from pathlib import Path
+from typing import Annotated
 from urllib.parse import urlsplit
 
-from pydantic import AnyHttpUrl, SecretStr, ValidationError
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import AnyHttpUrl, SecretStr, ValidationError, field_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 from weclapp_client.models import UserStatus
 
 from hr_sync.events import LogFormat
@@ -87,6 +88,25 @@ class Settings(BaseSettings):
     decidalo_test_api_key: SecretStr | None = None
     hr_sync_environment: Environment = Environment.PRODUCTION
     hr_sync_log_format: LogFormat = "pretty"
+    personio_ignored_person_ids: Annotated[frozenset[str], NoDecode] = frozenset()
+    """
+    the persons whose notices are not logged, e.g. technical users without employee number, separated by commas; empty
+    by default, because the ids only exist in one company. They are still compared, see
+    :func:`hr_sync.model.without_ignored_notices`
+    """
+    weclapp_ignored_user_ids: Annotated[frozenset[str], NoDecode] = frozenset()
+    """the users of weclapp whose notices are not logged, like :attr:`personio_ignored_person_ids`"""
+    decidalo_ignored_user_ids: Annotated[frozenset[str], NoDecode] = frozenset()
+    """the users of Decidalo whose notices are not logged, like :attr:`personio_ignored_person_ids`"""
+
+    @field_validator(
+        "personio_ignored_person_ids", "weclapp_ignored_user_ids", "decidalo_ignored_user_ids", mode="before"
+    )
+    @classmethod
+    def _split_ids(cls, value: object) -> object:
+        if isinstance(value, str):
+            return frozenset(item.strip() for item in value.split(",") if item.strip())
+        return value
 
     @property
     def test_mode(self) -> bool:

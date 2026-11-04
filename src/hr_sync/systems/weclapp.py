@@ -14,7 +14,7 @@ created with two requests, one after the other. The employee record holds the wo
 is the entry date. weclapp doesn't send a new user an invitation, so a third request invites the user afterwards.
 """
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import astuple, dataclass, field
 from datetime import date
 from decimal import Decimal
@@ -47,7 +47,15 @@ from hr_sync.mappings import (
     WORK_SCHEDULE_PROFILES,
     WeclappAttributeIds,
 )
-from hr_sync.model import EmployeeRecord, Snapshot, SnapshotBuilder, System, TargetSystem, phone_number_key
+from hr_sync.model import (
+    EmployeeRecord,
+    Snapshot,
+    SnapshotBuilder,
+    System,
+    TargetSystem,
+    phone_number_key,
+    without_ignored_notices,
+)
 from hr_sync.plan import Operation, OperationResult, OperationType, Outcome
 
 _RECORD_ERRORS = (WeclappValidationError, ConflictError)
@@ -111,11 +119,14 @@ class LoadedWeclapp:
     employees: tuple[Employee, ...] = ()
 
 
-def load_weclapp(client: WeclappClient, *, setup: WeclappSetup, today: date) -> Snapshot:
+def load_weclapp(
+    client: WeclappClient, *, setup: WeclappSetup, today: date, ignored_ids: Collection[str] = frozenset()
+) -> Snapshot:
     """
     Loads the users and employee records of weclapp, checks the tenant and maps the users onto the common model.
 
-    See :func:`fetch_weclapp`, :func:`check_setup` and :func:`map_weclapp`. Logs one event ``sync.load``.
+    See :func:`fetch_weclapp`, :func:`check_setup` and :func:`map_weclapp`. The notices about the users with the
+    ``ignored_ids`` are dropped (see :func:`hr_sync.model.without_ignored_notices`). Logs one event ``sync.load``.
 
     Raises:
         ConfigurationError: if the tenant doesn't fit, see :func:`check_setup`.
@@ -123,13 +134,14 @@ def load_weclapp(client: WeclappClient, *, setup: WeclappSetup, today: date) -> 
     with wide_event("sync.load", system=System.WECLAPP) as event:
         loaded = fetch_weclapp(client, setup)
         check_setup(loaded, setup)
-        snapshot = map_weclapp(loaded, setup=setup, today=today)
+        snapshot, ignored = without_ignored_notices(map_weclapp(loaded, setup=setup, today=today), ignored_ids)
         event["users"] = len(loaded.users)
         event["employees"] = len(loaded.employees)
         event["records"] = len(snapshot.records)
         event["incomplete"] = len(snapshot.incomplete)
         event["deactivated"] = len(snapshot.deactivated)
         event["notices"] = len(snapshot.notices)
+        event["ignored_notices"] = ignored
         return snapshot
 
 

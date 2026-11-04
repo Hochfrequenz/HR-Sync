@@ -200,7 +200,12 @@ def load_snapshots(systems: Systems, settings: Settings, targets: Collection[Tar
     An error while loading is raised, so that the run ends before planning: on incomplete data, existing employees
     would be created again.
     """
-    source = load_personio(systems.personio, attributes=personio_attributes(settings), today=today)
+    source = load_personio(
+        systems.personio,
+        attributes=personio_attributes(settings),
+        today=today,
+        ignored_ids=settings.personio_ignored_person_ids,
+    )
     if settings.test_mode:
         # right after loading, so that planning and executing only see substitutes
         source = anonymize(source)
@@ -210,9 +215,14 @@ def load_snapshots(systems: Systems, settings: Settings, targets: Collection[Tar
         if target not in targets:
             continue
         if target == TargetSystem.DECIDALO:
-            loaded[target] = load_decidalo(_decidalo(systems))
+            loaded[target] = load_decidalo(_decidalo(systems), ignored_ids=settings.decidalo_ignored_user_ids)
         else:
-            loaded[target] = load_weclapp(_weclapp(systems), setup=weclapp_setup(settings), today=today)
+            loaded[target] = load_weclapp(
+                _weclapp(systems),
+                setup=weclapp_setup(settings),
+                today=today,
+                ignored_ids=settings.weclapp_ignored_user_ids,
+            )
         _emit_notices(loaded[target].notices)
     return Snapshots(source=source, targets=loaded)
 

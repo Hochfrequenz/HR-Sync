@@ -193,6 +193,14 @@ class TestLoadDecidalo:
         assert event["system"] == "decidalo"
         assert event["outcome"] == "success"
         assert (event["users"], event["records"], event["deactivated"], event["notices"]) == (3, 2, 1, 1)
+        assert event["ignored_notices"] == 0
+
+    def test_ignored_users(self, events: list[dict[str, object]]) -> None:
+        client = FakeDecidalo(users=[decidalo_user(42), decidalo_user(44, None, email="admin@example.com")])
+        snapshot = load_decidalo(client, ignored_ids={"44"})
+        assert snapshot.notices == []
+        assert (events[0]["notices"], events[0]["ignored_notices"]) == (0, 1)
+        assert snapshot.email_owners["admin@example.com"] == ("44",)
 
     def test_decidalo_client_is_a_target(self) -> None:
         # mypy checks that the real client fits the protocol the adapter expects
