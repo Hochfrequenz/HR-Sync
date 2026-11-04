@@ -346,10 +346,22 @@ class TestLoadWeclapp:
                 "incomplete": 2,
                 "deactivated": 1,
                 "notices": 1,
+                "ignored_notices": 0,
                 "outcome": "success",
                 "duration_ms": ANY,
             }
         ]
+
+    def test_ignored_users(self, events: list[dict[str, object]]) -> None:
+        fake, setup = weclapp_fake()
+        admin = fake.add_user(email="admin@example.com")
+        other = fake.add_user(email="api@example.com")
+        with fake.client() as client:
+            snapshot = load_weclapp(client, setup=setup, today=TODAY, ignored_ids={admin.id})
+        assert [notice.system_id for notice in snapshot.notices] == [other.id]
+        assert (events[0]["notices"], events[0]["ignored_notices"]) == (1, 1)
+        # its e-mail address still counts
+        assert snapshot.email_owners["admin@example.com"] == (admin.id,)
 
     def test_missing_definition_aborts_the_load(self, events: list[dict[str, object]]) -> None:
         fake, setup = weclapp_fake()

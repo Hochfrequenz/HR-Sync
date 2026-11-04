@@ -659,6 +659,30 @@ class TestSteps:
             ("sync.load", "weclapp"),
         ]
 
+    def test_ignored_ids_from_the_settings(
+        self, monkeypatch: pytest.MonkeyPatch, events: list[dict[str, object]]
+    ) -> None:
+        fake, setup = weclapp_fake()
+        admin = fake.add_user(email="admin@example.com")
+        monkeypatch.setattr("hr_sync.sync.weclapp_setup", lambda settings: setup)
+        settings = _settings(
+            # Erika has no employee number in this attribute
+            personio_employee_number_attribute="dynamic_0815",
+            personio_ignored_person_ids=frozenset({"1"}),
+            weclapp_ignored_user_ids=frozenset({admin.id}),
+            decidalo_ignored_user_ids=frozenset({"44"}),
+        )
+        decidalo = FakeDecidalo(users=[decidalo_user(44, None, email="admin@example.com")])
+        with fake.client() as client:
+            snapshots = load_snapshots(
+                Systems(personio=_personio(ERIKA), decidalo=decidalo, weclapp=client),
+                settings,
+                [TargetSystem.WECLAPP, TargetSystem.DECIDALO],
+                TODAY,
+            )
+        assert [snapshots.source.notices, *(target.notices for target in snapshots.targets.values())] == [[], [], []]
+        assert [(event["event"], event["ignored_notices"]) for event in events] == [("sync.load", 1)] * 3
+
     def test_weclapp_dry_run(self, events: list[dict[str, object]]) -> None:
         record = EmployeeRecord(employee_number="00965", first_name="Erika")
         operation = Operation(system=TargetSystem.WECLAPP, type=OperationType.CREATE, record=record)

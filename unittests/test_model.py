@@ -14,6 +14,7 @@ from hr_sync.model import (
     display_name_of,
     email_key,
     phone_number_key,
+    without_ignored_notices,
 )
 
 
@@ -349,6 +350,36 @@ class TestSnapshotBuilder:
         snapshot = builder.build()
         assert snapshot.excluded == {"00965": ExclusionReason.MISSING_EMAIL}
         assert [notice.reason for notice in snapshot.notices] == [NoticeReason.MISSING_EMAIL]
+
+
+class TestWithoutIgnoredNotices:
+    """
+    Tests of dropping the notices about ignored records, e.g. technical users without employee number (O10).
+    """
+
+    def test_only_the_notices_are_dropped(self) -> None:
+        builder = SnapshotBuilder(System.WECLAPP)
+        builder.add_without_employee_number("1001", "admin@example.com")
+        builder.add_without_employee_number("1002")
+        builder.add("1003", _record("TEST", email=None))
+        builder.add("1004", _record("TEST", email=None))
+        builder.add("1005", _record())
+        snapshot, ignored = without_ignored_notices(builder.build(), {"1001", "1003", "1004", "1005"})
+        assert ignored == 3
+        assert [(notice.reason, notice.system_id) for notice in snapshot.notices] == [
+            (NoticeReason.MISSING_EMPLOYEE_NUMBER, "1002")
+        ]
+        # ignoring must not lead to a duplicate: the e-mail address still counts, the duplicate stays excluded, and a
+        # valid record stays part of the snapshot
+        assert set(snapshot.email_owners) == {"admin@example.com", "erika.musterfrau@example.com"}
+        assert snapshot.excluded == {"TEST": ExclusionReason.DUPLICATE_EMPLOYEE_NUMBER}
+        assert set(snapshot.records) == {"00965"}
+
+    def test_nothing_ignored(self) -> None:
+        builder = SnapshotBuilder(System.DECIDALO)
+        builder.add_without_employee_number("1001")
+        built = builder.build()
+        assert without_ignored_notices(built, frozenset()) == (built, 0)
 
 
 class TestEmailKey:

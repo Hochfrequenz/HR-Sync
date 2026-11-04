@@ -14,7 +14,7 @@ is synchronous.
 
 import asyncio
 from collections import Counter
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Collection, Sequence
 from dataclasses import dataclass, field
 from datetime import date
 from types import TracebackType
@@ -33,6 +33,7 @@ from hr_sync.model import (
     System,
     display_name_of,
     phone_number_key,
+    without_ignored_notices,
 )
 
 
@@ -82,21 +83,26 @@ class MappedPersons:
     """the number of persons that are not relevant, per reason"""
 
 
-def load_personio(client: PersonioSource, *, attributes: PersonioAttributes, today: date) -> Snapshot:
+def load_personio(
+    client: PersonioSource, *, attributes: PersonioAttributes, today: date, ignored_ids: Collection[str] = frozenset()
+) -> Snapshot:
     """
     Loads the persons of Personio and maps those with a relevant employment onto the common model.
 
-    See :func:`fetch_persons` and :func:`map_persons`. Logs one event ``sync.load``.
+    See :func:`fetch_persons` and :func:`map_persons`. The notices about the persons with the ``ignored_ids`` are
+    dropped (see :func:`hr_sync.model.without_ignored_notices`). Logs one event ``sync.load``.
     """
     with wide_event("sync.load", system=System.PERSONIO) as event:
         persons = fetch_persons(client)
         mapped = map_persons(persons, attributes=attributes, today=today)
+        snapshot, ignored = without_ignored_notices(mapped.snapshot, ignored_ids)
         event["persons"] = len(persons)
         event["without_id"] = mapped.without_id
-        event["records"] = len(mapped.snapshot.records)
-        event["notices"] = len(mapped.snapshot.notices)
+        event["records"] = len(snapshot.records)
+        event["notices"] = len(snapshot.notices)
+        event["ignored_notices"] = ignored
         event["not_relevant"] = {reason.value: count for reason, count in sorted(mapped.not_relevant.items())}
-        return mapped.snapshot
+        return snapshot
 
 
 def fetch_persons(client: PersonioSource) -> list[LoadedPerson]:

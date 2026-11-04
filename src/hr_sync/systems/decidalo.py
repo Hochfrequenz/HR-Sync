@@ -14,7 +14,7 @@ The Decidalo client is async only. :func:`fetch_users` and :func:`send_users` hi
 """
 
 import asyncio
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 from types import TracebackType
 from typing import Protocol
@@ -25,7 +25,7 @@ from decidalo_client.models import ImportItemStatusType, UserBatchInput, UserImp
 
 from hr_sync.events import emit_operation, error_fields, wide_event
 from hr_sync.mappings import OFFICES
-from hr_sync.model import EmployeeRecord, Snapshot, SnapshotBuilder, System, TargetSystem
+from hr_sync.model import EmployeeRecord, Snapshot, SnapshotBuilder, System, TargetSystem, without_ignored_notices
 from hr_sync.plan import Operation, OperationResult, OperationType, Outcome
 
 _REQUEST_ERRORS = (DecidaloClientError, aiohttp.ClientError, TimeoutError)
@@ -59,17 +59,19 @@ class DecidaloTarget(Protocol):
     async def import_users_sync(self, batch: UserBatchInput) -> UserImportResults: ...
 
 
-def load_decidalo(client: DecidaloTarget) -> Snapshot:
+def load_decidalo(client: DecidaloTarget, *, ignored_ids: Collection[str] = frozenset()) -> Snapshot:
     """
-    Loads all users of Decidalo and maps them onto the common model. Logs one event ``sync.load``.
+    Loads all users of Decidalo and maps them onto the common model. The notices about the users with the
+    ``ignored_ids`` are dropped (see :func:`hr_sync.model.without_ignored_notices`). Logs one event ``sync.load``.
     """
     with wide_event("sync.load", system=System.DECIDALO) as event:
         users = fetch_users(client)
-        snapshot = map_users(users)
+        snapshot, ignored = without_ignored_notices(map_users(users), ignored_ids)
         event["users"] = len(users)
         event["records"] = len(snapshot.records)
         event["deactivated"] = len(snapshot.deactivated)
         event["notices"] = len(snapshot.notices)
+        event["ignored_notices"] = ignored
         return snapshot
 
 

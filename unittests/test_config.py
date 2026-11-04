@@ -74,6 +74,23 @@ class TestLoadSettings:
         assert settings.decidalo_has_login is True
         assert settings.hr_sync_environment == Environment.PRODUCTION
         assert settings.hr_sync_log_format == "pretty"
+        # nothing is ignored: the ids only exist in one tenant
+        ignored = (
+            settings.personio_ignored_person_ids,
+            settings.weclapp_ignored_user_ids,
+            settings.decidalo_ignored_user_ids,
+        )
+        assert ignored == (frozenset(), frozenset(), frozenset())
+
+    def test_ignored_ids_are_separated_by_commas(self) -> None:
+        Path(".env").write_text(
+            "PERSONIO_IGNORED_PERSON_IDS=7\nWECLAPP_IGNORED_USER_IDS= 1001, 1002,,\nDECIDALO_IGNORED_USER_IDS=42\n",
+            encoding="utf-8",
+        )
+        settings = load_settings()
+        assert settings.personio_ignored_person_ids == frozenset({"7"})
+        assert settings.weclapp_ignored_user_ids == frozenset({"1001", "1002"})
+        assert settings.decidalo_ignored_user_ids == frozenset({"42"})
 
     def test_env_file_in_the_current_directory(self) -> None:
         Path(".env").write_text(_CREDENTIALS, encoding="utf-8")
