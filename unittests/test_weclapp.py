@@ -4,7 +4,8 @@ from decimal import Decimal
 from unittest.mock import ANY
 
 import pytest
-from weclapp_client.models import CustomAttributeDefinition, CustomAttributeType, UserStatus
+from weclapp_client import WeclappClient
+from weclapp_client.models import CustomAttributeDefinition, CustomAttributeType, User, UserStatus
 from weclapp_client.testing import FakeWeclapp
 
 from hr_sync.config import ConfigurationError, ConfigurationProblem
@@ -87,6 +88,17 @@ def _create(record: EmployeeRecord = ERIKA) -> Operation:
 
 def _complete(user_id: str, record: EmployeeRecord = ERIKA) -> Operation:
     return Operation(system=TargetSystem.WECLAPP, type=OperationType.COMPLETE, record=record, target_id=user_id)
+
+
+def _fail_invitations(monkeypatch: pytest.MonkeyPatch, fake: FakeWeclapp, client: WeclappClient, status: int) -> None:
+    """lets the fake answer every invitation of the client with the status code"""
+    invite = client.users.invite
+
+    def failing_invite(user_id: str) -> User:
+        fake.fail_next(status, method="POST", path=f"user/id/{user_id}/invite")
+        return invite(user_id)
+
+    monkeypatch.setattr(client.users, "invite", failing_invite)
 
 
 class TestCheckSetup:
@@ -454,6 +466,18 @@ class TestExecuteWeclapp:
             ("sync.operation", "success", user.id)
         ]
 
+    def test_create_invites_the_user_after_the_employee_record(self) -> None:
+        fake, setup = weclapp_fake()
+        with fake.client() as client:
+            execute_weclapp(client, [_create()], setup=setup)
+        (user,) = fake.users
+        assert fake.invitations == [user.id]
+        assert [(request.method, request.path) for request in fake.write_requests] == [
+            ("POST", "user"),
+            ("POST", "employee"),
+            ("POST", f"user/id/{user.id}/invite"),
+        ]
+
     def test_complete(self) -> None:
         fake, setup = weclapp_fake()
         user = fake.add_user(email="erika.musterfrau@example.com")
@@ -462,6 +486,8 @@ class TestExecuteWeclapp:
         assert [(result.outcome, result.target_id) for result in results] == [(Outcome.SUCCESS, user.id)]
         assert [employee.user_id for employee in fake.employees] == [user.id]
         assert len(fake.users) == 1
+        # the user may have been created and invited by hand
+        assert fake.invitations == []
 
     def test_error_of_one_employee(self, events: list[dict[str, object]]) -> None:
         fake, setup = weclapp_fake()
@@ -499,6 +525,37 @@ class TestExecuteWeclapp:
         (user,) = fake.users
         assert (result.outcome, result.target_id, result.detail) == (Outcome.ERROR, user.id, "employee_not_created")
         assert fake.employees == []
+        assert fake.invitations == []
+
+    def test_invitation_fails(self, monkeypatch: pytest.MonkeyPatch, events: list[dict[str, object]]) -> None:
+        fake, setup = weclapp_fake()
+        max_ = _create(ERIKA.model_copy(update={"employee_number": "00200", "email": "max@example.com"}))
+        with fake.client() as client:
+            _fail_invitations(monkeypatch, fake, client, 400)
+            results = execute_weclapp(client, [_create(), max_], setup=setup)
+        user_ids = [user.id for user in fake.users]
+        assert [(result.outcome, result.target_id, result.detail) for result in results] == [
+            (Outcome.ERROR, user_ids[0], "invitation_not_sent"),
+            (Outcome.ERROR, user_ids[1], "invitation_not_sent"),
+        ]
+        assert [employee.user_id for employee in fake.employees] == user_ids
+        assert fake.invitations == []
+        assert [(event["outcome"], event["detail"]) for event in events] == [("error", "invitation_not_sent")] * 2
+
+    @pytest.mark.parametrize("status_code", [401, 503])
+    def test_error_of_weclapp_during_the_invitation_skips_the_remaining_operations(
+        self, monkeypatch: pytest.MonkeyPatch, status_code: int
+    ) -> None:
+        fake, setup = weclapp_fake()
+        max_ = _create(ERIKA.model_copy(update={"employee_number": "00200", "email": "max@example.com"}))
+        with fake.client(max_retries=0) as client:
+            _fail_invitations(monkeypatch, fake, client, status_code)
+            results = execute_weclapp(client, [_create(), max_], setup=setup)
+        assert [(result.outcome, result.detail) for result in results] == [
+            (Outcome.ERROR, "invitation_not_sent"),
+            (Outcome.SKIPPED, None),
+        ]
+        assert len(fake.users) == len(fake.employees) == 1
 
     def test_no_personal_data_in_the_events(self, events: list[dict[str, object]]) -> None:
         fake, setup = weclapp_fake()

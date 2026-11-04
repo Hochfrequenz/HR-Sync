@@ -11,7 +11,7 @@ Like every adapter, it separates IO from logic:
 
 The weclapp client is synchronous. An employee consists of a user and an employee record (``employee``), which are
 created with two requests, one after the other. The employee record holds the work schedule profile, whose start date
-is the entry date.
+is the entry date. weclapp doesn't send a new user an invitation, so a third request invites the user afterwards.
 """
 
 from collections.abc import Mapping, Sequence
@@ -363,17 +363,23 @@ class SentEmployee:
     employee_id: str | None = None
     """the created employee record"""
     error: WeclappError | None = None
-    """the error of the request that failed: creating the user, or creating the employee record if ``user_id`` is set"""
+    """
+    the error of the request that failed: creating the user, creating the employee record if ``user_id`` is set, or
+    inviting the created user if ``employee_id`` is set
+    """
 
 
 def send_employees(client: WeclappClient, new_employees: Sequence[NewEmployee]) -> list[SentEmployee]:
     """
-    Creates the employees one after the other: first the user (unless it exists), then the employee record.
+    Creates the employees one after the other: first the user (unless it exists), then the employee record, and
+    finally invites a created user, so that weclapp sends the invitation mail. A user that existed already isn't
+    invited: it may have been created and invited by hand.
 
     Stops after the first error that concerns weclapp as a whole, e.g. authentication, connection, rate limit or a
     server error. Validation errors and conflicts only concern one employee. Other exceptions than the errors of the
     weclapp client are programming errors and are not caught. The client doesn't retry a ``POST`` with unclear outcome;
-    a user without employee record is completed by the next run.
+    a user without employee record is completed by the next run. A failed invitation is not repeated, because the mail
+    may have been sent anyway.
     """
     sent: list[SentEmployee] = []
     for new in new_employees:
@@ -396,6 +402,11 @@ def _send(client: WeclappClient, new: NewEmployee) -> SentEmployee:
         )
     except WeclappError as error:
         return SentEmployee(user_id=user_id, error=error)
+    if new.user is not None:
+        try:
+            client.users.invite(_required(user_id, "user_id"))
+        except WeclappError as error:
+            return SentEmployee(user_id=user_id, employee_id=employee.id, error=error)
     return SentEmployee(user_id=user_id, employee_id=employee.id)
 
 
@@ -403,9 +414,12 @@ def evaluate_responses(operations: Sequence[Operation], sent: Sequence[SentEmplo
     """
     Returns the result of each operation, from the answer at the same position.
 
-    An operation succeeds if user and employee record exist afterwards. If the user was created, but not its employee
-    record, the operation is an error with ``detail=employee_not_created``; the next run completes it. Operations
-    without answer were skipped after an error that concerns weclapp as a whole.
+    An operation succeeds if user and employee record exist afterwards and a created user is invited. If the user was
+    created, but not its employee record, the operation is an error with ``detail=employee_not_created``; the next run
+    completes it, but doesn't invite the user. If user and employee record were created, but the invitation failed, the
+    operation is an error with ``detail=invitation_not_sent``; no run repeats it. In both cases, the user has to be
+    invited by hand, unless the outcome of the invitation was unclear and the mail went out anyway. Operations without
+    answer were skipped after an error that concerns weclapp as a whole.
     """
     results: list[OperationResult] = []
     for index, operation in enumerate(operations):
@@ -417,12 +431,17 @@ def evaluate_responses(operations: Sequence[Operation], sent: Sequence[SentEmplo
             results.append(OperationResult(operation=operation, outcome=Outcome.SUCCESS, target_id=answer.user_id))
             continue
         created_user = operation.type == OperationType.CREATE and answer.user_id is not None
+        detail = None
+        if answer.employee_id is not None:
+            detail = "invitation_not_sent"
+        elif created_user:
+            detail = "employee_not_created"
         results.append(
             OperationResult(
                 operation=operation,
                 outcome=Outcome.ERROR,
                 target_id=answer.user_id,
-                detail="employee_not_created" if created_user else None,
+                detail=detail,
                 error=error_fields(answer.error),
             )
         )

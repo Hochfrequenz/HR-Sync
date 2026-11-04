@@ -61,9 +61,9 @@ uv run hr-sync --dry-run --target decidalo
 | 2 | aborted, e.g. because of the configuration or an error while loading |
 
 > [!WARNING]
-> There is no weclapp test tenant: a run with weclapp as target writes to production, and every new user costs a
-> license. Start with `--dry-run`, and run the first real run only with `--only` and the employee number of a test
-> person.
+> There is no weclapp test tenant: a run with weclapp as target writes to production, every new user costs a license
+> and gets weclapp's invitation mail. Start with `--dry-run`, and run the first real run only with `--only` and the
+> employee number of a test person.
 
 weclapp needs `WECLAPP_API_TOKEN`, `WECLAPP_TENANT` (or `WECLAPP_BASE_URL`) and
 `WECLAPP_EMPLOYEE_NUMBER_ATTRIBUTE_ID`, the id of the custom attribute definition with the employee number. Before
@@ -71,6 +71,11 @@ planning, HR-Sync checks that the tenant has the custom attributes and work sche
 run aborts with `problem=weclapp_setup_mismatch` and their ids. Their ids, the licenses, roles and the cost rate of new
 users are fixed values of Hochfrequenz, so other companies can't use weclapp as a target yet. New users get the
 mobile phone number in the form `+49 151 46414222`.
+
+After creating a user and its employee record, HR-Sync invites the user, so that weclapp sends the invitation mail.
+weclapp has no dry run for this, so only a run without `--dry-run` invites. A user that existed already, e.g. one
+whose employee record a run completes, isn't invited. If the invitation fails, the operation ends with
+`detail=invitation_not_sent` and isn't repeated by later runs: invite the user by hand.
 
 ### Test Mode
 
