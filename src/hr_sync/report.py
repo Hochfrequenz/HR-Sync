@@ -18,10 +18,11 @@ from dataclasses import dataclass, field
 from datetime import date
 
 import httpx
+from decidalo_client.models import ImportItemStatusType
 
 from hr_sync.config import ConfigurationError, ConfigurationProblem, Settings
 from hr_sync.events import error_fields
-from hr_sync.model import Notice, NoticeReason, System, TargetSystem
+from hr_sync.model import ExclusionReason, Notice, NoticeReason, System, TargetSystem
 from hr_sync.plan import OperationResult, OperationType, Outcome, SyncPlan
 
 _SYSTEM_NAMES: Mapping[str, str] = {"personio": "Personio", "weclapp": "weclapp", "decidalo": "Decidalo"}
@@ -63,6 +64,22 @@ NOTICE_TEXTS: Mapping[NoticeReason, str] = {
     NoticeReason.VALUE_TOO_LONG: "{field} zu lang",
 }
 """the notices in words; ``{field}`` is the field of the detail, see :data:`FIELD_LABELS`"""
+
+_FUTURE_START_TEXT = "angefragt, aber das Eintrittsdatum liegt noch in der Zukunft."
+"""the text of a notice ``not_relevant`` whose employment is active, but starts later"""
+
+_EXISTING_USER_TEXTS: Mapping[str, str] = {
+    ImportItemStatusType.Updated: (
+        "nicht angelegt, weil Decidalo einen bestehenden User gefunden und geändert hat. Bitte prüfen."
+    ),
+    ImportItemStatusType.NotModified: (
+        "nicht angelegt, weil Decidalo einen bestehenden User mit denselben Daten gefunden hat. Bitte prüfen."
+    ),
+}
+"""
+the results of Decidalo for a new user that hit an existing one, by row status (see
+:func:`hr_sync.systems.decidalo.evaluate_responses`); unlike other errors, the next run can't be relied on to fix them
+"""
 
 _CONFIGURATION_TEXTS: Mapping[ConfigurationProblem, str] = {
     ConfigurationProblem.MISSING_VARIABLES: "In der Konfiguration fehlen Einstellungen.",
@@ -246,6 +263,9 @@ def _result_text(result: OperationResult) -> str:
         return f"angelegt, aber die Einladung ging nicht raus. Bitte in {system} per Hand einladen."
     if result.detail == "employee_not_created":
         return "User angelegt, aber ohne Personalakte. Der nächste Lauf ergänzt sie, einladen bitte per Hand."
+    existing_user_text = _EXISTING_USER_TEXTS.get(result.detail or "")
+    if result.operation.system == TargetSystem.DECIDALO and existing_user_text is not None:
+        return existing_user_text
     return f"{action}, {system} hat einen Fehler gemeldet. Der nächste Lauf versucht es erneut."
 
 
@@ -263,6 +283,8 @@ def _subject(notice: Notice) -> str:
 
 
 def _notice_text(notice: Notice) -> str:
+    if notice.reason == NoticeReason.NOT_RELEVANT and notice.detail == ExclusionReason.START_DATE_IN_FUTURE:
+        return _FUTURE_START_TEXT
     label = FIELD_LABELS.get(notice.detail or "", notice.detail or "Ein Feld")
     return NOTICE_TEXTS[notice.reason].format(field=label)
 

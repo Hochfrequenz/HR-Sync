@@ -3,10 +3,11 @@ from datetime import date
 
 import httpx
 import pytest
+from decidalo_client.models import ImportItemStatusType
 from pydantic import SecretStr
 
 from hr_sync.config import ConfigurationError, ConfigurationProblem, Settings
-from hr_sync.model import EmployeeRecord, Notice, NoticeReason, System, TargetSystem
+from hr_sync.model import EmployeeRecord, ExclusionReason, Notice, NoticeReason, System, TargetSystem
 from hr_sync.plan import Deviation, EmployeePlan, Operation, OperationResult, OperationType, Outcome, SyncPlan
 from hr_sync.report import (
     FIELD_LABELS,
@@ -103,6 +104,43 @@ class TestBuildReport:
             "00990 (weclapp): Personalakte nicht ergänzt, weclapp hat einen Fehler gemeldet. Der nächste Lauf "
             "versucht es erneut.",
         )
+
+    @pytest.mark.parametrize(
+        ("status", "expected"),
+        [
+            pytest.param(
+                ImportItemStatusType.Updated,
+                "nicht angelegt, weil Decidalo einen bestehenden User gefunden und geändert hat. Bitte prüfen.",
+                id="updated",
+            ),
+            pytest.param(
+                ImportItemStatusType.NotModified,
+                "nicht angelegt, weil Decidalo einen bestehenden User mit denselben Daten gefunden hat. Bitte prüfen.",
+                id="not_modified",
+            ),
+        ],
+    )
+    def test_existing_user_in_decidalo(self, status: ImportItemStatusType, expected: str) -> None:
+        report = build_report(results=[_result("00965", TargetSystem.DECIDALO, Outcome.ERROR, detail=status.value)])
+        assert report.problems == (f"00965 (Decidalo): {expected}",)
+
+    @pytest.mark.parametrize(
+        ("reason", "expected"),
+        [
+            pytest.param(
+                ExclusionReason.EMPLOYMENT_NOT_ACTIVE, "angefragt, aber in Personio nicht aktiv.", id="inactive"
+            ),
+            pytest.param(
+                ExclusionReason.START_DATE_IN_FUTURE,
+                "angefragt, aber das Eintrittsdatum liegt noch in der Zukunft.",
+                id="future_start",
+            ),
+        ],
+    )
+    def test_not_relevant(self, reason: ExclusionReason, expected: str) -> None:
+        notice = _notice(System.PERSONIO, NoticeReason.NOT_RELEVANT, employee_number="00999", detail=reason.value)
+        report = build_report(sync_plan=_plan(notices=(notice,)))
+        assert report.problems == (f"00999: {expected}",)
 
     def test_problems_found_while_planning(self) -> None:
         report = build_report(
