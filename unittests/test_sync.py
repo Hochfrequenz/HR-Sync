@@ -2,6 +2,7 @@ from collections.abc import Callable
 from datetime import date
 from unittest.mock import ANY
 
+import httpx
 import pytest
 from decidalo_client import DecidaloClient
 from decidalo_client.models import ImportItemStatusType, UserImportResults
@@ -14,6 +15,7 @@ from weclapp_client.testing import FakeWeclapp
 from hr_sync.config import ConfigurationError, ConfigurationProblem, Environment, Settings
 from hr_sync.model import EmployeeRecord, NoticeReason, System, TargetSystem
 from hr_sync.plan import EmployeePlan, Operation, OperationType, Outcome, SyncPlan
+from hr_sync.report import Mail
 from hr_sync.sync import (
     ExitCode,
     RunOptions,
@@ -507,6 +509,111 @@ class TestRunWithWeclapp:
 
 def _fail(*args: object) -> None:
     raise ConnectionError("not reachable")
+
+
+def _report_settings(**changes: object) -> Settings:
+    values: dict[str, object] = {
+        "hr_sync_report_to": "hr@example.com",
+        "hr_sync_report_from": "hr-sync@mg.example.com",
+        "mailgun_api_key": SecretStr("mailgun-key"),
+        "mailgun_domain": "mg.example.com",
+    }
+    return _settings(**(values | changes))
+
+
+@pytest.fixture
+def mails(monkeypatch: pytest.MonkeyPatch) -> list[Mail]:
+    """the mails sent through Mailgun"""
+    sent: list[Mail] = []
+    monkeypatch.setattr("hr_sync.sync.send_report", lambda mail, settings: sent.append(mail))
+    return sent
+
+
+class TestReport:
+    """
+    Tests of the report for the HR management at the end of a run.
+    """
+
+    def test_run_sends_the_report(self, mails: list[Mail], events: list[dict[str, object]]) -> None:
+        decidalo = FakeDecidalo(users=[MAX_IN_DECIDALO])
+        assert _run(_personio(ERIKA, MAX), decidalo, settings=_report_settings()) == ExitCode.SUCCESS
+        (mail,) = mails
+        assert mail.subject == "HR-Sync 29.10.2026: 1 angelegt"
+        assert "ANGELEGT\n- 00965: Decidalo\n" in mail.text
+        assert [value for value in PERSONAL_DATA if value in mail.text] == []
+        (report_event,) = _named(events, "sync.report")
+        assert report_event["outcome"] == "success"
+        assert (report_event["sent"], report_event["recipients"]) == (True, 1)
+        assert (report_event["created"], report_event["problems"], report_event["data_errors"]) == (1, 0, 0)
+        assert (report_event["deviations"], report_event["aborted"]) == (0, False)
+        # the report belongs to the run
+        assert report_event["run_id"] == _run_event(events)["run_id"]
+        assert mail.text.endswith(f"Lauf-ID {report_event['run_id']}\n")
+
+    def test_nothing_to_report(self, mails: list[Mail], events: list[dict[str, object]]) -> None:
+        decidalo = FakeDecidalo(users=[MAX_IN_DECIDALO])
+        assert _run(_personio(MAX), decidalo, settings=_report_settings()) == ExitCode.SUCCESS
+        assert mails == []
+        (report_event,) = _named(events, "sync.report")
+        assert report_event["sent"] is False
+
+    def test_no_report_without_recipients(self, mails: list[Mail], events: list[dict[str, object]]) -> None:
+        assert _run(_personio(ERIKA), FakeDecidalo()) == ExitCode.SUCCESS
+        assert mails == []
+        assert _named(events, "sync.report") == []
+
+    def test_dry_run_sends_no_report(self, mails: list[Mail]) -> None:
+        options = RunOptions(targets=(TargetSystem.DECIDALO,), dry_run=True)
+        assert _run(_personio(ERIKA), FakeDecidalo(), options, _report_settings()) == ExitCode.SUCCESS
+        assert mails == []
+
+    def test_dry_run_with_report(self, mails: list[Mail]) -> None:
+        options = RunOptions(targets=(TargetSystem.DECIDALO,), dry_run=True, send_report=True)
+        assert _run(_personio(ERIKA), FakeDecidalo(), options, _report_settings()) == ExitCode.SUCCESS
+        (mail,) = mails
+        assert mail.subject == "Probelauf: HR-Sync 29.10.2026: 1 angelegt"
+        assert "WÜRDE ANGELEGT\n- 00965: Decidalo\n" in mail.text
+
+    def test_test_mode_never_sends_a_report(self, mails: list[Mail], events: list[dict[str, object]]) -> None:
+        options = RunOptions(targets=(TargetSystem.DECIDALO,), send_report=True)
+        settings = _test_settings(hr_sync_report_to="hr@example.com")
+        assert _run(_personio(ERIKA), FakeDecidalo(), options, settings) == ExitCode.SUCCESS
+        assert mails == []
+        assert _named(events, "sync.report") == []
+
+    def test_failed_report_fails_the_run(
+        self, monkeypatch: pytest.MonkeyPatch, events: list[dict[str, object]]
+    ) -> None:
+        def fail(mail: Mail, settings: Settings) -> None:
+            raise httpx.ConnectError("mailgun not reachable")
+
+        monkeypatch.setattr("hr_sync.sync.send_report", fail)
+        assert _run(_personio(ERIKA), FakeDecidalo(), settings=_report_settings()) == ExitCode.OPERATION_FAILED
+        (report_event,) = _named(events, "sync.report")
+        assert report_event["outcome"] == "error"
+        assert report_event["sent"] is False
+        error = report_event["error"]
+        assert isinstance(error, dict)
+        assert error["type"] == "ConnectError"
+        run_event = _run_event(events)
+        assert (run_event["exit_code"], run_event["outcome"]) == (1, "error")
+
+    def test_abort_is_reported(self, mails: list[Mail], events: list[dict[str, object]]) -> None:
+        decidalo = FakeDecidalo(fail_get=True)
+        assert _run(_personio(ERIKA), decidalo, settings=_report_settings()) == ExitCode.ABORTED
+        (mail,) = mails
+        assert mail.subject == "HR-Sync 29.10.2026: Lauf abgebrochen"
+        assert (
+            "ABGEBROCHEN\nDecidalo war nicht erreichbar oder hat einen Fehler gemeldet. Es wurde nichts angelegt.\n"
+            in mail.text
+        )
+        assert _run_event(events)["exit_code"] == 2
+
+    def test_failed_report_after_an_abort(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("hr_sync.sync.send_report", _fail)
+        decidalo = FakeDecidalo(fail_get=True)
+        # the abort wins
+        assert _run(_personio(ERIKA), decidalo, settings=_report_settings()) == ExitCode.ABORTED
 
 
 class TestWeclappSetup:

@@ -22,6 +22,8 @@ classifiers = [
 # the clients are 0.x versions, whose minor versions may contain breaking changes, so we keep an upper bound
 dependencies = [
     "decidalo-client>=0.3.1,<0.4",
+    # sends the report through the HTTP API of Mailgun
+    "httpx>=0.28,<1",
     "loguru>=0.7",
     "personio-client>=0.1.0a1,<0.2",
     "pydantic>=2.11",

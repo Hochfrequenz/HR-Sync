@@ -1,2 +1,10 @@
 # contains 1 lower case word per line which are ignored in the spell_check
 manging
+# German words in the texts of the report for the HR management (hr_sync.report)
+als
+feld
+ist
+oder
+passt
+probleme
+sie

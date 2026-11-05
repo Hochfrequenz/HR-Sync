@@ -685,6 +685,7 @@ name = "hochfrequenz-hr-sync"
 source = { editable = "." }
 dependencies = [
     { name = "decidalo-client" },
+    { name = "httpx" },
     { name = "loguru" },
     { name = "personio-client" },
     { name = "pydantic" },
@@ -727,6 +728,7 @@ type-check = [
 [package.metadata]
 requires-dist = [
     { name = "decidalo-client", specifier = ">=0.3.1,<0.4" },
+    { name = "httpx", specifier = ">=0.28,<1" },
     { name = "loguru", specifier = ">=0.7" },
     { name = "personio-client", specifier = ">=0.1.0a1,<0.2" },
     { name = "pydantic", specifier = ">=2.11" },

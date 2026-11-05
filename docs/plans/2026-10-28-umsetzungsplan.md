@@ -807,6 +807,7 @@ Umgesetzt in [`events.py`](../../src/hr_sync/events.py) (AP 3):
 | `sync.deviation` | je Person und Zielsystem mit Abweichung | `employee_number`, `system`, `fields` | INFO |
 | `sync.plan` | einmal | `operations` je System und Typ, `deviations` je System, `only_in_target` je System, `notices`, `is_empty`, `limit_reached` | INFO |
 | `sync.operation` | je Operation | `employee_number`, `system`, `type`, `outcome` (`success`, `error`, `skipped`, `dry_run`), `target_id`, `detail` (z. B. Zeilenstatus), `error` | INFO; ERROR bei `error`, WARNING bei `skipped` |
+| `sync.report` | einmal, vor `sync.run`, nur wenn der Lauf einen Bericht schickt (7.2) | `created`, `problems`, `data_errors`, `deviations` (Anzahl der Einträge), `aborted`, `recipients` (Anzahl), `sent`; bei einem Fehler beim Versand `error`. Nie der Text der Mail | INFO; ERROR, wenn der Versand fehlschlägt |
 
 - **Keine personenbezogenen Werte:** nur MA-Nummer, systeminterne IDs, Feldnamen und Zahlen. Ein Test prüft, dass
   Namen und E-Mail-Adressen der Testdaten nicht in der Log-Ausgabe auftauchen.
@@ -871,6 +872,8 @@ Tabelle mit *(HF)* markiert und werden im README als solche dokumentiert, damit 
 | `HR_SYNC_ENVIRONMENT` | `production` (Standard) oder `test`, siehe [Abschnitt 8](#8-testumgebungen-und-anonymisierung) |
 | `HR_SYNC_LOG_FORMAT` | `pretty` oder `json` |
 | `PERSONIO_IGNORED_PERSON_IDS`, `WECLAPP_IGNORED_USER_IDS`, `DECIDALO_IGNORED_USER_IDS` | Ignore-Liste (O10): IDs, kommagetrennt, deren Warnungen nicht geloggt werden, z. B. technische User ohne MA-Nummer. Standard leer, weil die IDs nur in der eigenen Firma gelten; sie stehen deshalb nur in der `.env` auf dem Server, nie im Repo (1.1) |
+| `HR_SYNC_REPORT_TO`, `HR_SYNC_REPORT_FROM` | Bericht per Mail (7.2): Empfänger kommagetrennt, ohne Empfänger kein Bericht; Absender. Standard leer |
+| `MAILGUN_API_KEY`, `MAILGUN_DOMAIN`, `MAILGUN_BASE_URL` | Mailgun für den Bericht. Mit Empfängern und außerhalb des Test-Modus Pflicht (`missing_variables`). `MAILGUN_BASE_URL` hat den Standard `https://api.eu.mailgun.net` (Region EU) |
 
 Die Mappings und festen weclapp-Werte der Phase 2 (Lizenzen, Rollen, Kostensatz, IDs der Zusatzfelder und
 Auswahlwerte) sind keine Variablen, sie stehen fest im Code (4.4). Die Personio-Attribute für Karrierestufe und
@@ -908,7 +911,7 @@ umgesetzt mit `argparse` (keine weitere Abhängigkeit).
 | Code | Bedeutung |
 |---|---|
 | 0 | erfolgreich, auch bei leerem Plan oder Hinweisen |
-| 1 | mindestens eine Operation ist fehlgeschlagen oder wurde übersprungen (`skipped` folgt immer auf einen Fehler) |
+| 1 | mindestens eine Operation ist fehlgeschlagen oder wurde übersprungen (`skipped` folgt immer auf einen Fehler), oder der Bericht ließ sich nicht verschicken (7.2) |
 | 2 | Abbruch (Konfiguration, Authentifizierung, Fehler beim Laden, unzulässige Einstellungen im Test-Modus, unerwartete Fehler). Auch ungültige Optionen enden mit 2, wie bei `argparse` üblich |
 
 **Fehler beim Ausführen:**
@@ -974,7 +977,9 @@ Entschieden am 2026-11-05, umgesetzt in AP 12.
 
 ### 7.2 Bericht per Mail (O9)
 
-Entschieden am 2026-11-05, umgesetzt in AP 11.
+Entschieden am 2026-11-05, umgesetzt in AP 11 (`hr_sync.report`, `send_run_report` in `hr_sync.sync`). Die Form
+der Mail ist am 2026-11-05 abgestimmt: reiner Text wie unten beschrieben. Der Test-Modus schickt nie einen Bericht,
+auch nicht mit `--send-report`, weil seine Daten anonymisiert sind.
 
 - **Empfänger:** das HR-Management, Adressen kommagetrennt in `HR_SYNC_REPORT_TO`. Ohne Empfänger schickt HR-Sync keine
   Mail.
@@ -1304,7 +1309,7 @@ Die Reihenfolge baut zuerst den Kern ohne IO und hängt dann die Systeme an:
 | 8a | **Felder der Phase 2 in Personio und Decidalo** (4.4): Modell, `mappings.py`, Personio-Mapping mit Pflichtfeldern und Datenproblemen, Decidalo-Felder (`jobTitle`, `serviceCategoryName`, `mobilePhoneNumber`, `holidayListCode`, `standardWeeklyHours`) samt Vergleich, Anonymisierung der Telefonnummer, Integrationstest (O24). Entscheidungen aus O22 und O25 in 1.1. In zwei PRs: PR 1 die Quelle (`mappings.py`, Modell und Datenprobleme, Personio, Anonymisierung, Konfiguration), PR 2 das Ziel (Decidalo, Vergleich im Planner, Integrationstest). Nur PR 2 schließt Issue #19 | `uv run pytest -m integration_write` legt den ersten Planeintrag mit allen Decidalo-Feldern der Phase 2 an |
 | 9 | **Testlauf:** Dry-Run gegen die echten Systeme (nur lesend) und offene Punkte klären. Dann der erste echte Lauf, **nur mit `--only <MA-Nummer>`**, vorher mit denselben Optionen als Dry-Run. **Seit 2026-10-30:** kein Testmitarbeiter, sondern ein Live-Lauf mit dem ersten echten neuen Mitarbeiter, was angelegt wird, bleibt (1.1). Voraussetzung: Die Testperson steht mit MA-Nummer, E-Mail, allen Pflichtfeldern der Phase 2 und einem aktiven Employment (Start heute oder früher) in Personio. In weclapp prüfen: Lizenzen und Rollen, den von weclapp vergebenen `username` (gleich der E-Mail?, 3.2), Zuweisung zu den INT-Projekten nach etwa 15 Minuten, Anmeldung im Zeitportal. **Erledigt (2026-11-02):** erster echter Lauf, vorher der Dry-Run, Prüfung in weclapp ohne Auffälligkeiten (12.1). Offen bleibt der Teil für Decidalo (O5) | Go-live-Entscheidung |
 | 10 | **PyPI-Paket** (siehe [Abschnitt 9](#9-pypi-paket)): `LICENSE`, README als Nutzerdoku, Publish-Workflow aktivieren, Trusted Publisher auf PyPI und Environment `release` einrichten, Python-Obergrenze prüfen, Release als Pre-Release oder stabil je nach Clients. Zeitpunkt offen (O14) | `hochfrequenz-hr-sync` auf PyPI |
-| 11 | **Bericht per Mail** (O9, siehe 7.2): den Bericht ohne IO aus Plan, Ergebnissen und Hinweisen bauen (deutscher Text, je Grund und Feld eine verständliche Beschreibung), Versand über die Mailgun-API, neue Variablen, Option `--send-report` für den Dry-Run, Event `sync.report`. Getestet ohne Mailgun, mit einem Mock-Transport | Ein Lauf mit etwas zu berichten schickt die Mail; `uv run hr-sync --dry-run --send-report` schickt einen Probelauf |
+| 11 | **Bericht per Mail** (O9, siehe 7.2): den Bericht ohne IO aus Plan, Ergebnissen und Hinweisen bauen (deutscher Text, je Grund und Feld eine verständliche Beschreibung), Versand über die Mailgun-API, neue Variablen, Option `--send-report` für den Dry-Run, Event `sync.report`. Getestet ohne Mailgun, mit einem Mock-Transport. **Umgesetzt (2026-11-05):** `hr_sync.report`; `httpx` ist jetzt eine direkte Abhängigkeit. Ungeprüft gegen das echte Mailgun, das holt der erste Probelauf mit `--send-report` nach | Ein Lauf mit etwas zu berichten schickt die Mail; `uv run hr-sync --dry-run --send-report` schickt einen Probelauf |
 | 12 | **Docker und Betrieb** (O9, siehe 7.1): `Dockerfile`, Workflow, der bei einem Release-Tag das Image baut und in die GHCR legt, Betriebsanleitung im README (Aufruf, Cron oder systemd-Timer um 0:00 Uhr mit `TZ=Europe/Berlin`, `.env`, Logs, Update) | `docker run … --dry-run` läuft lokal; ein Release-Tag legt das Image in die GHCR |
 
 AP 2 liegt in einem anderen Repo und kann parallel zu AP 1, 3 und 4 laufen. Dasselbe gilt für O16 (aiohttp-Grenze in

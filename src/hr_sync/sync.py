@@ -8,6 +8,7 @@ that executes only one entry of the plan:
 - :func:`load_snapshots` loads Personio and the selected target systems, one after the other.
 - :func:`create_plan` creates the plan and logs it.
 - :func:`execute_plan` executes it, first in weclapp, then in Decidalo.
+- :func:`send_run_report` sends the report to the HR management.
 
 :func:`run` does all of it and logs the event ``sync.run``. Any error ends the run with :attr:`ExitCode.ABORTED`.
 """
@@ -37,6 +38,7 @@ from hr_sync.events import emit, emit_operation, error_fields, run_context, wide
 from hr_sync.model import Notice, Snapshot, TargetSystem
 from hr_sync.plan import Operation, OperationResult, Outcome, SyncPlan
 from hr_sync.planner import build_plan
+from hr_sync.report import Report, abort_reason, build_report, render_report, send_report
 from hr_sync.systems.decidalo import DecidaloTarget, NewUserDefaults, execute_decidalo, load_decidalo
 from hr_sync.systems.personio import PersonioAttributes, PersonioSource, load_personio
 from hr_sync.systems.weclapp import WeclappSetup, execute_weclapp, load_weclapp
@@ -48,7 +50,7 @@ class ExitCode(IntEnum):
     SUCCESS = 0
     """also with an empty plan or with notices"""
     OPERATION_FAILED = 1
-    """at least one operation failed or was skipped"""
+    """at least one operation failed or was skipped, or the report couldn't be sent"""
     ABORTED = 2
     """e.g. because of the configuration or an error while loading"""
 
@@ -64,6 +66,8 @@ class RunOptions:
     max_employees: int | None = None
     """stops planning as soon as this many employees have operations, e.g. to keep a test run small"""
     dry_run: bool = False
+    send_report: bool = False
+    """sends the report also in a dry run, marked as such; a real run sends it anyway (see :func:`run`)"""
 
 
 @dataclass(frozen=True)
@@ -104,27 +108,45 @@ def run(
     """
     Runs the sync and returns its exit code. Logs the event ``sync.run`` with the totals of the operations.
 
+    At the end, also after an abort, the report goes to the HR management (see :func:`send_run_report`). If it can't
+    be sent, the exit code is at least :attr:`ExitCode.OPERATION_FAILED`.
+
     ``systems`` defaults to the clients created by :func:`connect`, ``today`` to ``date.today()``.
     """
+    run_id = uuid4().hex
+    today = today or date.today()
     with (
-        run_context(run_id=uuid4().hex, environment=settings.hr_sync_environment, dry_run=options.dry_run),
+        run_context(run_id=run_id, environment=settings.hr_sync_environment, dry_run=options.dry_run),
         wide_event("sync.run") as event,
     ):
         event.update(_option_fields(options))
         connected: Systems | None = None
+        snapshots: Snapshots | None = None
+        sync_plan: SyncPlan | None = None
+        executing = False
         try:
             check_settings(settings, options.targets)
             if systems is None:
                 systems = connected = connect(settings, options.targets)
-            snapshots = load_snapshots(systems, settings, options.targets, today or date.today())
+            snapshots = load_snapshots(systems, settings, options.targets, today)
             sync_plan = create_plan(snapshots, options.only, options.max_employees)
+            executing = True
             results = execute_plan(systems, sync_plan, settings, dry_run=options.dry_run)
         except Exception as error:  # any error ends the run with an event, but without its message
+            report = build_report(
+                snapshot_notices=snapshots.notices if snapshots is not None else (),
+                sync_plan=sync_plan,
+                aborted=abort_reason(error, executing=executing),
+            )
+            send_run_report(report, settings, options, run_id=run_id, today=today)
             return _aborted(event, error)
         finally:
             if connected is not None:
                 connected.close()
         exit_code = _exit_code(results)
+        report = build_report(snapshot_notices=snapshots.notices, sync_plan=sync_plan, results=results)
+        if not send_run_report(report, settings, options, run_id=run_id, today=today):
+            exit_code = max(exit_code, ExitCode.OPERATION_FAILED)
         event["results"] = _totals(results)
         event["notices"] = len(snapshots.notices) + len(sync_plan.notices)
         event["errors"] = sum(result.outcome == Outcome.ERROR for result in results)
@@ -279,6 +301,32 @@ def execute_plan(systems: Systems, sync_plan: SyncPlan, settings: Settings, *, d
         else:
             results.extend(execute_weclapp(_weclapp(systems), operations, setup=weclapp_setup(settings)))
     return results
+
+
+def send_run_report(report: Report, settings: Settings, options: RunOptions, *, run_id: str, today: date) -> bool:
+    """
+    Sends the report to the HR management, if the run sends one: only with recipients, never in the test mode (see
+    :attr:`hr_sync.config.Settings.sends_report`), and in a dry run only with :attr:`RunOptions.send_report`. A report
+    without content isn't sent. Logs the event ``sync.report`` with the number of entries per section, never the text.
+
+    Returns False if the mail couldn't be sent; the error is part of the event, without its message.
+    """
+    if not settings.sends_report or (options.dry_run and not options.send_report):
+        return True
+    with wide_event("sync.report") as event:
+        event.update(report.counts)
+        event.update(aborted=report.aborted is not None, recipients=len(settings.hr_sync_report_to), sent=False)
+        if report.is_empty:
+            return True
+        mail = render_report(report, targets=options.targets, today=today, run_id=run_id, dry_run=options.dry_run)
+        try:
+            send_report(mail, settings)
+        except Exception as error:  # the sync is done anyway; the failure shows in the event and the exit code
+            event["outcome"] = "error"
+            event["error"] = error_fields(error)
+            return False
+        event["sent"] = True
+        return True
 
 
 def personio_attributes(settings: Settings) -> PersonioAttributes:
