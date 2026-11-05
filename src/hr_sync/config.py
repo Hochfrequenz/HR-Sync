@@ -98,15 +98,39 @@ class Settings(BaseSettings):
     """the users of weclapp whose notices are not logged, like :attr:`personio_ignored_person_ids`"""
     decidalo_ignored_user_ids: Annotated[frozenset[str], NoDecode] = frozenset()
     """the users of Decidalo whose notices are not logged, like :attr:`personio_ignored_person_ids`"""
+    hr_sync_report_to: Annotated[tuple[str, ...], NoDecode] = ()
+    """
+    the recipients of the report, separated by commas; without recipients, no report is sent. The test mode never
+    sends one (see :mod:`hr_sync.report`)
+    """
+    hr_sync_report_from: str | None = None
+    """the sender of the report, e.g. ``HR-Sync <hr-sync@mg.example.com>``; required with recipients"""
+    mailgun_api_key: SecretStr | None = None
+    """required with recipients of the report"""
+    mailgun_domain: str | None = None
+    """the sending domain in Mailgun; required with recipients of the report"""
+    mailgun_base_url: str = "https://api.eu.mailgun.net"
+    """the HTTP API of Mailgun in the EU; ``https://api.mailgun.net`` for an account in the US"""
 
     @field_validator(
-        "personio_ignored_person_ids", "weclapp_ignored_user_ids", "decidalo_ignored_user_ids", mode="before"
+        "personio_ignored_person_ids",
+        "weclapp_ignored_user_ids",
+        "decidalo_ignored_user_ids",
+        "hr_sync_report_to",
+        mode="before",
     )
     @classmethod
-    def _split_ids(cls, value: object) -> object:
+    def _split_list(cls, value: object) -> object:
         if isinstance(value, str):
-            return frozenset(item.strip() for item in value.split(",") if item.strip())
+            return [item.strip() for item in value.split(",") if item.strip()]
         return value
+
+    @property
+    def sends_report(self) -> bool:
+        """
+        True if a run sends the report: with recipients and outside the test mode, whose data is anonymized.
+        """
+        return bool(self.hr_sync_report_to) and not self.test_mode
 
     @property
     def test_mode(self) -> bool:
@@ -181,12 +205,13 @@ def check_settings(settings: Settings, targets: Collection[TargetSystem]) -> Non
     The production mode needs the credentials of the production systems, the test mode those of the test
     environments: ``DECIDALO_TEST_BASE_URL`` and ``DECIDALO_TEST_API_KEY`` instead of ``DECIDALO_API_KEY``. weclapp
     needs ``WECLAPP_API_TOKEN``, ``WECLAPP_EMPLOYEE_NUMBER_ATTRIBUTE_ID`` and either ``WECLAPP_TENANT`` or
-    ``WECLAPP_BASE_URL``.
+    ``WECLAPP_BASE_URL``. A report (see :attr:`Settings.sends_report`) needs ``MAILGUN_API_KEY``, ``MAILGUN_DOMAIN``
+    and ``HR_SYNC_REPORT_FROM``.
 
     Raises:
         ConfigurationError: if weclapp is selected in the test mode, where it's never allowed, if a credential of
-            Personio or a selected target system is missing, or if the test mode would write to the production system
-            of Decidalo.
+            Personio, a selected target system or Mailgun is missing, or if the test mode would write to the
+            production system of Decidalo.
     """
     if settings.test_mode and TargetSystem.WECLAPP in targets:
         raise ConfigurationError(ConfigurationProblem.TARGET_NOT_ALLOWED_IN_TEST_MODE)
@@ -197,6 +222,8 @@ def check_settings(settings: Settings, targets: Collection[TargetSystem]) -> Non
         )
     if TargetSystem.WECLAPP in targets:
         required.extend(["weclapp_api_token", "weclapp_employee_number_attribute_id"])
+    if settings.sends_report:
+        required.extend(["mailgun_api_key", "mailgun_domain", "hr_sync_report_from"])
     missing = [name.upper() for name in required if getattr(settings, name) is None]
     if TargetSystem.WECLAPP in targets and settings.weclapp_tenant is None and settings.weclapp_base_url is None:
         missing.extend(["WECLAPP_TENANT", "WECLAPP_BASE_URL"])

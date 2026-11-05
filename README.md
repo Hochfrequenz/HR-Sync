@@ -54,6 +54,7 @@ uv run hr-sync --dry-run --target decidalo
 | Option | Meaning |
 |---|---|
 | `--dry-run` | load and plan, but don't write to any target system |
+| `--send-report` | send the report also in a dry run, marked as such; real runs send it if `HR_SYNC_REPORT_TO` is set |
 | `--only EMPLOYEE_NUMBER ...` | restrict the plan to these employee numbers; all employees are loaded anyway, to find data problems |
 | `--max-employees N` | stop planning as soon as N employees have operations, e.g. `1` for a small test run; the employees after them are not planned |
 | `--target weclapp\|decidalo ...` | the target systems (default: all); the others are neither loaded nor written |
@@ -63,7 +64,7 @@ uv run hr-sync --dry-run --target decidalo
 | Exit code | Meaning |
 |---|---|
 | 0 | success, also with an empty plan or with notices |
-| 1 | at least one operation failed or was skipped |
+| 1 | at least one operation failed or was skipped, or the report couldn't be sent |
 | 2 | aborted, e.g. because of the configuration or an error while loading |
 
 > [!WARNING]
@@ -82,6 +83,25 @@ After creating a user and its employee record, HR-Sync invites the user, so that
 weclapp has no dry run for this, so only a run without `--dry-run` invites. A user that existed already, e.g. one
 whose employee record a run completes, isn't invited. If the invitation fails, the operation ends with
 `detail=invitation_not_sent` and isn't repeated by later runs: invite the user by hand.
+
+### Report
+
+At the end of a run, HR-Sync sends a short report to the HR management, through the HTTP API of
+[Mailgun](https://www.mailgun.com/). It's written in German and lists the employees it created and in which systems,
+problems while creating, data problems in the systems and existing employees with deviations, or why the run was
+aborted. Like the events, it contains no personal data besides employee numbers and the ids of records without one. A
+run with nothing to report sends no mail.
+
+| Variable | Meaning |
+|---|---|
+| `HR_SYNC_REPORT_TO` | the recipients, separated by commas; without recipients, no report is sent |
+| `HR_SYNC_REPORT_FROM` | the sender, e.g. `HR-Sync <hr-sync@mg.example.com>` |
+| `MAILGUN_API_KEY`, `MAILGUN_DOMAIN` | the API key and the sending domain in Mailgun |
+| `MAILGUN_BASE_URL` | default `https://api.eu.mailgun.net`; `https://api.mailgun.net` for an account in the US |
+
+A dry run sends the report only with `--send-report`, marked as a dry run, e.g. to test the setup. The test mode never
+sends one. If the mail can't be sent, the sync is done anyway, the event `sync.report` has `outcome=error` and the exit
+code is at least 1.
 
 ### Test Mode
 

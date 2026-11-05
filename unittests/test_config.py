@@ -81,6 +81,14 @@ class TestLoadSettings:
             settings.decidalo_ignored_user_ids,
         )
         assert ignored == (frozenset(), frozenset(), frozenset())
+        # no report without recipients; Mailgun in the EU
+        assert (settings.hr_sync_report_to, settings.hr_sync_report_from) == ((), None)
+        assert (settings.mailgun_api_key, settings.mailgun_domain) == (None, None)
+        assert settings.mailgun_base_url == "https://api.eu.mailgun.net"
+
+    def test_recipients_are_separated_by_commas(self) -> None:
+        Path(".env").write_text("HR_SYNC_REPORT_TO=hr@example.com, it@example.com,\n", encoding="utf-8")
+        assert load_settings().hr_sync_report_to == ("hr@example.com", "it@example.com")
 
     def test_ignored_ids_are_separated_by_commas(self) -> None:
         Path(".env").write_text(
@@ -211,6 +219,24 @@ class TestCheckSettings:
     def test_weclapp_base_url_instead_of_tenant(self) -> None:
         settings = _weclapp_settings(weclapp_tenant=None, weclapp_base_url="https://hf.weclapp.com/webapp/api/v2/")
         check_settings(settings, [TargetSystem.WECLAPP])
+
+    def test_report_needs_mailgun(self) -> None:
+        settings = _settings(hr_sync_report_to="hr@example.com")
+        with pytest.raises(ConfigurationError) as error_info:
+            check_settings(settings, [TargetSystem.DECIDALO])
+        assert error_info.value.problem == ConfigurationProblem.MISSING_VARIABLES
+        assert error_info.value.variables == ("MAILGUN_API_KEY", "MAILGUN_DOMAIN", "HR_SYNC_REPORT_FROM")
+        complete = _settings(
+            hr_sync_report_to="hr@example.com",
+            mailgun_api_key="key",
+            mailgun_domain="mg.example.com",
+            hr_sync_report_from="hr-sync@mg.example.com",
+        )
+        check_settings(complete, [TargetSystem.DECIDALO])
+
+    def test_test_mode_sends_no_report(self) -> None:
+        # so Mailgun is not needed, even with recipients
+        check_settings(_test_settings(hr_sync_report_to="hr@example.com"), [TargetSystem.DECIDALO])
 
     def test_test_mode(self) -> None:
         # without the key of the production system

@@ -74,6 +74,12 @@ class TestOptions:
         )
 
     @pytest.mark.usefixtures("log_formats")
+    def test_send_report(self, runs: _Runs) -> None:
+        assert main(["--dry-run", "--send-report"]) == 0
+        ((_, options),) = runs.calls
+        assert (options.dry_run, options.send_report) == (True, True)
+
+    @pytest.mark.usefixtures("log_formats")
     def test_targets_are_executed_in_their_order(self, runs: _Runs) -> None:
         main(["--target", "decidalo", "weclapp", "--target", "decidalo"])
         ((_, options),) = runs.calls

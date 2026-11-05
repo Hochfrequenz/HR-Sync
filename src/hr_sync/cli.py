@@ -16,7 +16,7 @@ from hr_sync.sync import RunOptions, abort, run
 _EXIT_CODES = """\
 exit codes:
   0  success, also with an empty plan or with notices
-  1  at least one operation failed or was skipped
+  1  at least one operation failed or was skipped, or the report couldn't be sent
   2  aborted, e.g. because of the configuration or an error while loading
 """
 
@@ -45,6 +45,11 @@ def _build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--dry-run", action="store_true", help="load and plan, but don't write to any target system")
+    parser.add_argument(
+        "--send-report",
+        action="store_true",
+        help="send the report also in a dry run, marked as such; real runs send it if HR_SYNC_REPORT_TO is set",
+    )
     parser.add_argument(
         "--only",
         action="extend",
@@ -92,6 +97,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         only=frozenset(args.only) if args.only is not None else None,
         max_employees=args.max_employees,
         dry_run=args.dry_run,
+        send_report=args.send_report,
     )
     try:
         settings = load_settings(args.env_file)
