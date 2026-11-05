@@ -55,7 +55,8 @@ HR-Sync überträgt beim Onboarding die Stammdaten neuer Mitarbeiter aus **Perso
 | Programmstruktur | synchron, gut wart- und debugbar. async nur gekapselt in den Adaptern für Personio und Decidalo, mit einem `asyncio.run` je Schritt (Laden, Ausführen) und System. Anfragen nacheinander. Jeder Adapter trennt Laden (IO) und Mappen (reine Logik), siehe Abschnitt 3 |
 | Logging | Wide Events mit Loguru. Ausgabe umschaltbar (lesbar oder JSON) |
 | Personenbezogene Daten in Logs | nein: nur MA-Nummer, systeminterne IDs, Feldnamen und Zahlen. Die MA-Nummer allein ist unkritisch, problematisch wird sie erst zusammen mit weiteren Daten wie dem Namen. Meldet ein Scanner wie CodeQL die Ausgabe einer MA-Nummer allein, ist das ein Fehlalarm (AP 8) |
-| Betrieb | zeitgesteuert auf einem internen Server (Cron, Task Scheduler oder Container-Job), die Secrets liegen dort in einer `.env`. Welcher Server, welches Intervall und wer benachrichtigt wird, ist offen (O9) |
+| Betrieb (O9) | ~~zeitgesteuert auf einem internen Server (Cron, Task Scheduler oder Container-Job), die Secrets liegen dort in einer `.env`. Welcher Server, welches Intervall und wer benachrichtigt wird, ist offen (O9)~~ **Entschieden (2026-11-05):** ein Linux-Server mit Docker. HR-Sync läuft jede Nacht um 0:00 Uhr (`Europe/Berlin`) als Container-Job, gestartet per Cron oder systemd-Timer. Das Image baut GitHub Actions bei jedem Release-Tag und legt es in die GitHub Container Registry (GHCR), der Server zieht eine feste Version. Die `.env` mit Secrets und Ignore-Liste liegt nur auf dem Server. Einzelheiten in 7.1, Umsetzung in AP 12 |
+| Bericht per Mail (O9) | Gibt es in einem Lauf etwas zu berichten, bekommt das HR-Management eine Mail über Mailgun (Region EU): schlank, nicht technisch, ohne personenbezogene Daten. Inhalt: angelegte Mitarbeiter je System, Fehler und Warnungen beim Anlegen, Datenfehler in den Systemen und ein kurzer Abschnitt mit Abweichungen. Ein Dry-Run schickt nur mit eigenem Schalter eine Mail, gekennzeichnet als Probelauf. Einzelheiten in 7.2, Umsetzung in AP 11 |
 | PyPI-Paket | `hochfrequenz-hr-sync`, Befehl `hr-sync`, Import-Paket `hr_sync`, Lizenz MIT wie die Clients. Der Zeitpunkt des ersten Releases ist offen (O14) |
 | Zielgruppe des Pakets | auch andere Firmen: Alles Firmenspezifische ist konfigurierbar und dokumentiert. Ausnahme sind die Mappings und festen weclapp-Werte der Phase 2: Sie stehen fest im Code (4.4, O15). CLI, Umgebungsvariablen, Exit-Codes und Event-Felder sind eine stabile Schnittstelle |
 | Stabile Version | erst, wenn auch die Clients stabil sind. Bis dahin erscheint HR-Sync nur als Pre-Release |
@@ -951,6 +952,58 @@ Umgesetzt in [`config.py`](../../src/hr_sync/config.py), [`sync.py`](../../src/h
 - **CLI:** `--only` und `--target` nehmen mehrere Werte auf einmal (`--only 00965 00200`) und lassen sich
   wiederholen. Die Hilfe nennt die Exit-Codes.
 
+### 7.1 Betrieb (O9)
+
+Entschieden am 2026-11-05, umgesetzt in AP 12.
+
+- **Server:** ein Linux-Server mit Docker. Welcher, ist noch offen (O9).
+- **Image:** ein `Dockerfile` im Repo. Bei jedem Release-Tag `v*` baut GitHub Actions das Image und legt es als
+  `ghcr.io/hochfrequenz/hr-sync:<version>` in die GHCR. Das Repo ist öffentlich, das Image also auch. Es enthält
+  keine Secrets. Ein Release auf PyPI (AP 10) braucht es nicht, das Image baut aus dem Repo.
+- **Zeitplan:** jede Nacht um 0:00 Uhr, per Cron oder systemd-Timer. Der Container läuft mit `TZ=Europe/Berlin`.
+  HR-Sync rechnet mit dem heutigen Datum, und unter UTC wäre um 0:00 Uhr deutscher Zeit noch der Vortag.
+- **Aufruf:** `docker run --rm --env-file <pfad>/.env ghcr.io/hochfrequenz/hr-sync:<version> --log-format json`.
+  Die `.env` mit Zugangsdaten, Ignore-Liste (O10) und Mailgun-Daten liegt nur auf dem Server.
+- **Logs:** Die Events gehen nach stdout, Docker hält sie mit Rotation vor. Sie enthalten keine personenbezogenen
+  Daten (Abschnitt 6).
+- **Update:** Release mit neuem Tag anlegen, auf dem Server die Version im Aufruf anheben.
+- **0:00 Uhr und Personio:** HR-Sync legt an, wenn das Employment `ACTIVE` ist und spätestens heute beginnt. Setzt
+  Personio den Status erst im Laufe des Starttags, kommt der Mitarbeiter erst in der Nacht danach (O29).
+- **Vor dem ersten nächtlichen Lauf:** Ignore-Liste befüllen (O10), Kostensatz klären (O27), Mailgun einrichten und mit
+  einem Dry-Run mit `--send-report` prüfen (7.2). Erst dann den Zeitplan einschalten.
+
+### 7.2 Bericht per Mail (O9)
+
+Entschieden am 2026-11-05, umgesetzt in AP 11.
+
+- **Empfänger:** das HR-Management, Adressen kommagetrennt in `HR_SYNC_REPORT_TO`. Ohne Empfänger schickt HR-Sync keine
+  Mail.
+- **Versand:** über die HTTP-API von Mailgun, Region EU. Neue Variablen: `MAILGUN_API_KEY`, `MAILGUN_DOMAIN`,
+  `MAILGUN_BASE_URL` (Standard `https://api.eu.mailgun.net`), `HR_SYNC_REPORT_FROM` und `HR_SYNC_REPORT_TO`.
+- **Wann:** nur wenn es etwas zu berichten gibt: eine Anlage, eine fehlgeschlagene oder übersprungene Operation, eine
+  Warnung, eine Abweichung oder einen Abbruch. Ein Lauf ohne all das schickt nichts. Datenfehler und Abweichungen
+  bleiben, bis jemand sie behebt. Die Mail kommt deshalb praktisch jede Nacht. Bekannte Fälle blendet die Ignore-Liste
+  aus (O10).
+- **Dry-Run:** schickt keine Mail, außer mit `--send-report`. Dann ist die Mail als Probelauf gekennzeichnet. So lässt
+  sich der Versand vor dem Go-live prüfen, ohne etwas anzulegen.
+- **Inhalt:** ohne personenbezogene Daten, wie die Events: MA-Nummern, Systeme, IDs und Zahlen. Namen und
+  E-Mail-Adressen gehen nicht über Mailgun. Einzelheiten findet HR über die MA-Nummer in Personio. Der Text ist
+  deutsch, schlank und nicht technisch. Die Abschnitte erscheinen nur, wenn sie etwas enthalten:
+  1. **Angelegt:** je MA-Nummer die Systeme, in denen der Mitarbeiter angelegt wurde.
+  2. **Probleme beim Anlegen:** je MA-Nummer und System in Worten, was passiert ist und was zu tun ist, z. B. „angelegt,
+     aber die Einladung ging nicht raus: bitte in weclapp per Hand einladen“.
+  3. **Datenfehler:** je System die MA-Nummer (oder die ID, wenn die Nummer fehlt) und das Problem in Worten, z. B.
+     „Karrierestufe fehlt“ oder „keine MA-Nummer hinterlegt“.
+  4. **Abweichungen:** kurz, je System die Zahl und die MA-Nummern.
+  5. **Abbruch:** dass der Lauf abgebrochen ist und nichts angelegt wurde, mit dem Grund in Worten.
+
+  Am Ende stehen Datum und Lauf-ID, damit sich die Logs finden lassen.
+- **Betreff:** fasst zusammen, z. B. „HR-Sync 05.11.2026: 1 angelegt, 3 Datenfehler“.
+- **Fehler beim Versand** ändern nichts am Sync. HR-Sync loggt sie als Event `sync.report`, ohne die Antwort von
+  Mailgun, und hebt den Exit-Code auf mindestens 1, damit sie auffallen.
+- **Grenze:** Lässt sich schon die Konfiguration nicht lesen, kann HR-Sync keine Mail schicken. Das fällt dann nur über
+  den Exit-Code 2 und die Logs auf.
+
 ## 8. Testumgebungen und Anonymisierung
 
 In Testumgebungen landen keine Namen, E-Mail-Adressen oder Telefonnummern. Was dort landet, ist allerdings
@@ -1251,12 +1304,16 @@ Die Reihenfolge baut zuerst den Kern ohne IO und hängt dann die Systeme an:
 | 8a | **Felder der Phase 2 in Personio und Decidalo** (4.4): Modell, `mappings.py`, Personio-Mapping mit Pflichtfeldern und Datenproblemen, Decidalo-Felder (`jobTitle`, `serviceCategoryName`, `mobilePhoneNumber`, `holidayListCode`, `standardWeeklyHours`) samt Vergleich, Anonymisierung der Telefonnummer, Integrationstest (O24). Entscheidungen aus O22 und O25 in 1.1. In zwei PRs: PR 1 die Quelle (`mappings.py`, Modell und Datenprobleme, Personio, Anonymisierung, Konfiguration), PR 2 das Ziel (Decidalo, Vergleich im Planner, Integrationstest). Nur PR 2 schließt Issue #19 | `uv run pytest -m integration_write` legt den ersten Planeintrag mit allen Decidalo-Feldern der Phase 2 an |
 | 9 | **Testlauf:** Dry-Run gegen die echten Systeme (nur lesend) und offene Punkte klären. Dann der erste echte Lauf, **nur mit `--only <MA-Nummer>`**, vorher mit denselben Optionen als Dry-Run. **Seit 2026-10-30:** kein Testmitarbeiter, sondern ein Live-Lauf mit dem ersten echten neuen Mitarbeiter, was angelegt wird, bleibt (1.1). Voraussetzung: Die Testperson steht mit MA-Nummer, E-Mail, allen Pflichtfeldern der Phase 2 und einem aktiven Employment (Start heute oder früher) in Personio. In weclapp prüfen: Lizenzen und Rollen, den von weclapp vergebenen `username` (gleich der E-Mail?, 3.2), Zuweisung zu den INT-Projekten nach etwa 15 Minuten, Anmeldung im Zeitportal. **Erledigt (2026-11-02):** erster echter Lauf, vorher der Dry-Run, Prüfung in weclapp ohne Auffälligkeiten (12.1). Offen bleibt der Teil für Decidalo (O5) | Go-live-Entscheidung |
 | 10 | **PyPI-Paket** (siehe [Abschnitt 9](#9-pypi-paket)): `LICENSE`, README als Nutzerdoku, Publish-Workflow aktivieren, Trusted Publisher auf PyPI und Environment `release` einrichten, Python-Obergrenze prüfen, Release als Pre-Release oder stabil je nach Clients. Zeitpunkt offen (O14) | `hochfrequenz-hr-sync` auf PyPI |
+| 11 | **Bericht per Mail** (O9, siehe 7.2): den Bericht ohne IO aus Plan, Ergebnissen und Hinweisen bauen (deutscher Text, je Grund und Feld eine verständliche Beschreibung), Versand über die Mailgun-API, neue Variablen, Option `--send-report` für den Dry-Run, Event `sync.report`. Getestet ohne Mailgun, mit einem Mock-Transport | Ein Lauf mit etwas zu berichten schickt die Mail; `uv run hr-sync --dry-run --send-report` schickt einen Probelauf |
+| 12 | **Docker und Betrieb** (O9, siehe 7.1): `Dockerfile`, Workflow, der bei einem Release-Tag das Image baut und in die GHCR legt, Betriebsanleitung im README (Aufruf, Cron oder systemd-Timer um 0:00 Uhr mit `TZ=Europe/Berlin`, `.env`, Logs, Update) | `docker run … --dry-run` läuft lokal; ein Release-Tag legt das Image in die GHCR |
 
 AP 2 liegt in einem anderen Repo und kann parallel zu AP 1, 3 und 4 laufen. Dasselbe gilt für O16 (aiohttp-Grenze in
 den Clients), das vor AP 10 erledigt sein sollte.
 
 Reihenfolge ab den Feldern der Phase 2: AP 8a, AP 2a, AP 5, AP 9, AP 10. AP 8a ist erledigt (#20, #21). AP 2a liegt
-im Repo des weclapp-client. AP 2a, AP 5 und AP 9 sind erledigt, offen ist AP 10 (Zeitpunkt O14).
+im Repo des weclapp-client. AP 2a, AP 5 und AP 9 sind erledigt, offen ist AP 10 (Zeitpunkt O14). Für den Betrieb
+(O9) folgen AP 11 (Bericht per Mail) und AP 12 (Docker), in dieser Reihenfolge und je in einem eigenen PR. AP 10 ist
+dafür nicht nötig, weil das Image aus dem Repo baut.
 
 ### 12.1 AP 9: Dry-Runs und erster echter Lauf gegen die Produktion (2026-10-30 bis 2026-11-02)
 
@@ -1290,12 +1347,12 @@ haben wir verzichtet. Einzelheiten liegen lokal beim Auftraggeber (1.1).
 | O6 | ~~Woran erkennt der Decidalo-Import bestehende User?~~ **Erledigt durch die Regel `email_in_use`:** HR-Sync schickt nur MA-Nummern, die in Decidalo fehlen, und keine E-Mail, die dort schon vergeben ist. Damit trifft `ImportSync` keinen bestehenden User, egal wie es zuordnet | – | R3, Abschnitt 4.2 |
 | O7 | ~~Grenzen und Timeouts von `GET /importapi/User` und `ImportSync`, Beginn von `rowIndex`~~ **Erledigt in AP 8:** **Paketgröße:** Es gibt keine Pakete mehr. Jeder `ImportSync`-Aufruf legt genau einen User an, Mitarbeiter für Mitarbeiter (1.1). **Laden:** Ohne `top` liefert `GET /importapi/User` laut Spec alle User, in der Testumgebung alle 51 in 0,2 s. Eine stille Kürzung fällt durch die Vollständigkeitsprüfung auf und bricht den Lauf vor dem Planen ab (1.1). **Timeouts:** Der Client setzt keines, es gilt das Standard-Timeout von aiohttp (5 Minuten je Anfrage). Ein Timeout beim Laden bricht den Lauf ab (Exit-Code 2), beim Anlegen wird die Operation zum Fehler und der Rest übersprungen (Exit-Code 1). **`rowIndex`** beginnt bei 0, HR-Sync braucht ihn nicht. Bei `Created` liefert die Antwort keine `userID`, `target_id` bleibt in `sync.operation` dann leer | – | Abschnitt 3.3 |
 | O8 | ~~Personio-Person ohne Employment oder Startdatum: ohne Eintrittsdatum anlegen oder überspringen?~~ **Erledigt:** Ohne aktives Employment mit Startdatum heute oder früher ist ein Mitarbeiter nicht relevant. Ein aktives Employment ohne Startdatum ist ein Datenproblem | – | Abschnitt 3.1, 5 |
-| O9 | **Richtung geklärt:** zeitgesteuert auf einem internen Server (Cron, Task Scheduler oder Container-Job), Secrets dort in einer `.env`. Offen: welcher Server, welches Intervall, wer bei Warnungen oder Fehlern benachrichtigt wird | vor dem Go-live | [#9](https://github.com/Hochfrequenz/HR-Sync/issues/9) |
+| O9 | **Richtung geklärt:** zeitgesteuert auf einem internen Server (Cron, Task Scheduler oder Container-Job), Secrets dort in einer `.env`. ~~Offen: welcher Server, welches Intervall, wer bei Warnungen oder Fehlern benachrichtigt wird~~ **Entschieden (2026-11-05):** Linux-Server mit Docker, Image aus der GHCR, jede Nacht um 0:00 Uhr, Bericht per Mail über Mailgun an das HR-Management (1.1, 7.1, 7.2). Umsetzung in AP 11 und AP 12. Offen: welcher Server konkret, Mailgun-Domain, Absender und Empfänger | vor dem Go-live | [#9](https://github.com/Hochfrequenz/HR-Sync/issues/9) |
 | O10 | ~~Brauchen wir eine Ignore-Liste für technische User ohne MA-Nummer (Admins, API-User), damit die Warnungen nicht jedes Mal kommen? Wir entscheiden nach dem ersten Dry-Run, wenn die Zahl der Warnungen bekannt ist. Der Dry-Run ist gelaufen (12.1), die Zahlen liegen lokal~~ **Erledigt (2026-11-04):** Ja, je System eine Liste von IDs in der `.env` (1.1, 7). Welche IDs darauf gehören, entscheidet der Auftraggeber; die Liste steht nur auf dem Server | – | Risiko R5 |
 | O11 | ~~Welche Python-Version? Laut weclapp-Plan (K3) die neueste~~ **Erledigt in AP 0:** Python 3.14 (CI 3.11–3.14), `requires-python = ">=3.11,<3.15"`, weil die Clients `aiohttp<3.14` verlangen (siehe O16) | – | AP 0 |
 | O12 | ~~URL und API-Key der Decidalo-Testumgebung, nimmt Decidalo E-Mails mit `example.com` an?~~ **Erledigt in AP 8:** URL und Key liegen in der lokalen `.env` (Testumgebung `https://import.decidalo.dev`). Decidalo nimmt die Ersatzadressen `test-<MA-Nummer>@example.com` an | – | Abschnitt 8 |
 | O13 | **Teilweise geklärt:** `delete=true` löscht wirklich. Deaktivieren ist ein eigenes Flag (`deactivate`), und die Antwort unterscheidet `Deleted` und `Deactivated`. ~~Lässt sich dieselbe `employeeID` danach wieder anlegen?~~ **Erledigt in AP 8:** Ja. `integration_write` lief mehrfach hintereinander mit derselben MA-Nummer, jedes Mal wurde sie angelegt und mit `Deleted` gelöscht | – | Abschnitt 8.3 |
-| O14 | Wann erscheint das erste Pre-Release auf PyPI? Das hängt mit O9 zusammen: Wird HR-Sync auf dem Server als Paket installiert, muss es vor dem Go-live erscheinen | später | Abschnitt 9 |
+| O14 | Wann erscheint das erste Pre-Release auf PyPI? Das hängt mit O9 zusammen: Wird HR-Sync auf dem Server als Paket installiert, muss es vor dem Go-live erscheinen. **Seit 2026-11-05:** Für den Betrieb nicht mehr nötig, das Docker-Image baut aus dem Repo (7.1) | später | Abschnitt 9 |
 | O15 | Brauchen andere Firmen weitere Einstellungen, z. B. für das displayName-Format oder die Relevanzregel? Sicher nötig sind sie für die festen weclapp-Werte der Phase 2 (IDs der Zusatzfelder, Auswahlwerte, Rollen, Arbeitszeitprofile), bevor eine andere Firma weclapp als Ziel nutzt (9.1) | nach Bedarf, spätestens vor weclapp bei einer anderen Firma | Abschnitt 9.1 |
 | O16 | `aiohttp`-Grenze in `personio-client` und `decidalo-client` auf `<3.15` anheben und neu releasen (`aiohttp 3.14` unterstützt Python 3.15). Danach entfällt die Obergrenze `<3.15` in HR-Sync. Stand 2026-10-28: Beide Clients verlangen weiterhin `aiohttp<3.14` (`personio-client` 0.1.0a1, `decidalo-client` 0.3.1) | vor AP 10 | Abschnitt 9.3, O11 |
 | O17 | ~~Lässt sich die weclapp-Mitarbeiternummer (`employeeNumber`) per API setzen?~~ **Erledigt (Vorgabe vom 2026-10-30):** Die `employeeNumber` vergibt weclapp selbst. Die MA-Nummer steht weiter im Zusatzfeld 7621 | – | [#8](https://github.com/Hochfrequenz/HR-Sync/issues/8) |
@@ -1309,13 +1366,16 @@ haben wir verzichtet. Einzelheiten liegen lokal beim Auftraggeber (1.1).
 | O25 | ~~Wer hat Zugriff auf die Decidalo-Testumgebung? Die Testdaten sind pseudonymisiert, nicht anonym (Abschnitt 8): Über die echte MA-Nummer lassen sie sich einem Mitarbeiter zuordnen. Der Zugriff muss deshalb auf Berechtigte beschränkt sein, wie in der Produktion. Bestätigen vor weiteren schreibenden Läufen in die Testumgebung~~ **Erledigt (2026-10-30):** Zugriff hat nur, wer auch die Produktion sieht. Die pseudonymisierten Testdaten dürfen weiter dorthin (1.1) | – | Abschnitt 8 |
 | O26 | Karrierestufen außerhalb des Mappings: In Personio gibt es Karrierestufen, die das Mapping nicht kennt (welche, steht in der lokalen Auswertung, 12.1). Bis das Mapping sie kennt, erzeugen sie bei jedem Lauf eine Warnung `unmapped_value`, und mit diesen Mitarbeitern passiert nichts. Vorläufige Richtung: einzelne Rollen bewusst ausnehmen (ohne Warnung, Anlage per Hand), die übrigen ins Mapping, nach Decidalo wie alle. Offen: je Rolle Decidalo-Service-Kategorie (muss in der Produktion existieren) und Urlaubsanspruch. Bis dahin bleibt das Mapping bei den vier Beraterstufen | später | Abschnitt 4.4 |
 | O27 | Darf der Kostensatz (8211) beim Anlegen eines weclapp-Users leer bleiben? Bis das geklärt ist, setzt HR-Sync 1 EUR/h als Platzhalter (O20). Darf das Feld leer bleiben, schickt HR-Sync es nicht mehr mit. Zu klären mit dem weclapp-Admin, z. B. ob Zeitbuchungen oder die automatische Zuweisung zu den INT-Projekten einen Kostensatz brauchen | vor dem Go-live | Abschnitt 4.4, O20 |
+| O29 | Wann setzt Personio am Starttag den Status des Employments von `ONBOARDING` auf `ACTIVE`? HR-Sync läuft um 0:00 Uhr (7.1). Wechselt der Status erst im Laufe des Tages, wird der Mitarbeiter erst in der Nacht danach angelegt. Zu prüfen beim nächsten neuen Mitarbeiter oder in der Doku von Personio. Falls nötig: den Lauf später ansetzen oder ein Employment mit Status `ONBOARDING` und Startdatum heute als relevant zählen | vor dem Go-live | Abschnitt 7.1, O9 |
 | O28 | ~~Soll HR-Sync neue weclapp-User selbst einladen? Beim Anlegen per API verschickt weclapp keine Einladungsmail (O2), bisher stößt sie jemand per Hand in der Weboberfläche an. Die API v2 hat dafür `POST /user/id/{id}/invite` (leerer Body, ohne `dryRun`, ein Aufruf schickt also echt eine Mail). Voraussetzung: Der `weclapp-client` kann die Aktion (Hochfrequenz/weclapp_client.py#35, Pre-Release `v0.1.0a4`). Vorläufige Richtung: Einladung als letzter Schritt von `CREATE`, nach User und Personalakte. Zu entscheiden: wie HR-Sync eine fehlgeschlagene Einladung meldet (User angelegt, Einladung fehlt) und ob es sie später erneut versucht. Ob ein zweiter Aufruf eine zweite Mail schickt, klärt das Client-Issue. Bis dahin wird weiter per Hand eingeladen~~ **Erledigt (2026-11-03):** Der Client kann es seit `0.1.0` (statt des geplanten Pre-Release `0.1.0a4`). HR-Sync lädt nach der Personalakte ein, nur bei `CREATE`; eine gescheiterte Einladung meldet es mit `detail=invitation_not_sent` und wiederholt sie nicht (1.1, 3.2). Offen: Die erste echte Einladung prüfen wir beim nächsten echten Lauf. Kommt die Mail an, und lädt niemand zusätzlich per Hand ein? Bis dahin ist ungeprüft, ob weclapp für die Einladung etwas am User voraussetzt | nächster echter Lauf | [weclapp_client.py#35](https://github.com/Hochfrequenz/weclapp_client.py/issues/35), O2, O5 |
 
 Keiner der offenen Punkte blockiert AP 2–7:
 
 - O2, O3, O7, O12, O13 und O17 sind geklärt.
 - O5 klären wir beim ersten Mitarbeiter, den HR-Sync in Decidalo anlegt.
-- O10 (Ignore-Liste) ist umgesetzt. O9 und O14 klären wir vor bzw. nach dem Go-live.
+- O10 (Ignore-Liste) ist umgesetzt. O9 ist entschieden (7.1, 7.2), umgesetzt wird in AP 11 und AP 12. O14 klären wir
+  nach dem Go-live.
+- O29 (Zeitpunkt des Statuswechsels in Personio) klären wir vor dem Go-live.
 - O16 und O18 liegen in anderen Repos. O19, O20 und O21 kommen nach Bedarf.
 - O22, O24 und O25 sind in AP 8a geklärt. O23 klären wir in AP 2a.
 - O26 (weitere Karrierestufen) kommt später. Bis dahin bleibt das Mapping bei den vier Beraterstufen.
