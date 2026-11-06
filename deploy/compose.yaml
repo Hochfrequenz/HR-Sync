@@ -1,0 +1,42 @@
+# Runs HR-Sync on a server with Docker and Dockhand, every night at 0:00 (section "Operation" in the README).
+#
+# The variables (see .env.example) never go into the repository. A copy of this file reads them from the .env next to
+# it; a Git stack in Dockhand from the variables of the stack, see env_file and environment below. Needs Docker Compose
+# 2.24 or later. Note that `docker compose up` and a deployment in Dockhand start a real run at once;
+# `docker compose up --no-start` only creates the container.
+name: hr-sync
+
+services:
+  hr-sync:
+    # for an update, raise the version to the one of a newer release
+    image: ghcr.io/hochfrequenz/hr-sync:0.1.0a1
+    container_name: hr-sync
+    command: ["--log-format", "json"]
+    env_file:
+      # a copy of this file: the .env next to it
+      - path: .env
+        required: false
+      # a Git stack: Dockhand writes the variables of the stack that aren't marked as secret into .env.dockhand
+      - path: .env.dockhand
+        required: false
+    # Dockhand passes the variables marked as secret only to docker compose, never in a file, so they are named here:
+    # every setting of the type SecretStr in hr_sync.config (checked by unittests/test_deploy.py). A copy of this file
+    # takes them from the .env next to it as well. Empty values count as unset.
+    environment:
+      PERSONIO_CLIENT_ID: ${PERSONIO_CLIENT_ID:-}
+      PERSONIO_CLIENT_SECRET: ${PERSONIO_CLIENT_SECRET:-}
+      WECLAPP_API_TOKEN: ${WECLAPP_API_TOKEN:-}
+      DECIDALO_API_KEY: ${DECIDALO_API_KEY:-}
+      DECIDALO_TEST_API_KEY: ${DECIDALO_TEST_API_KEY:-}
+      MAILGUN_API_KEY: ${MAILGUN_API_KEY:-}
+    # a run ends after the sync, the container stays until the next one
+    restart: "no"
+    labels:
+      # Dockhand starts the container every day at 0:00, in the timezone of the Dockhand environment, which must be
+      # Europe/Berlin; a start while a run is still going does nothing
+      dockhand.start.at: "00:00"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"

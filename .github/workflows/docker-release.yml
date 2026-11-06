@@ -1,0 +1,61 @@
+# Builds the image of HR-Sync for every release tag v*, checks it and pushes it to the GHCR as
+# ghcr.io/hochfrequenz/hr-sync:<version> and as latest (section 7.1 of the plan).
+name: "Docker Image"
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE: ghcr.io/hochfrequenz/hr-sync
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Derive the tags
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.IMAGE }}
+          # the version without the leading v, read as PEP 440 like hatch-vcs does, because a pre-release such as
+          # 0.1.0a1 is no valid SemVer
+          tags: type=pep440,pattern={{version}}
+          # latest is the newest release tag, also a pre-release: as long as a client is a pre-release, so is HR-Sync
+          flavor: latest=true
+      - uses: docker/setup-buildx-action@v4
+      - name: Build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          build-args: VERSION=${{ steps.meta.outputs.version }}
+          load: true
+          tags: hr-sync:check
+      - name: Check the image
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          set -euo pipefail
+          test "$(docker run --rm hr-sync:check --version)" = "hr-sync $VERSION"
+          # CET or CEST: the container runs on German time, see the Dockerfile
+          docker run --rm --entrypoint python hr-sync:check -c "import time; print(time.strftime('%Z'))" | grep -Ex 'CES?T'
+          test "$(docker run --rm --entrypoint id hr-sync:check -u)" != "0"
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Push
+        # the same build again, from the cache of the step "Build"
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          build-args: VERSION=${{ steps.meta.outputs.version }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
