@@ -1,0 +1,25 @@
+# Runs HR-Sync on a server with Docker and Dockhand, every night at 0:00 (section "Operation" in the README).
+#
+# The .env with the credentials lies next to this file on the server and never in the repository. Note that
+# `docker compose up` and a deployment in Dockhand start a real run at once; `docker compose up --no-start` only
+# creates the container.
+name: hr-sync
+
+services:
+  hr-sync:
+    # for an update, raise the version to the one of a newer release
+    image: ghcr.io/hochfrequenz/hr-sync:0.1.0a1
+    container_name: hr-sync
+    command: ["--log-format", "json"]
+    env_file: .env
+    # a run ends after the sync, the container stays until the next one
+    restart: "no"
+    labels:
+      # Dockhand starts the container every day at 0:00, in the timezone of the Dockhand environment, which must be
+      # Europe/Berlin; a start while a run is still going does nothing
+      dockhand.start.at: "00:00"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"

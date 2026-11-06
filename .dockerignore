@@ -1,0 +1,8 @@
+# Only what the image needs goes into the build context. Everything else stays out, above all the .env with the
+# credentials and local event logs, which may come from production.
+*
+!pyproject.toml
+!uv.lock
+!README.md
+!src/
+**/__pycache__

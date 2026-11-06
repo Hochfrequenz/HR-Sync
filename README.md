@@ -124,6 +124,44 @@ For a small test run, plan only one employee:
 uv run hr-sync --target decidalo --max-employees 1 --dry-run
 ```
 
+## Operation
+
+HR-Sync runs every night on a server with Docker, started by [Dockhand](https://github.com/Finsys/dockhand). Every
+release tag `v*` builds the image `ghcr.io/hochfrequenz/hr-sync:<version>`, also tagged `latest`, and pushes it to the
+GHCR. The image contains no secrets and runs without root rights, on German time (`TZ=Europe/Berlin`): HR-Sync works
+with today's date, and under UTC, 0:00 in Germany would still be the day before.
+
+[`deploy/compose.yaml`](deploy/compose.yaml) is the template for the server. Its label `dockhand.start.at: "00:00"`
+makes Dockhand start the container every day at 0:00, in the timezone of the Dockhand environment, which must be
+`Europe/Berlin`. A start while a run is still going does nothing. The container stays after a run: `docker logs hr-sync`
+and Dockhand show the events of the last runs, rotated after 5 × 10 MB, and its exit code is the one of the last run
+(see [Usage](#usage)).
+
+To set it up:
+
+1. Put `deploy/compose.yaml` and the `.env` (see [`.env.example`](.env.example)) into one directory on the server,
+   readable only by the operators. Fill in the ignore lists and the variables of the [report](#report).
+2. Check the setup with a dry run that sends the report, marked as a dry run:
+
+   ```bash
+   docker compose run --rm hr-sync --dry-run --send-report
+   ```
+
+3. Create the container without starting it:
+
+   ```bash
+   docker compose up --no-start
+   ```
+
+   `docker compose up -d` or a deployment in Dockhand create it as well, but start a real run at once.
+
+Instead of a copy of the file, Dockhand can also deploy `deploy/compose.yaml` from this repository (Git stack). Then
+every change of the file on `main` starts a real run as soon as Dockhand syncs it, and the `.env` must come from
+Dockhand, because it never goes into the repository.
+
+To update, create a release with a new tag `vX.Y.Z` on GitHub, wait for the workflow "Docker Image", raise the version
+in `compose.yaml` and recreate the container with `docker compose up --no-start`.
+
 ## Development
 
 This project uses [uv](https://docs.astral.sh/uv/) to manage the Python interpreter, the virtual environment and the
