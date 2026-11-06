@@ -156,8 +156,11 @@ To set it up:
    `docker compose up -d` or a deployment in Dockhand create it as well, but start a real run at once.
 
 Instead of a copy of the file, Dockhand can also deploy `deploy/compose.yaml` from this repository (Git stack). Then
-every change of the file on `main` starts a real run as soon as Dockhand syncs it, and the `.env` must come from
-Dockhand, because it never goes into the repository.
+the variables are those of the stack in Dockhand, because the `.env` never goes into the repository: Dockhand writes
+them into `.env.dockhand`, except the ones marked as secret, which it passes only to Docker Compose. The template
+therefore reads both `.env` and `.env.dockhand`, if they exist, and names the secret variables (every `SecretStr` in
+`hr_sync.config`) under `environment`. Every change of the file on `main` starts a real run as soon as Dockhand syncs
+it. The template needs Docker Compose 2.24 or later.
 
 To update, create a release with a new tag `vX.Y.Z` on GitHub, wait for the workflow "Docker Image", raise the version
 in `compose.yaml` and recreate the container with `docker compose up --no-start`.

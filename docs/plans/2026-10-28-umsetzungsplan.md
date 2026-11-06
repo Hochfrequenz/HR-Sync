@@ -979,13 +979,18 @@ Server schon läuft, statt Cron oder systemd-Timer. Die Betriebsanleitung steht 
   ein Start nichts. Zwei Läufe laufen also nie gleichzeitig, auch nicht, wenn später ein Webhook den Lauf anstößt
   (O30).
 - **Aufruf:** über die Compose-Vorlage `deploy/compose.yaml`: Image mit fester Version, `container_name: hr-sync`,
-  `--log-format json`, `env_file: .env`, `restart: "no"` und das Label für Dockhand. Die `.env` mit Zugangsdaten,
+  `--log-format json`, `env_file` mit `.env` und `.env.dockhand` (beide optional, siehe Git-Sync), `restart: "no"`
+  und das Label für Dockhand. Die Vorlage braucht Docker Compose 2.24 oder neuer. Die `.env` mit Zugangsdaten,
   Ignore-Liste (O10) und Mailgun-Daten liegt nur auf dem Server, neben der Vorlage. Der Container bleibt nach einem
   Lauf bestehen, statt mit `--rm` gelöscht zu werden. `docker compose up -d` und ein Deployment in Dockhand starten
   sofort einen echten Lauf. Zum Einrichten legt deshalb `docker compose up --no-start` den Container nur an.
 - **Git-Sync (optional):** Dockhand kann die Vorlage auch direkt aus dem Repo deployen. Dann startet jede Änderung an
-  `deploy/compose.yaml` auf `main` bei der nächsten Synchronisierung einen echten Lauf. Die `.env` muss dann aus
-  Dockhand kommen. Ob Kopie oder Git-Sync, wird beim Einrichten des Servers entschieden.
+  `deploy/compose.yaml` auf `main` bei der nächsten Synchronisierung einen echten Lauf. Die Variablen kommen dann aus
+  dem Stack in Dockhand, weil die `.env` nie ins Repo kommt. Normale Variablen schreibt Dockhand in `.env.dockhand`. Die
+  als geheim markierten gibt es nur an Docker Compose weiter, nie in eine Datei. Die Vorlage nennt sie deshalb unter
+  `environment`: jede Einstellung vom Typ `SecretStr`, geprüft von `unittests/test_deploy.py`. Eine Kopie der Vorlage
+  liest dieselben Variablen aus der `.env` daneben. Leere Werte zählen als nicht gesetzt. Ob Kopie oder Git-Sync,
+  wird beim Einrichten des Servers entschieden.
 - **Logs:** Die Events gehen nach stdout. Docker hält sie mit Rotation vor (`json-file`, 5 × 10 MB), zu sehen mit
   `docker logs hr-sync` oder in Dockhand. Das geht nur, weil der Container bestehen bleibt. Die Logs enthalten keine
   personenbezogenen Daten (Abschnitt 6). Der Exit-Code des Containers ist der des letzten Laufs.
