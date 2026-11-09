@@ -993,14 +993,17 @@ Server schon läuft, statt Cron oder systemd-Timer. Die Betriebsanleitung steht 
   wird beim Einrichten des Servers entschieden.
 - **Logs:** Die Events gehen nach stdout. Docker hält sie mit Rotation vor (`json-file`, 5 × 10 MB), zu sehen mit
   `docker logs hr-sync` oder in Dockhand. Das geht nur, weil der Container bestehen bleibt. Die Logs enthalten keine
-  personenbezogenen Daten (Abschnitt 6). Der Exit-Code des Containers ist der des letzten Laufs.
+  personenbezogenen Daten (Abschnitt 6). Der Exit-Code des Containers ist der des letzten Laufs. Die Logs gehören
+  zum Container: Notbremse und jedes Update löschen ihn und damit die Logs der vergangenen Läufe. Das ist vorerst so
+  gewollt (2026-11-09). Wohin die Logs dauerhaft gehen, regelt ein firmenweiter Log-Standard, der noch kommt (O31).
 - **Update:** Release mit neuem Tag anlegen, auf das Image warten, in der Vorlage die Version anheben und den Container
   mit `docker compose up --no-start` neu anlegen.
 - **0:00 Uhr und Personio:** HR-Sync legt an, wenn das Employment `ACTIVE` ist und spätestens heute beginnt. Setzt
   Personio den Status erst im Laufe des Starttags, kommt der Mitarbeiter erst in der Nacht danach (O29).
 - **Notbremse:** `docker compose down` oder den Stack in Dockhand löschen. Ohne Container gibt es nichts mehr, das
-  Dockhand um 0:00 Uhr starten könnte. Läuft gerade ein Lauf (`docker ps`), erst sein Ende abwarten. Wieder
-  eingeschaltet wird wie bei der Inbetriebnahme, Schritt 6.
+  Dockhand um 0:00 Uhr starten könnte. Läuft gerade ein Lauf (`docker ps`), erst sein Ende abwarten. Mit dem
+  Container gehen auch die Logs der vergangenen Läufe verloren (O31). Wer sie braucht, sichert sie vorher auf dem
+  Server mit `docker logs hr-sync > <datei>`. Wieder eingeschaltet wird wie bei der Inbetriebnahme, Schritt 6.
 
 **Inbetriebnahme** (präzisiert am 2026-11-09): vor dem ersten nächtlichen Lauf, in dieser Reihenfolge. Jeder Lauf gegen
 die Produktion, auch der Probelauf, nur mit ausdrücklicher Zustimmung des Auftraggebers.
@@ -1438,6 +1441,7 @@ haben wir verzichtet. Einzelheiten liegen lokal beim Auftraggeber (1.1).
 | O29 | Wann setzt Personio am Starttag den Status des Employments von `ONBOARDING` auf `ACTIVE`? HR-Sync läuft um 0:00 Uhr (7.1). Wechselt der Status erst im Laufe des Tages, wird der Mitarbeiter erst in der Nacht danach angelegt. Zu prüfen beim nächsten neuen Mitarbeiter oder in der Doku von Personio. Falls nötig: den Lauf später ansetzen oder ein Employment mit Status `ONBOARDING` und Startdatum heute als relevant zählen | vor dem Go-live | Abschnitt 7.1, O9 |
 | O28 | ~~Soll HR-Sync neue weclapp-User selbst einladen? Beim Anlegen per API verschickt weclapp keine Einladungsmail (O2), bisher stößt sie jemand per Hand in der Weboberfläche an. Die API v2 hat dafür `POST /user/id/{id}/invite` (leerer Body, ohne `dryRun`, ein Aufruf schickt also echt eine Mail). Voraussetzung: Der `weclapp-client` kann die Aktion (Hochfrequenz/weclapp_client.py#35, Pre-Release `v0.1.0a4`). Vorläufige Richtung: Einladung als letzter Schritt von `CREATE`, nach User und Personalakte. Zu entscheiden: wie HR-Sync eine fehlgeschlagene Einladung meldet (User angelegt, Einladung fehlt) und ob es sie später erneut versucht. Ob ein zweiter Aufruf eine zweite Mail schickt, klärt das Client-Issue. Bis dahin wird weiter per Hand eingeladen~~ **Erledigt (2026-11-03):** Der Client kann es seit `0.1.0` (statt des geplanten Pre-Release `0.1.0a4`). HR-Sync lädt nach der Personalakte ein, nur bei `CREATE`; eine gescheiterte Einladung meldet es mit `detail=invitation_not_sent` und wiederholt sie nicht (1.1, 3.2). Offen: Die erste echte Einladung prüfen wir beim nächsten echten Lauf. Kommt die Mail an, und lädt niemand zusätzlich per Hand ein? Bis dahin ist ungeprüft, ob weclapp für die Einladung etwas am User voraussetzt | nächster echter Lauf | [weclapp_client.py#35](https://github.com/Hochfrequenz/weclapp_client.py/issues/35), O2, O5 |
 | O30 | Personio-Webhooks: Soll eine Änderung in Personio den Lauf zusätzlich anstoßen, z. B. ein behobener Datenfehler oder der Wechsel auf `ACTIVE` im Laufe des Starttags (O29)? Der nächtliche Lauf bleibt trotzdem nötig: HR erfasst neue Mitarbeiter meist Wochen vor dem Eintritt, und am Eintrittstag selbst ändert sich in Personio oft nichts, es kommt also kein Webhook. Zu klären: ob Personio passende Webhooks für Personen und Employments anbietet, wie der Server von außen erreichbar wird (TLS, Prüfung der Signatur) und wie ein kleiner Empfänger den Container startet (`docker start hr-sync` oder die API von Dockhand). Ein Start, während ein Lauf läuft, tut nichts (7.1) | nach dem Go-live | Abschnitt 7.1, O9, O29 |
+| O31 | Firmenweiter Log-Standard: Hochfrequenz will firmenweit festlegen, wohin Logs gehen, in welchem Format und wie lange sie bleiben. Bis dahin liegen die Logs von HR-Sync nur beim Container (`json-file` mit Rotation, 7.1) und gehen bei Notbremse und Update verloren. Das ist vorerst hingenommen (2026-11-09). Steht der Standard, passt HR-Sync das Logging an, z. B. den Logging-Treiber der Compose-Vorlage oder die Ausgabe der Events. Bisher genannt: Die Logs sollen mindestens drei Monate zurückreichen. Erwogen und vorerst verworfen: das Journal des Servers (`journald`), dessen Aufbewahrung für alle Dienste des Servers gilt | wenn der Standard steht | Abschnitt 7.1, O9 |
 
 Keiner der offenen Punkte blockiert AP 2–7:
 
@@ -1452,6 +1456,7 @@ Keiner der offenen Punkte blockiert AP 2–7:
 - O27 (leerer Kostensatz) klären wir mit dem weclapp-Admin. Bis dahin setzt HR-Sync 1 EUR/h.
 - O28 (Einladung in weclapp per API) ist umgesetzt. Die erste echte Einladung prüfen wir beim nächsten echten Lauf.
 - O30 (Personio-Webhooks) kommt nach dem Go-live.
+- O31 (firmenweiter Log-Standard) kommt, wenn der Standard steht. Bis dahin bleiben die Logs beim Container.
 
 ## 14. Risiken
 

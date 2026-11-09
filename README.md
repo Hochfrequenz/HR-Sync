@@ -135,7 +135,8 @@ with today's date, and under UTC, 0:00 in Germany would still be the day before.
 makes Dockhand start the container every day at 0:00, in the timezone of the Dockhand environment, which must be
 `Europe/Berlin`. A start while a run is still going does nothing. The container stays after a run: `docker logs hr-sync`
 and Dockhand show the events of the last runs, rotated after 5 × 10 MB, and its exit code is the one of the last run
-(see [Usage](#usage)).
+(see [Usage](#usage)). The logs belong to the container, so removing or recreating it, e.g. for an update, deletes
+them. For now, that's accepted; where the logs are kept for good will follow a company-wide log standard.
 
 To set it up:
 
@@ -170,7 +171,8 @@ To update, create a release with a new tag `vX.Y.Z` on GitHub, wait for the work
 in `compose.yaml` and recreate the container with `docker compose up --no-start`.
 
 To stop the nightly runs, remove the container with `docker compose down`, or delete the stack in Dockhand. If a run is
-going on (`docker ps`), wait for it to end first.
+going on (`docker ps`), wait for it to end first. This deletes the logs of the past runs as well; to keep them, save
+them first with `docker logs hr-sync > hr-sync.log`.
 
 ## Development
 
