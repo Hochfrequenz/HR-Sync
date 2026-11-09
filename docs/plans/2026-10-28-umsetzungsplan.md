@@ -1021,16 +1021,32 @@ die Produktion, auch der Probelauf, nur mit ausdrücklicher Zustimmung des Auftr
    - Als Git-Stack: die Variablen des Stacks, die Zugangsdaten als geheim markiert.
    - In beiden Fällen gefüllt: die Ignore-Liste (O10) und die Mailgun-Daten mit Absender und Empfängern (7.2).
    - Der Kostensatz ist geklärt (O27).
-5. **Probelauf:** `docker compose run --rm hr-sync --dry-run --send-report`, immer aus einer Kopie der Vorlage auf dem
-   Server. Beim Git-Stack geht das nicht, weil jedes Deployment sofort einen echten Lauf startet. Auf Git-Stack wird
-   deshalb erst nach dem Probelauf umgestellt. Der Probelauf zeigt:
-   - Die Mail kommt an, als Probelauf gekennzeichnet. Damit stimmen Mailgun, Absender und Empfänger.
+5. **Probelauf:** `docker compose run --rm hr-sync --dry-run --send-report --only 99999`, immer aus einer Kopie der
+   Vorlage auf dem Server. Beim Git-Stack geht das nicht, weil jedes Deployment sofort einen echten Lauf startet. Auf
+   Git-Stack wird deshalb erst nach dem Probelauf umgestellt.
+
+   `--only` mit einer MA-Nummer, die es nicht gibt, sorgt dafür, dass der Bericht etwas enthält. Ohne Inhalt schickt
+   HR-Sync auch mit `--send-report` keine Mail, und das Event `sync.report` hat dann `sent=false`. Der Probelauf
+   zeigt:
+   - Die Mail kommt an, als Probelauf gekennzeichnet, mit „99999: angefragt, aber in Personio nicht gefunden.“ Damit
+     stimmen Mailgun, Absender und Empfänger.
    - Der Lauf bricht nicht mit `missing_variables` ab. Die Zugangsdaten kommen also im Container an.
-   - Das Datum im Betreff ist der heutige Tag in deutscher Zeit. Damit stimmt die Zeitzone.
    - Der Exit-Code ist 0.
 
-   Die Variablen eines Git-Stacks prüft erst das erste Deployment. Fehlt dort eine, bricht der Lauf ab, bevor er
-   etwas anlegt (Exit-Code 2).
+   Die Zeitzone im Container prüft `docker compose run --rm --entrypoint date hr-sync`: Die Ausgabe muss `CET` oder
+   `CEST` zeigen. Ein Vergleich mit dem heutigen Datum reicht nicht, denn ein Container in UTC hat tagsüber dasselbe
+   Datum und erst nachts zwischen 0:00 Uhr und 1:00 Uhr oder 2:00 Uhr deutscher Zeit noch den Vortag. Die Zeitzone von
+   Dockhand prüft Schritt 3.
+
+   Fehlt eine Pflichtvariable, zum Beispiel ein Zugangsdatum oder bei gesetzten Empfängern die Mailgun-Daten, bricht
+   der Lauf ab, bevor er etwas anlegt (Exit-Code 2). Fehlen Variablen ohne Pflicht, läuft er dagegen ohne Fehler
+   durch:
+   - Ohne `HR_SYNC_REPORT_TO` gibt es keinen Bericht, angelegt wird trotzdem.
+   - Ohne Ignore-Liste kommen nur mehr Hinweise.
+   - Ohne die Werte mit Standard gilt der Standard.
+
+   Vor dem ersten Deployment eines Git-Stacks deshalb seine Variablen mit der getesteten `.env` abgleichen, vor allem
+   Empfänger, Absender und Ignore-Listen.
 6. **Container anlegen:**
    - Als Kopie mit `docker compose up --no-start`.
    - Als Git-Stack durch das Deployment in Dockhand, das sofort einen echten Lauf startet.

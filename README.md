@@ -148,10 +148,17 @@ To set it up:
 3. Check the setup with a dry run that sends the report, marked as a dry run:
 
    ```bash
-   docker compose run --rm hr-sync --dry-run --send-report
+   docker compose run --rm hr-sync --dry-run --send-report --only 99999
    ```
 
-   The mail must arrive with today's date, and the run must not abort with `problem=missing_variables`.
+   An employee number that doesn't exist makes sure that the report has content: without content, HR-Sync sends no
+   mail, even with `--send-report` (the event `sync.report` has `sent=false`). The mail must arrive and list `99999` as
+   not found, and the run must not abort with `problem=missing_variables`. Then check the timezone of the container;
+   the output must show `CET` or `CEST`:
+
+   ```bash
+   docker compose run --rm --entrypoint date hr-sync
+   ```
 4. Create the container without starting it:
 
    ```bash
@@ -165,7 +172,9 @@ the variables are those of the stack in Dockhand, because the `.env` never goes 
 them into `.env.dockhand`, except the ones marked as secret, which it passes only to Docker Compose. The template
 therefore reads both `.env` and `.env.dockhand`, if they exist, and names the secret variables (every `SecretStr` in
 `hr_sync.config`) under `environment`. Every deployment of the stack, and every change of the file on `main` as soon
-as Dockhand syncs it, starts a real run. So run the dry run of step 3 from a copy first, then switch to the Git stack.
+as Dockhand syncs it, starts a real run. So run the dry run of step 3 from a copy first, then switch to the Git stack,
+and compare its variables with the tested `.env` before the first deployment. Only missing required variables abort
+the run before it writes; without `HR_SYNC_REPORT_TO`, for example, it creates employees but sends no report.
 
 To update, create a release with a new tag `vX.Y.Z` on GitHub, wait for the workflow "Docker Image", raise the version
 in `compose.yaml` and recreate the container with `docker compose up --no-start`.
