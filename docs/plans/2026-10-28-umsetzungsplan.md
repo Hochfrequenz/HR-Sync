@@ -998,9 +998,45 @@ Server schon läuft, statt Cron oder systemd-Timer. Die Betriebsanleitung steht 
   mit `docker compose up --no-start` neu anlegen.
 - **0:00 Uhr und Personio:** HR-Sync legt an, wenn das Employment `ACTIVE` ist und spätestens heute beginnt. Setzt
   Personio den Status erst im Laufe des Starttags, kommt der Mitarbeiter erst in der Nacht danach (O29).
-- **Vor dem ersten nächtlichen Lauf:** Ignore-Liste befüllen (O10), Kostensatz klären (O27), Mailgun einrichten und mit
-  einem Dry-Run mit `--send-report` prüfen (7.2), auf dem Server mit
-  `docker compose run --rm hr-sync --dry-run --send-report`. Erst dann den Container anlegen.
+- **Notbremse:** `docker compose down` oder den Stack in Dockhand löschen. Ohne Container gibt es nichts mehr, das
+  Dockhand um 0:00 Uhr starten könnte. Läuft gerade ein Lauf (`docker ps`), erst sein Ende abwarten. Wieder
+  eingeschaltet wird wie bei der Inbetriebnahme, Schritt 6.
+
+**Inbetriebnahme** (präzisiert am 2026-11-09): vor dem ersten nächtlichen Lauf, in dieser Reihenfolge. Jeder Lauf gegen
+die Produktion, auch der Probelauf, nur mit ausdrücklicher Zustimmung des Auftraggebers.
+
+1. **Release:** Tag `v0.1.0a1`, als GitHub-Release mit der Markierung Pre-Release (Abschnitt 9). Den Tag legt der
+   Auftraggeber an. Der Workflow „Docker Image“ muss grün sein. Er prüft im Image `--version`, die Zeitzone und den
+   Nutzer ohne Root. Ab diesem Release gilt die stabile Schnittstelle (9.2).
+2. **GHCR:** Das Image liegt als `ghcr.io/hochfrequenz/hr-sync` mit der Version und `latest` in der GHCR. Ob die GHCR
+   ein neues Paket der Organisation öffentlich oder privat anlegt, ist ungeprüft (O9). Ist es privat, die
+   Sichtbarkeit in den Einstellungen des Pakets auf öffentlich stellen. Sonst braucht der Server einen Login bei der
+   GHCR.
+3. **Dockhand:** Die Zeitzone der Umgebung steht auf `Europe/Berlin`, und Docker Compose ist 2.24 oder neuer.
+4. **Variablen:**
+   - Als Kopie: die `.env` neben `compose.yaml`, nur für die Betreiber lesbar.
+   - Als Git-Stack: die Variablen des Stacks, die Zugangsdaten als geheim markiert.
+   - In beiden Fällen gefüllt: die Ignore-Liste (O10) und die Mailgun-Daten mit Absender und Empfängern (7.2).
+   - Der Kostensatz ist geklärt (O27).
+5. **Probelauf:** `docker compose run --rm hr-sync --dry-run --send-report`, immer aus einer Kopie der Vorlage auf dem
+   Server. Beim Git-Stack geht das nicht, weil jedes Deployment sofort einen echten Lauf startet. Auf Git-Stack wird
+   deshalb erst nach dem Probelauf umgestellt. Der Probelauf zeigt:
+   - Die Mail kommt an, als Probelauf gekennzeichnet. Damit stimmen Mailgun, Absender und Empfänger.
+   - Der Lauf bricht nicht mit `missing_variables` ab. Die Zugangsdaten kommen also im Container an.
+   - Das Datum im Betreff ist der heutige Tag in deutscher Zeit. Damit stimmt die Zeitzone.
+   - Der Exit-Code ist 0.
+
+   Die Variablen eines Git-Stacks prüft erst das erste Deployment. Fehlt dort eine, bricht der Lauf ab, bevor er
+   etwas anlegt (Exit-Code 2).
+6. **Container anlegen:**
+   - Als Kopie mit `docker compose up --no-start`.
+   - Als Git-Stack durch das Deployment in Dockhand, das sofort einen echten Lauf startet.
+
+   Ab dann startet Dockhand den Container jede Nacht um 0:00 Uhr.
+7. **Nach der ersten Nacht:**
+   - Den Bericht per Mail, `docker logs hr-sync` und den Exit-Code des Containers prüfen.
+   - Beim ersten neuen weclapp-User prüfen, ob die Einladung ankam (O28).
+   - Beim ersten neuen Mitarbeiter prüfen, wann Personio den Status wechselt (O29).
 
 ### 7.2 Bericht per Mail (O9)
 
@@ -1246,7 +1282,8 @@ und/oder Decidalo verbinden.
 
 ### 9.2 Stabile Schnittstelle
 
-Ab dem ersten Release gelten als öffentliche Schnittstelle:
+Das erste Release ist das erste Docker-Image (`v0.1.0a1`, Inbetriebnahme in 7.1), nicht erst ein Release auf PyPI
+(O14). Ab dem ersten Release gelten als öffentliche Schnittstelle:
 
 - die CLI-Optionen
 - die Umgebungsvariablen
@@ -1379,7 +1416,7 @@ haben wir verzichtet. Einzelheiten liegen lokal beim Auftraggeber (1.1).
 | O6 | ~~Woran erkennt der Decidalo-Import bestehende User?~~ **Erledigt durch die Regel `email_in_use`:** HR-Sync schickt nur MA-Nummern, die in Decidalo fehlen, und keine E-Mail, die dort schon vergeben ist. Damit trifft `ImportSync` keinen bestehenden User, egal wie es zuordnet | – | R3, Abschnitt 4.2 |
 | O7 | ~~Grenzen und Timeouts von `GET /importapi/User` und `ImportSync`, Beginn von `rowIndex`~~ **Erledigt in AP 8:** **Paketgröße:** Es gibt keine Pakete mehr. Jeder `ImportSync`-Aufruf legt genau einen User an, Mitarbeiter für Mitarbeiter (1.1). **Laden:** Ohne `top` liefert `GET /importapi/User` laut Spec alle User, in der Testumgebung alle 51 in 0,2 s. Eine stille Kürzung fällt durch die Vollständigkeitsprüfung auf und bricht den Lauf vor dem Planen ab (1.1). **Timeouts:** Der Client setzt keines, es gilt das Standard-Timeout von aiohttp (5 Minuten je Anfrage). Ein Timeout beim Laden bricht den Lauf ab (Exit-Code 2), beim Anlegen wird die Operation zum Fehler und der Rest übersprungen (Exit-Code 1). **`rowIndex`** beginnt bei 0, HR-Sync braucht ihn nicht. Bei `Created` liefert die Antwort keine `userID`, `target_id` bleibt in `sync.operation` dann leer | – | Abschnitt 3.3 |
 | O8 | ~~Personio-Person ohne Employment oder Startdatum: ohne Eintrittsdatum anlegen oder überspringen?~~ **Erledigt:** Ohne aktives Employment mit Startdatum heute oder früher ist ein Mitarbeiter nicht relevant. Ein aktives Employment ohne Startdatum ist ein Datenproblem | – | Abschnitt 3.1, 5 |
-| O9 | **Richtung geklärt:** zeitgesteuert auf einem internen Server (Cron, Task Scheduler oder Container-Job), Secrets dort in einer `.env`. ~~Offen: welcher Server, welches Intervall, wer bei Warnungen oder Fehlern benachrichtigt wird~~ **Entschieden (2026-11-05):** Linux-Server mit Docker, Image aus der GHCR, jede Nacht um 0:00 Uhr, Bericht per Mail über Mailgun an das HR-Management (1.1, 7.1, 7.2). Umsetzung in AP 11 und AP 12. **Geändert (2026-11-06):** Den Zeitplan übernimmt Dockhand statt Cron oder systemd-Timer (7.1). Offen: welcher Server konkret, Kopie der Compose-Vorlage oder Git-Sync in Dockhand, Mailgun-Domain, Absender und Empfänger | vor dem Go-live | [#9](https://github.com/Hochfrequenz/HR-Sync/issues/9) |
+| O9 | **Richtung geklärt:** zeitgesteuert auf einem internen Server (Cron, Task Scheduler oder Container-Job), Secrets dort in einer `.env`. ~~Offen: welcher Server, welches Intervall, wer bei Warnungen oder Fehlern benachrichtigt wird~~ **Entschieden (2026-11-05):** Linux-Server mit Docker, Image aus der GHCR, jede Nacht um 0:00 Uhr, Bericht per Mail über Mailgun an das HR-Management (1.1, 7.1, 7.2). Umsetzung in AP 11 und AP 12. **Geändert (2026-11-06):** Den Zeitplan übernimmt Dockhand statt Cron oder systemd-Timer (7.1). Offen: welcher Server konkret, Kopie der Compose-Vorlage oder Git-Sync in Dockhand, Mailgun-Domain, Absender und Empfänger, Sichtbarkeit des Pakets in der GHCR. Die Schritte bis zum ersten nächtlichen Lauf stehen in 7.1 unter „Inbetriebnahme“ | vor dem Go-live | [#9](https://github.com/Hochfrequenz/HR-Sync/issues/9) |
 | O10 | ~~Brauchen wir eine Ignore-Liste für technische User ohne MA-Nummer (Admins, API-User), damit die Warnungen nicht jedes Mal kommen? Wir entscheiden nach dem ersten Dry-Run, wenn die Zahl der Warnungen bekannt ist. Der Dry-Run ist gelaufen (12.1), die Zahlen liegen lokal~~ **Erledigt (2026-11-04):** Ja, je System eine Liste von IDs in der `.env` (1.1, 7). Welche IDs darauf gehören, entscheidet der Auftraggeber; die Liste steht nur auf dem Server | – | Risiko R5 |
 | O11 | ~~Welche Python-Version? Laut weclapp-Plan (K3) die neueste~~ **Erledigt in AP 0:** Python 3.14 (CI 3.11–3.14), `requires-python = ">=3.11,<3.15"`, weil die Clients `aiohttp<3.14` verlangen (siehe O16) | – | AP 0 |
 | O12 | ~~URL und API-Key der Decidalo-Testumgebung, nimmt Decidalo E-Mails mit `example.com` an?~~ **Erledigt in AP 8:** URL und Key liegen in der lokalen `.env` (Testumgebung `https://import.decidalo.dev`). Decidalo nimmt die Ersatzadressen `test-<MA-Nummer>@example.com` an | – | Abschnitt 8 |

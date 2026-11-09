@@ -139,15 +139,19 @@ and Dockhand show the events of the last runs, rotated after 5 × 10 MB, and its
 
 To set it up:
 
-1. Put `deploy/compose.yaml` and the `.env` (see [`.env.example`](.env.example)) into one directory on the server,
+1. Check that the image of the release is in the GHCR. If the package is private, make it public in its settings or
+   log in to the GHCR on the server. Set the timezone of the Dockhand environment to `Europe/Berlin`; the template
+   needs Docker Compose 2.24 or later.
+2. Put `deploy/compose.yaml` and the `.env` (see [`.env.example`](.env.example)) into one directory on the server,
    readable only by the operators. Fill in the ignore lists and the variables of the [report](#report).
-2. Check the setup with a dry run that sends the report, marked as a dry run:
+3. Check the setup with a dry run that sends the report, marked as a dry run:
 
    ```bash
    docker compose run --rm hr-sync --dry-run --send-report
    ```
 
-3. Create the container without starting it:
+   The mail must arrive with today's date, and the run must not abort with `problem=missing_variables`.
+4. Create the container without starting it:
 
    ```bash
    docker compose up --no-start
@@ -159,11 +163,14 @@ Instead of a copy of the file, Dockhand can also deploy `deploy/compose.yaml` fr
 the variables are those of the stack in Dockhand, because the `.env` never goes into the repository: Dockhand writes
 them into `.env.dockhand`, except the ones marked as secret, which it passes only to Docker Compose. The template
 therefore reads both `.env` and `.env.dockhand`, if they exist, and names the secret variables (every `SecretStr` in
-`hr_sync.config`) under `environment`. Every change of the file on `main` starts a real run as soon as Dockhand syncs
-it. The template needs Docker Compose 2.24 or later.
+`hr_sync.config`) under `environment`. Every deployment of the stack, and every change of the file on `main` as soon
+as Dockhand syncs it, starts a real run. So run the dry run of step 3 from a copy first, then switch to the Git stack.
 
 To update, create a release with a new tag `vX.Y.Z` on GitHub, wait for the workflow "Docker Image", raise the version
 in `compose.yaml` and recreate the container with `docker compose up --no-start`.
+
+To stop the nightly runs, remove the container with `docker compose down`, or delete the stack in Dockhand. If a run is
+going on (`docker ps`), wait for it to end first.
 
 ## Development
 
