@@ -993,14 +993,69 @@ Server schon läuft, statt Cron oder systemd-Timer. Die Betriebsanleitung steht 
   wird beim Einrichten des Servers entschieden.
 - **Logs:** Die Events gehen nach stdout. Docker hält sie mit Rotation vor (`json-file`, 5 × 10 MB), zu sehen mit
   `docker logs hr-sync` oder in Dockhand. Das geht nur, weil der Container bestehen bleibt. Die Logs enthalten keine
-  personenbezogenen Daten (Abschnitt 6). Der Exit-Code des Containers ist der des letzten Laufs.
+  personenbezogenen Daten (Abschnitt 6). Der Exit-Code des Containers ist der des letzten Laufs. Die Logs gehören
+  zum Container: Notbremse und jedes Update löschen ihn und damit die Logs der vergangenen Läufe. Das ist vorerst so
+  gewollt (2026-11-09). Wohin die Logs dauerhaft gehen, regelt ein firmenweiter Log-Standard, der noch kommt (O31).
 - **Update:** Release mit neuem Tag anlegen, auf das Image warten, in der Vorlage die Version anheben und den Container
   mit `docker compose up --no-start` neu anlegen.
 - **0:00 Uhr und Personio:** HR-Sync legt an, wenn das Employment `ACTIVE` ist und spätestens heute beginnt. Setzt
   Personio den Status erst im Laufe des Starttags, kommt der Mitarbeiter erst in der Nacht danach (O29).
-- **Vor dem ersten nächtlichen Lauf:** Ignore-Liste befüllen (O10), Kostensatz klären (O27), Mailgun einrichten und mit
-  einem Dry-Run mit `--send-report` prüfen (7.2), auf dem Server mit
-  `docker compose run --rm hr-sync --dry-run --send-report`. Erst dann den Container anlegen.
+- **Notbremse:** `docker compose down` oder den Stack in Dockhand löschen. Ohne Container gibt es nichts mehr, das
+  Dockhand um 0:00 Uhr starten könnte. Läuft gerade ein Lauf (`docker ps`), erst sein Ende abwarten. Mit dem
+  Container gehen auch die Logs der vergangenen Läufe verloren (O31). Wer sie braucht, sichert sie vorher auf dem
+  Server mit `docker logs hr-sync > <datei>`. Wieder eingeschaltet wird wie bei der Inbetriebnahme, Schritt 6.
+
+**Inbetriebnahme** (präzisiert am 2026-11-09): vor dem ersten nächtlichen Lauf, in dieser Reihenfolge. Jeder Lauf gegen
+die Produktion, auch der Probelauf, nur mit ausdrücklicher Zustimmung des Auftraggebers.
+
+1. **Release:** Tag `v0.1.0a1`, als GitHub-Release mit der Markierung Pre-Release (Abschnitt 9). Den Tag legt der
+   Auftraggeber an. Der Workflow „Docker Image“ muss grün sein. Er prüft im Image `--version`, die Zeitzone und den
+   Nutzer ohne Root. Ab diesem Release gilt die stabile Schnittstelle (9.2).
+2. **GHCR:** Das Image liegt als `ghcr.io/hochfrequenz/hr-sync` mit der Version und `latest` in der GHCR. Ob die GHCR
+   ein neues Paket der Organisation öffentlich oder privat anlegt, ist ungeprüft (O9). Ist es privat, die
+   Sichtbarkeit in den Einstellungen des Pakets auf öffentlich stellen. Sonst braucht der Server einen Login bei der
+   GHCR.
+3. **Dockhand:** Die Zeitzone der Umgebung steht auf `Europe/Berlin`, und Docker Compose ist 2.24 oder neuer.
+4. **Variablen:**
+   - Als Kopie: die `.env` neben `compose.yaml`, nur für die Betreiber lesbar.
+   - Als Git-Stack: die Variablen des Stacks, die Zugangsdaten als geheim markiert.
+   - In beiden Fällen gefüllt: die Ignore-Liste (O10) und die Mailgun-Daten mit Absender und Empfängern (7.2).
+   - Der Kostensatz ist geklärt (O27).
+5. **Probelauf:** `docker compose run --rm hr-sync --dry-run --send-report --only 99999`, immer aus einer Kopie der
+   Vorlage auf dem Server. Beim Git-Stack geht das nicht, weil jedes Deployment sofort einen echten Lauf startet. Auf
+   Git-Stack wird deshalb erst nach dem Probelauf umgestellt.
+
+   `--only` mit einer MA-Nummer, die es nicht gibt, sorgt dafür, dass der Bericht etwas enthält. Ohne Inhalt schickt
+   HR-Sync auch mit `--send-report` keine Mail, und das Event `sync.report` hat dann `sent=false`. Der Probelauf
+   zeigt:
+   - Die Mail kommt an, als Probelauf gekennzeichnet, mit „99999: angefragt, aber in Personio nicht gefunden.“ Damit
+     stimmen Mailgun, Absender und Empfänger.
+   - Der Lauf bricht nicht mit `missing_variables` ab. Die Zugangsdaten kommen also im Container an.
+   - Der Exit-Code ist 0.
+
+   Die Zeitzone im Container prüft `docker compose run --rm --entrypoint date hr-sync`: Die Ausgabe muss `CET` oder
+   `CEST` zeigen. Ein Vergleich mit dem heutigen Datum reicht nicht, denn ein Container in UTC hat tagsüber dasselbe
+   Datum und erst nachts zwischen 0:00 Uhr und 1:00 Uhr oder 2:00 Uhr deutscher Zeit noch den Vortag. Die Zeitzone von
+   Dockhand prüft Schritt 3.
+
+   Fehlt eine Pflichtvariable, zum Beispiel ein Zugangsdatum oder bei gesetzten Empfängern die Mailgun-Daten, bricht
+   der Lauf ab, bevor er etwas anlegt (Exit-Code 2). Fehlen Variablen ohne Pflicht, läuft er dagegen ohne Fehler
+   durch:
+   - Ohne `HR_SYNC_REPORT_TO` gibt es keinen Bericht, angelegt wird trotzdem.
+   - Ohne Ignore-Liste kommen nur mehr Hinweise.
+   - Ohne die Werte mit Standard gilt der Standard.
+
+   Vor dem ersten Deployment eines Git-Stacks deshalb seine Variablen mit der getesteten `.env` abgleichen, vor allem
+   Empfänger, Absender und Ignore-Listen.
+6. **Container anlegen:**
+   - Als Kopie mit `docker compose up --no-start`.
+   - Als Git-Stack durch das Deployment in Dockhand, das sofort einen echten Lauf startet.
+
+   Ab dann startet Dockhand den Container jede Nacht um 0:00 Uhr.
+7. **Nach der ersten Nacht:**
+   - Den Bericht per Mail, `docker logs hr-sync` und den Exit-Code des Containers prüfen.
+   - Beim ersten neuen weclapp-User prüfen, ob die Einladung ankam (O28).
+   - Beim ersten neuen Mitarbeiter prüfen, wann Personio den Status wechselt (O29).
 
 ### 7.2 Bericht per Mail (O9)
 
@@ -1246,7 +1301,8 @@ und/oder Decidalo verbinden.
 
 ### 9.2 Stabile Schnittstelle
 
-Ab dem ersten Release gelten als öffentliche Schnittstelle:
+Das erste Release ist das erste Docker-Image (`v0.1.0a1`, Inbetriebnahme in 7.1), nicht erst ein Release auf PyPI
+(O14). Ab dem ersten Release gelten als öffentliche Schnittstelle:
 
 - die CLI-Optionen
 - die Umgebungsvariablen
@@ -1379,7 +1435,7 @@ haben wir verzichtet. Einzelheiten liegen lokal beim Auftraggeber (1.1).
 | O6 | ~~Woran erkennt der Decidalo-Import bestehende User?~~ **Erledigt durch die Regel `email_in_use`:** HR-Sync schickt nur MA-Nummern, die in Decidalo fehlen, und keine E-Mail, die dort schon vergeben ist. Damit trifft `ImportSync` keinen bestehenden User, egal wie es zuordnet | – | R3, Abschnitt 4.2 |
 | O7 | ~~Grenzen und Timeouts von `GET /importapi/User` und `ImportSync`, Beginn von `rowIndex`~~ **Erledigt in AP 8:** **Paketgröße:** Es gibt keine Pakete mehr. Jeder `ImportSync`-Aufruf legt genau einen User an, Mitarbeiter für Mitarbeiter (1.1). **Laden:** Ohne `top` liefert `GET /importapi/User` laut Spec alle User, in der Testumgebung alle 51 in 0,2 s. Eine stille Kürzung fällt durch die Vollständigkeitsprüfung auf und bricht den Lauf vor dem Planen ab (1.1). **Timeouts:** Der Client setzt keines, es gilt das Standard-Timeout von aiohttp (5 Minuten je Anfrage). Ein Timeout beim Laden bricht den Lauf ab (Exit-Code 2), beim Anlegen wird die Operation zum Fehler und der Rest übersprungen (Exit-Code 1). **`rowIndex`** beginnt bei 0, HR-Sync braucht ihn nicht. Bei `Created` liefert die Antwort keine `userID`, `target_id` bleibt in `sync.operation` dann leer | – | Abschnitt 3.3 |
 | O8 | ~~Personio-Person ohne Employment oder Startdatum: ohne Eintrittsdatum anlegen oder überspringen?~~ **Erledigt:** Ohne aktives Employment mit Startdatum heute oder früher ist ein Mitarbeiter nicht relevant. Ein aktives Employment ohne Startdatum ist ein Datenproblem | – | Abschnitt 3.1, 5 |
-| O9 | **Richtung geklärt:** zeitgesteuert auf einem internen Server (Cron, Task Scheduler oder Container-Job), Secrets dort in einer `.env`. ~~Offen: welcher Server, welches Intervall, wer bei Warnungen oder Fehlern benachrichtigt wird~~ **Entschieden (2026-11-05):** Linux-Server mit Docker, Image aus der GHCR, jede Nacht um 0:00 Uhr, Bericht per Mail über Mailgun an das HR-Management (1.1, 7.1, 7.2). Umsetzung in AP 11 und AP 12. **Geändert (2026-11-06):** Den Zeitplan übernimmt Dockhand statt Cron oder systemd-Timer (7.1). Offen: welcher Server konkret, Kopie der Compose-Vorlage oder Git-Sync in Dockhand, Mailgun-Domain, Absender und Empfänger | vor dem Go-live | [#9](https://github.com/Hochfrequenz/HR-Sync/issues/9) |
+| O9 | **Richtung geklärt:** zeitgesteuert auf einem internen Server (Cron, Task Scheduler oder Container-Job), Secrets dort in einer `.env`. ~~Offen: welcher Server, welches Intervall, wer bei Warnungen oder Fehlern benachrichtigt wird~~ **Entschieden (2026-11-05):** Linux-Server mit Docker, Image aus der GHCR, jede Nacht um 0:00 Uhr, Bericht per Mail über Mailgun an das HR-Management (1.1, 7.1, 7.2). Umsetzung in AP 11 und AP 12. **Geändert (2026-11-06):** Den Zeitplan übernimmt Dockhand statt Cron oder systemd-Timer (7.1). Offen: welcher Server konkret, Kopie der Compose-Vorlage oder Git-Sync in Dockhand, Mailgun-Domain, Absender und Empfänger, Sichtbarkeit des Pakets in der GHCR. Die Schritte bis zum ersten nächtlichen Lauf stehen in 7.1 unter „Inbetriebnahme“ | vor dem Go-live | [#9](https://github.com/Hochfrequenz/HR-Sync/issues/9) |
 | O10 | ~~Brauchen wir eine Ignore-Liste für technische User ohne MA-Nummer (Admins, API-User), damit die Warnungen nicht jedes Mal kommen? Wir entscheiden nach dem ersten Dry-Run, wenn die Zahl der Warnungen bekannt ist. Der Dry-Run ist gelaufen (12.1), die Zahlen liegen lokal~~ **Erledigt (2026-11-04):** Ja, je System eine Liste von IDs in der `.env` (1.1, 7). Welche IDs darauf gehören, entscheidet der Auftraggeber; die Liste steht nur auf dem Server | – | Risiko R5 |
 | O11 | ~~Welche Python-Version? Laut weclapp-Plan (K3) die neueste~~ **Erledigt in AP 0:** Python 3.14 (CI 3.11–3.14), `requires-python = ">=3.11,<3.15"`, weil die Clients `aiohttp<3.14` verlangen (siehe O16) | – | AP 0 |
 | O12 | ~~URL und API-Key der Decidalo-Testumgebung, nimmt Decidalo E-Mails mit `example.com` an?~~ **Erledigt in AP 8:** URL und Key liegen in der lokalen `.env` (Testumgebung `https://import.decidalo.dev`). Decidalo nimmt die Ersatzadressen `test-<MA-Nummer>@example.com` an | – | Abschnitt 8 |
@@ -1401,6 +1457,7 @@ haben wir verzichtet. Einzelheiten liegen lokal beim Auftraggeber (1.1).
 | O29 | Wann setzt Personio am Starttag den Status des Employments von `ONBOARDING` auf `ACTIVE`? HR-Sync läuft um 0:00 Uhr (7.1). Wechselt der Status erst im Laufe des Tages, wird der Mitarbeiter erst in der Nacht danach angelegt. Zu prüfen beim nächsten neuen Mitarbeiter oder in der Doku von Personio. Falls nötig: den Lauf später ansetzen oder ein Employment mit Status `ONBOARDING` und Startdatum heute als relevant zählen | vor dem Go-live | Abschnitt 7.1, O9 |
 | O28 | ~~Soll HR-Sync neue weclapp-User selbst einladen? Beim Anlegen per API verschickt weclapp keine Einladungsmail (O2), bisher stößt sie jemand per Hand in der Weboberfläche an. Die API v2 hat dafür `POST /user/id/{id}/invite` (leerer Body, ohne `dryRun`, ein Aufruf schickt also echt eine Mail). Voraussetzung: Der `weclapp-client` kann die Aktion (Hochfrequenz/weclapp_client.py#35, Pre-Release `v0.1.0a4`). Vorläufige Richtung: Einladung als letzter Schritt von `CREATE`, nach User und Personalakte. Zu entscheiden: wie HR-Sync eine fehlgeschlagene Einladung meldet (User angelegt, Einladung fehlt) und ob es sie später erneut versucht. Ob ein zweiter Aufruf eine zweite Mail schickt, klärt das Client-Issue. Bis dahin wird weiter per Hand eingeladen~~ **Erledigt (2026-11-03):** Der Client kann es seit `0.1.0` (statt des geplanten Pre-Release `0.1.0a4`). HR-Sync lädt nach der Personalakte ein, nur bei `CREATE`; eine gescheiterte Einladung meldet es mit `detail=invitation_not_sent` und wiederholt sie nicht (1.1, 3.2). Offen: Die erste echte Einladung prüfen wir beim nächsten echten Lauf. Kommt die Mail an, und lädt niemand zusätzlich per Hand ein? Bis dahin ist ungeprüft, ob weclapp für die Einladung etwas am User voraussetzt | nächster echter Lauf | [weclapp_client.py#35](https://github.com/Hochfrequenz/weclapp_client.py/issues/35), O2, O5 |
 | O30 | Personio-Webhooks: Soll eine Änderung in Personio den Lauf zusätzlich anstoßen, z. B. ein behobener Datenfehler oder der Wechsel auf `ACTIVE` im Laufe des Starttags (O29)? Der nächtliche Lauf bleibt trotzdem nötig: HR erfasst neue Mitarbeiter meist Wochen vor dem Eintritt, und am Eintrittstag selbst ändert sich in Personio oft nichts, es kommt also kein Webhook. Zu klären: ob Personio passende Webhooks für Personen und Employments anbietet, wie der Server von außen erreichbar wird (TLS, Prüfung der Signatur) und wie ein kleiner Empfänger den Container startet (`docker start hr-sync` oder die API von Dockhand). Ein Start, während ein Lauf läuft, tut nichts (7.1) | nach dem Go-live | Abschnitt 7.1, O9, O29 |
+| O31 | Firmenweiter Log-Standard: Hochfrequenz will firmenweit festlegen, wohin Logs gehen, in welchem Format und wie lange sie bleiben. Bis dahin liegen die Logs von HR-Sync nur beim Container (`json-file` mit Rotation, 7.1) und gehen bei Notbremse und Update verloren. Das ist vorerst hingenommen (2026-11-09). Steht der Standard, passt HR-Sync das Logging an, z. B. den Logging-Treiber der Compose-Vorlage oder die Ausgabe der Events. Bisher genannt: Die Logs sollen mindestens drei Monate zurückreichen. Erwogen und vorerst verworfen: das Journal des Servers (`journald`), dessen Aufbewahrung für alle Dienste des Servers gilt | wenn der Standard steht | Abschnitt 7.1, O9 |
 
 Keiner der offenen Punkte blockiert AP 2–7:
 
@@ -1415,6 +1472,7 @@ Keiner der offenen Punkte blockiert AP 2–7:
 - O27 (leerer Kostensatz) klären wir mit dem weclapp-Admin. Bis dahin setzt HR-Sync 1 EUR/h.
 - O28 (Einladung in weclapp per API) ist umgesetzt. Die erste echte Einladung prüfen wir beim nächsten echten Lauf.
 - O30 (Personio-Webhooks) kommt nach dem Go-live.
+- O31 (firmenweiter Log-Standard) kommt, wenn der Standard steht. Bis dahin bleiben die Logs beim Container.
 
 ## 14. Risiken
 
