@@ -539,7 +539,7 @@ class TestReport:
         assert _run(_personio(ERIKA, MAX), decidalo, settings=_report_settings()) == ExitCode.SUCCESS
         (mail,) = mails
         assert mail.subject == "HR-Sync 29.10.2026: 1 angelegt"
-        assert "ANGELEGT\n- 00965: Decidalo\n" in mail.text
+        assert "ANGELEGT\n- 00965: Decidalo 😀\n" in mail.text
         assert [value for value in PERSONAL_DATA if value in mail.text] == []
         (report_event,) = _named(events, "sync.report")
         assert report_event["outcome"] == "success"
@@ -572,7 +572,7 @@ class TestReport:
         assert _run(_personio(ERIKA), FakeDecidalo(), options, _report_settings()) == ExitCode.SUCCESS
         (mail,) = mails
         assert mail.subject == "Probelauf: HR-Sync 29.10.2026: 1 angelegt"
-        assert "WÜRDE ANGELEGT\n- 00965: Decidalo\n" in mail.text
+        assert "WÜRDE ANGELEGT\n- 00965: Decidalo 😀\n" in mail.text
 
     def test_test_mode_never_sends_a_report(self, mails: list[Mail], events: list[dict[str, object]]) -> None:
         options = RunOptions(targets=(TargetSystem.DECIDALO,), send_report=True)
@@ -604,7 +604,7 @@ class TestReport:
         (mail,) = mails
         assert mail.subject == "HR-Sync 29.10.2026: Lauf abgebrochen"
         assert (
-            "ABGEBROCHEN\nDecidalo war nicht erreichbar oder hat einen Fehler gemeldet. Es wurde nichts angelegt.\n"
+            "ABGEBROCHEN\nDecidalo war nicht erreichbar oder hat einen Fehler gemeldet. Es wurde nichts angelegt. 😞\n"
             in mail.text
         )
         assert _run_event(events)["exit_code"] == 2

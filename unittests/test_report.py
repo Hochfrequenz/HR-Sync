@@ -265,23 +265,23 @@ class TestRenderReport:
             "HR-Sync hat Personio mit weclapp und Decidalo abgeglichen.\n"
             "\n"
             "ANGELEGT\n"
-            "- 00965: weclapp, Decidalo\n"
+            "- 00965: weclapp, Decidalo 😀\n"
             "\n"
             "PROBLEME BEIM ANLEGEN\n"
-            "- 00974 (weclapp): nicht angelegt.\n"
+            "- 00974 (weclapp): nicht angelegt. 😞\n"
             "\n"
             "DATENFEHLER\n"
             "Mitarbeiter mit Datenfehlern in Personio legt HR-Sync erst an, wenn der Fehler behoben ist.\n"
             "Personio\n"
-            "- 00123: Karrierestufe unbekannt\n"
-            "- Personio-ID 4711: keine MA-Nummer hinterlegt\n"
+            "- 00123: Karrierestufe unbekannt 🤔\n"
+            "- Personio-ID 4711: keine MA-Nummer hinterlegt 🤔\n"
             "weclapp\n"
-            "- User-ID 1234: keine MA-Nummer hinterlegt\n"
+            "- User-ID 1234: keine MA-Nummer hinterlegt 🤔\n"
             "\n"
             "ABWEICHUNGEN\n"
             "Bestehende Mitarbeiter mit anderen Daten als in Personio. HR-Sync ändert sie nicht.\n"
-            "- weclapp: 2 (00006, 00044)\n"
-            "- Decidalo: 1 (00013)\n"
+            "- weclapp: 2 (00006, 00044) 🤔\n"
+            "- Decidalo: 1 (00013) 🤔\n"
             "\n"
             "Lauf vom 06.11.2026, Lauf-ID 3f2a9c\n"
         )
@@ -293,19 +293,53 @@ class TestRenderReport:
         assert mail.text.startswith("HR-Sync hat Personio mit Decidalo abgeglichen.\n\nABWEICHUNGEN\n")
         assert "ANGELEGT" not in mail.text
 
+    def test_every_created_employee_gets_a_smiley(self) -> None:
+        report = Report(created={"00965": ("weclapp", "Decidalo"), "00974": ("weclapp (Personalakte ergänzt)",)})
+        mail = render_report(report, targets=BOTH, today=TODAY, run_id=RUN_ID, dry_run=False)
+        assert "ANGELEGT\n- 00965: weclapp, Decidalo 😀\n- 00974: weclapp (Personalakte ergänzt) 😀\n" in mail.text
+        assert "😀" not in mail.subject
+
+    def test_no_grinning_smiley_without_created_employees(self) -> None:
+        report = Report(
+            problems=("00974 (weclapp): nicht angelegt.",),
+            data_errors={System.PERSONIO: ("00123: Karrierestufe unbekannt",)},
+            deviations={TargetSystem.WECLAPP: ("00006",)},
+            aborted="In der Konfiguration fehlen Einstellungen. Es wurde nichts angelegt.",
+        )
+        mail = render_report(report, targets=BOTH, today=TODAY, run_id=RUN_ID, dry_run=False)
+        assert "😀" not in mail.text
+
+    def test_only_the_grinning_smiley_if_all_went_well(self) -> None:
+        report = Report(created={"00965": ("weclapp", "Decidalo")})
+        mail = render_report(report, targets=BOTH, today=TODAY, run_id=RUN_ID, dry_run=False)
+        assert [smiley for smiley in ("😞", "🤔") if smiley in mail.text] == []
+
+    def test_smileys_in_a_dry_run(self) -> None:
+        report = Report(
+            problems=("00974 (weclapp): nicht angelegt.",),
+            data_errors={System.PERSONIO: ("00123: Karrierestufe unbekannt",)},
+            deviations={TargetSystem.WECLAPP: ("00006",)},
+        )
+        mail = render_report(report, targets=BOTH, today=TODAY, run_id=RUN_ID, dry_run=True)
+        assert "- 00974 (weclapp): nicht angelegt. 😞\n" in mail.text
+        assert "- 00123: Karrierestufe unbekannt 🤔\n" in mail.text
+        assert "- weclapp: 1 (00006) 🤔\n" in mail.text
+        assert [smiley for smiley in ("😀", "😞", "🤔") if smiley in mail.subject] == []
+
     def test_dry_run(self) -> None:
         report = Report(created={"00965": ("weclapp",), "00974": ("weclapp",)})
         mail = render_report(report, targets=BOTH, today=TODAY, run_id=RUN_ID, dry_run=True)
         assert mail.subject == "Probelauf: HR-Sync 06.11.2026: 2 angelegt"
         assert mail.text.startswith(
-            "Probelauf: HR-Sync hat nichts geschrieben. So sähe der Bericht aus.\n\nWÜRDE ANGELEGT\n- 00965: weclapp\n"
+            "Probelauf: HR-Sync hat nichts geschrieben. So sähe der Bericht aus.\n\n"
+            "WÜRDE ANGELEGT\n- 00965: weclapp 😀\n- 00974: weclapp 😀\n"
         )
 
     def test_aborted(self) -> None:
         report = Report(aborted="In der Konfiguration fehlen Einstellungen. Es wurde nichts angelegt.")
         mail = render_report(report, targets=BOTH, today=TODAY, run_id=RUN_ID, dry_run=False)
         assert mail.subject == "HR-Sync 06.11.2026: Lauf abgebrochen"
-        assert "ABGEBROCHEN\nIn der Konfiguration fehlen Einstellungen. Es wurde nichts angelegt.\n" in mail.text
+        assert "ABGEBROCHEN\nIn der Konfiguration fehlen Einstellungen. Es wurde nichts angelegt. 😞\n" in mail.text
 
     def test_no_personal_data(self) -> None:
         report = build_report(

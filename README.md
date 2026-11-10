@@ -89,8 +89,9 @@ whose employee record a run completes, isn't invited. If the invitation fails, t
 At the end of a run, HR-Sync sends a short report to the HR management, through the HTTP API of
 [Mailgun](https://www.mailgun.com/). It's written in German and lists the employees it created and in which systems,
 problems while creating, data problems in the systems and existing employees with deviations, or why the run was
-aborted. Like the events, it contains no personal data besides employee numbers and the ids of records without one. A
-run with nothing to report sends no mail.
+aborted. Every entry ends with a smiley for its kind: 😀 for a created employee, 😞 for a problem while creating or an
+abort, 🤔 for a data problem or deviations. Like the events, it contains no personal data besides employee numbers and
+the ids of records without one. A run with nothing to report sends no mail.
 
 | Variable | Meaning |
 |---|---|

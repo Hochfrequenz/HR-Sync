@@ -87,6 +87,15 @@ _CONFIGURATION_TEXTS: Mapping[ConfigurationProblem, str] = {
     ConfigurationProblem.WECLAPP_SETUP_MISMATCH: "weclapp passt nicht zur Einrichtung von HR-Sync.",
 }
 
+_CREATED_SMILEY = "\N{GRINNING FACE}"
+"""ends the line of every created employee"""
+
+_PROBLEM_SMILEY = "\N{DISAPPOINTED FACE}"
+"""ends the line of every problem while creating and the reason of an abort"""
+
+_WARNING_SMILEY = "\N{THINKING FACE}"
+"""ends the line of every data problem and every line of the deviations"""
+
 _TIMEOUT_SECONDS = 30.0
 
 
@@ -196,20 +205,25 @@ def render_report(report: Report, *, targets: Sequence[TargetSystem], today: dat
     """
     Returns the mail with the report, without IO. Only the sections with content are part of it. A dry run is marked
     as such, in the subject and in the text.
+
+    Every entry ends with a smiley for its kind, in a real run and in a dry run, never in the subject: a grinning one
+    for a created employee, a disappointed one for a problem while creating or an abort, a thinking one for a data
+    problem or deviations.
     """
     if dry_run:
         blocks = ["Probelauf: HR-Sync hat nichts geschrieben. So sähe der Bericht aus."]
     else:
         blocks = [f"HR-Sync hat Personio mit {_enumeration(targets)} abgeglichen."]
     if report.aborted:
-        blocks.append(f"ABGEBROCHEN\n{report.aborted}")
+        blocks.append(f"ABGEBROCHEN\n{report.aborted} {_PROBLEM_SMILEY}")
     if report.created:
         heading = "WÜRDE ANGELEGT" if dry_run else "ANGELEGT"
-        blocks.append(
-            "\n".join([heading, *(f"- {number}: {', '.join(systems)}" for number, systems in report.created.items())])
-        )
+        lines = [
+            _item(f"{number}: {', '.join(systems)}", _CREATED_SMILEY) for number, systems in report.created.items()
+        ]
+        blocks.append("\n".join([heading, *lines]))
     if report.problems:
-        blocks.append("\n".join(["PROBLEME BEIM ANLEGEN", *(f"- {line}" for line in report.problems)]))
+        blocks.append("\n".join(["PROBLEME BEIM ANLEGEN", *(_item(line, _PROBLEM_SMILEY) for line in report.problems)]))
     if report.data_errors:
         lines = [
             "DATENFEHLER",
@@ -217,12 +231,12 @@ def render_report(report: Report, *, targets: Sequence[TargetSystem], today: dat
         ]
         for system, errors in report.data_errors.items():
             lines.append(_SYSTEM_NAMES[system.value])
-            lines.extend(f"- {line}" for line in errors)
+            lines.extend(_item(line, _WARNING_SMILEY) for line in errors)
         blocks.append("\n".join(lines))
     if report.deviations:
         lines = ["ABWEICHUNGEN", "Bestehende Mitarbeiter mit anderen Daten als in Personio. HR-Sync ändert sie nicht."]
         lines.extend(
-            f"- {_SYSTEM_NAMES[target.value]}: {len(numbers)} ({', '.join(numbers)})"
+            _item(f"{_SYSTEM_NAMES[target.value]}: {len(numbers)} ({', '.join(numbers)})", _WARNING_SMILEY)
             for target, numbers in report.deviations.items()
         )
         blocks.append("\n".join(lines))
@@ -248,6 +262,10 @@ def send_report(mail: Mail, settings: Settings, *, transport: httpx.BaseTranspor
     with httpx.Client(transport=transport, timeout=_TIMEOUT_SECONDS) as client:
         response = client.post(url, auth=("api", api_key.get_secret_value()), data=data)
     response.raise_for_status()
+
+
+def _item(line: str, smiley: str) -> str:
+    return f"- {line} {smiley}"
 
 
 def _order(system: str) -> int:
