@@ -56,7 +56,7 @@ HR-Sync überträgt beim Onboarding die Stammdaten neuer Mitarbeiter aus **Perso
 | Logging | Wide Events mit Loguru. Ausgabe umschaltbar (lesbar oder JSON) |
 | Personenbezogene Daten in Logs | nein: nur MA-Nummer, systeminterne IDs, Feldnamen und Zahlen. Die MA-Nummer allein ist unkritisch, problematisch wird sie erst zusammen mit weiteren Daten wie dem Namen. Meldet ein Scanner wie CodeQL die Ausgabe einer MA-Nummer allein, ist das ein Fehlalarm (AP 8) |
 | Betrieb (O9) | ~~zeitgesteuert auf einem internen Server (Cron, Task Scheduler oder Container-Job), die Secrets liegen dort in einer `.env`. Welcher Server, welches Intervall und wer benachrichtigt wird, ist offen (O9)~~ **Entschieden (2026-11-05):** ein Linux-Server mit Docker. HR-Sync läuft jede Nacht um 0:00 Uhr (`Europe/Berlin`) als Container-Job, ~~gestartet per Cron oder systemd-Timer~~ **geändert (2026-11-06):** gestartet von Dockhand, das auf dem Server schon läuft. Das Image baut GitHub Actions bei jedem Release-Tag und legt es in die GitHub Container Registry (GHCR), der Server zieht eine feste Version. Die `.env` mit Secrets und Ignore-Liste liegt nur auf dem Server. Einzelheiten in 7.1, Umsetzung in AP 12 |
-| Bericht per Mail (O9) | Gibt es in einem Lauf etwas zu berichten, bekommt das HR-Management eine Mail über Mailgun (Region EU): schlank, nicht technisch, ohne personenbezogene Daten. Inhalt: angelegte Mitarbeiter je System, Fehler und Warnungen beim Anlegen, Datenfehler in den Systemen und ein kurzer Abschnitt mit Abweichungen. Ein Dry-Run schickt nur mit eigenem Schalter eine Mail, gekennzeichnet als Probelauf. Einzelheiten in 7.2, Umsetzung in AP 11 |
+| Bericht per Mail (O9) | Gibt es in einem Lauf etwas zu berichten, bekommt das HR-Management eine Mail über Mailgun (Region EU): schlank, nicht technisch, ohne personenbezogene Daten. Inhalt: angelegte Mitarbeiter je System, Fehler und Warnungen beim Anlegen, Datenfehler in den Systemen und ein kurzer Abschnitt mit Abweichungen. Ein Dry-Run schickt nur mit eigenem Schalter eine Mail, gekennzeichnet als Probelauf. Einzelheiten in 7.2, Umsetzung in AP 11. **Ergänzt (2026-11-11):** Jeder Eintrag endet mit einer Ampel für seine Art: 🟢 bei „Angelegt“, 🔴 bei Problemen beim Anlegen und beim Abbruch, 🟡 bei Datenfehlern und Abweichungen, auch im Probelauf, nie im Betreff (7.2) |
 | PyPI-Paket | `hochfrequenz-hr-sync`, Befehl `hr-sync`, Import-Paket `hr_sync`, Lizenz MIT wie die Clients. Der Zeitpunkt des ersten Releases ist offen (O14) |
 | Zielgruppe des Pakets | auch andere Firmen: Alles Firmenspezifische ist konfigurierbar und dokumentiert. Ausnahme sind die Mappings und festen weclapp-Werte der Phase 2: Sie stehen fest im Code (4.4, O15). CLI, Umgebungsvariablen, Exit-Codes und Event-Felder sind eine stabile Schnittstelle |
 | Stabile Version | erst, wenn auch die Clients stabil sind. Bis dahin erscheint HR-Sync nur als Pre-Release |
@@ -1083,6 +1083,18 @@ auch nicht mit `--send-report`, weil seine Daten anonymisiert sind.
      „Karrierestufe fehlt“ oder „keine MA-Nummer hinterlegt“.
   4. **Abweichungen:** kurz, je System die Zahl und die MA-Nummern.
   5. **Abbruch:** dass der Lauf abgebrochen ist und nichts angelegt wurde, mit dem Grund in Worten.
+
+  Jeder Eintrag endet mit einer Ampel für seine Art (2026-11-11), damit HR auf einen Blick sieht, was gut lief und wo
+  etwas zu tun ist:
+
+  | Abschnitt | Ampel | Beispiel |
+  |---|---|---|
+  | Angelegt | 🟢 grün | „00965: weclapp, Decidalo 🟢“ |
+  | Probleme beim Anlegen, Abbruch | 🔴 rot | „00974 (weclapp): nicht angelegt, … 🔴“ |
+  | Datenfehler, Abweichungen | 🟡 gelb | „00123: Karrierestufe unbekannt 🟡“ |
+
+  Das gilt auch im Probelauf („Würde angelegt“), damit er genau zeigt, wie der echte Bericht aussieht. Der Betreff
+  bleibt ohne Ampel.
 
   Am Ende stehen Datum und Lauf-ID, damit sich die Logs finden lassen.
 - **Betreff:** fasst zusammen, z. B. „HR-Sync 05.11.2026: 1 angelegt, 3 Datenfehler“.
