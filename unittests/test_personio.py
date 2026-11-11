@@ -203,9 +203,12 @@ class TestMapPerson:
             pytest.param("Senior Consultant", "Senior Consultant", 26, id="senior consultant"),
             pytest.param("Principal Consultant", "Manging Consultant", 30, id="principal consultant"),
             pytest.param("Senior Principal Consultant", "Associate Partner", 30, id="senior principal consultant"),
+            pytest.param("Geschäftsführer", "Associate Partner", None, id="without vacation days"),
+            pytest.param("GF-Assistenz", None, 30, id="without service category"),
+            pytest.param("Marketing", None, 30, id="outside Decidalo"),
         ],
     )
-    def test_career_level(self, career_level: str, service_category: str, vacation_days: int) -> None:
+    def test_career_level(self, career_level: str, service_category: str | None, vacation_days: int | None) -> None:
         record, problems = _map_person(personio_person(career_level=f" {career_level} "))
         assert record.career_level == career_level
         assert record.service_category == service_category

@@ -437,14 +437,24 @@ class TestNewEmployee:
             date(2026, 9, 1),
         )
 
+    def test_create_without_vacation_days(self) -> None:
+        # e.g. the management: their career level has no vacation days
+        new = new_employee(_create(ERIKA.model_copy(update={"vacation_days": None})), WECLAPP_SETUP)
+        assert new.user is not None
+        assert [attribute["attributeDefinitionId"] for attribute in new.user.to_payload()["customAttributes"]] == [
+            "7621",
+            "8211",
+            "8217",
+            "9902",
+            "14175",
+        ]
+
     def test_complete(self) -> None:
         new = new_employee(_complete("2001", ERIKA.model_copy(update={"weekly_hours": 30.0})), WECLAPP_SETUP)
         assert (new.user, new.user_id) == (None, "2001")
         assert new.work_schedule_profile.work_schedule_profile_id == "7633"
 
-    @pytest.mark.parametrize(
-        "field", ["weekly_hours", "entry_date", "email", "mobile_phone", "office", "career_level", "vacation_days"]
-    )
+    @pytest.mark.parametrize("field", ["weekly_hours", "entry_date", "email", "mobile_phone", "office", "career_level"])
     def test_missing_field_is_a_programming_error(self, field: str) -> None:
         with pytest.raises(ValueError, match=field):
             new_employee(_create(ERIKA.model_copy(update={field: None})), WECLAPP_SETUP)

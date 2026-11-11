@@ -30,6 +30,11 @@ and the phone number must be convertible to the international form. An employee 
 not created in any system; instead, HR-Sync logs a notice with the name of the field, e.g.
 `reason=missing_field detail=career_level`.
 
+The career level also defines the service category in Decidalo, the vacation days in weclapp and whether the employee
+belongs into Decidalo at all; if not, HR-Sync neither creates nor compares them there. A career level may leave the
+service category or the vacation days open: then new users get none, and an open service category isn't compared. The
+vacation days are a flat value for new employees and are never compared, because they may be changed afterwards.
+
 Records that are known to have no employee number, e.g. technical users, would yield the same notice in every run. To
 silence them, list their ids, separated by commas, in `PERSONIO_IGNORED_PERSON_IDS`, `WECLAPP_IGNORED_USER_IDS` or
 `DECIDALO_IGNORED_USER_IDS`. Only their notices are dropped, counted as `ignored_notices` in the event `sync.load`:

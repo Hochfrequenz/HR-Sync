@@ -5,17 +5,35 @@ from hr_sync.mappings import CAREER_LEVELS, OFFICES, WORK_SCHEDULE_PROFILES, wor
 
 class TestMappings:
     """
-    Tests of the fixed mappings of phase 2. The target adapters map the values of their systems back onto the common
-    model, so every mapping must be unique in both directions.
+    Tests of the fixed mappings of phase 2. The target adapters map offices and weekly hours back onto the common
+    model, so these mappings must be unique in both directions. Career level and service category are read as they
+    are, so several career levels may share a service category.
     """
 
     def test_career_levels(self) -> None:
-        assert {level: (value.service_category, value.vacation_days) for level, value in CAREER_LEVELS.items()} == {
-            "Consultant": ("Consultant", 25),
-            "Senior Consultant": ("Senior Consultant", 26),
-            "Principal Consultant": ("Manging Consultant", 30),
-            "Senior Principal Consultant": ("Associate Partner", 30),
+        assert {
+            level: (value.service_category, value.vacation_days, value.in_decidalo)
+            for level, value in CAREER_LEVELS.items()
+        } == {
+            "Consultant": ("Consultant", 25, True),
+            "Senior Consultant": ("Senior Consultant", 26, True),
+            "Principal Consultant": ("Manging Consultant", 30, True),
+            "Senior Principal Consultant": ("Associate Partner", 30, True),
+            "Geschäftsführer": ("Associate Partner", None, True),
+            "Finance Director": ("Associate Partner", None, True),
+            "GF-Assistenz": (None, 30, True),
+            "HR Consultant": ("Senior Consultant", 25, True),
+            "Marketing": (None, 30, False),
+            "Systemadministrator": (None, 26, False),
         }
+
+    def test_service_categories_exist_in_decidalo(self) -> None:
+        # for an unknown name, the import of Decidalo creates a new service category
+        categories = {level.service_category for level in CAREER_LEVELS.values()} - {None}
+        assert categories <= {"Consultant", "Senior Consultant", "Manging Consultant", "Associate Partner"}
+
+    def test_career_levels_outside_decidalo_have_no_service_category(self) -> None:
+        assert [name for name, level in CAREER_LEVELS.items() if not level.in_decidalo and level.service_category] == []
 
     def test_offices(self) -> None:
         assert {
@@ -31,10 +49,6 @@ class TestMappings:
     def test_offices_can_be_mapped_back(self, attribute: str) -> None:
         values = [getattr(office, attribute) for office in OFFICES.values()]
         assert len(set(values)) == len(values)
-
-    def test_service_categories_can_be_mapped_back(self) -> None:
-        categories = [level.service_category for level in CAREER_LEVELS.values()]
-        assert len(set(categories)) == len(categories)
 
     def test_work_schedule_profiles_can_be_mapped_back(self) -> None:
         assert len(set(WORK_SCHEDULE_PROFILES.values())) == len(WORK_SCHEDULE_PROFILES)

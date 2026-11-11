@@ -307,7 +307,9 @@ def new_employee(operation: Operation, setup: WeclappSetup) -> NewEmployee:
     record with the work schedule profile of the weekly hours from the entry date on. The standard field ``title``
     stays empty, and the ``username`` is assigned by weclapp.
 
-    The record comes from Personio, where all of these fields are mandatory and part of the mappings.
+    The record comes from Personio, where all of these fields are mandatory and part of the mappings. Only the vacation
+    days may be missing, if the career level has none (see :class:`hr_sync.mappings.CareerLevel`): then the user gets
+    no vacation entitlement.
 
     Raises:
         ValueError: if the record lacks a field, which is a programming error.
@@ -323,6 +325,10 @@ def new_employee(operation: Operation, setup: WeclappSetup) -> NewEmployee:
             user=None, user_id=_required(operation.target_id, "target_id"), work_schedule_profile=profile
         )
     ids = setup.attribute_ids
+    vacation_days = (
+        # e.g. the management: their career level has no vacation days
+        [CustomAttribute.of_number(ids.vacation_days, record.vacation_days)] if record.vacation_days is not None else []
+    )
     user = UserCreate(
         email=_required(record.email, "email"),
         status=setup.new_user_status,
@@ -335,7 +341,7 @@ def new_employee(operation: Operation, setup: WeclappSetup) -> NewEmployee:
             CustomAttribute.of_string(setup.employee_number_attribute_id, record.employee_number),
             CustomAttribute.of_number(ids.cost_rate, setup.cost_rate),
             CustomAttribute.of_string(ids.cost_rate_reason, setup.cost_rate_reason),
-            CustomAttribute.of_number(ids.vacation_days, _required(record.vacation_days, "vacation_days")),
+            *vacation_days,
             CustomAttribute.of_selection(ids.state, setup.state_value_ids[_required(record.office, "office")]),
             CustomAttribute.of_string(ids.career_level, _required(record.career_level, "career_level")),
         ],

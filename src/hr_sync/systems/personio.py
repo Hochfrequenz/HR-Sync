@@ -216,8 +216,8 @@ def map_person(
     Every field is mandatory. First and last name must fit into weclapp (see
     :data:`hr_sync.mappings.WECLAPP_NAME_MAX_LENGTH`), also if weclapp is no target, so that an employee is created
     everywhere or nowhere. Career level, office and weekly hours must be part of the mappings (see
-    :mod:`hr_sync.mappings`); the service category and the vacation days are derived from the career level. The phone
-    number stays as in Personio, but it must be convertible to the international form (see
+    :mod:`hr_sync.mappings`); the service category and the vacation days are derived from the career level, which may
+    leave them open. The phone number stays as in Personio, but it must be convertible to the international form (see
     :func:`hr_sync.model.phone_number_key`). The problems are named by the fields of the record, in their order.
     """
     career_level = attribute_value(person, attributes.career_level)

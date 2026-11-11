@@ -186,7 +186,7 @@ class TestBuildReport:
             sync_plan=_plan(
                 EmployeePlan(
                     employee_number="00044",
-                    deviations=(Deviation(system=TargetSystem.WECLAPP, fields=("vacation_days",)),),
+                    deviations=(Deviation(system=TargetSystem.WECLAPP, fields=("office",)),),
                 ),
                 EmployeePlan(
                     employee_number="00006",

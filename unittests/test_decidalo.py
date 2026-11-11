@@ -250,6 +250,11 @@ class TestUserInput:
         record = _record().model_copy(update={"office": office})
         assert user_input(record, DEFAULTS).holidayListCode == holiday_list_code
 
+    def test_without_service_category(self) -> None:
+        # e.g. the assistants: the client doesn't send the field, so Decidalo assigns none
+        row = user_input(_record().model_copy(update={"service_category": None}), DEFAULTS)
+        assert row.serviceCategoryName is None
+
     def test_without_defaults(self) -> None:
         # Decidalo decides on the fields without a value
         row = user_input(_record(), NewUserDefaults())
