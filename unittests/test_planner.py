@@ -209,7 +209,6 @@ class TestBuildPlan:
                 "career_level": "Consultant",
                 "office": "Berlin",
                 "weekly_hours": 30,
-                "vacation_days": 25,
                 # weclapp has no service category; the phone number is the same in international form
                 "service_category": None,
                 "mobile_phone": "+49 151 27409444",
@@ -219,8 +218,48 @@ class TestBuildPlan:
             _snapshot(System.PERSONIO, desired), {TargetSystem.WECLAPP: _snapshot(System.WECLAPP, in_weclapp)}
         )
         assert plan.employees[0].deviations == (
-            Deviation(system=TargetSystem.WECLAPP, fields=("career_level", "office", "weekly_hours", "vacation_days")),
+            Deviation(system=TargetSystem.WECLAPP, fields=("career_level", "office", "weekly_hours")),
         )
+
+    @pytest.mark.parametrize("vacation_days", [28, None])
+    def test_vacation_days_are_not_compared(self, vacation_days: int | None) -> None:
+        # they are a flat value for new employees, which may be changed by hand afterwards
+        desired = ERIKA.model_copy(update=PHASE_2)
+        in_weclapp = desired.model_copy(update={"vacation_days": vacation_days})
+        plan = build_plan(
+            _snapshot(System.PERSONIO, desired), {TargetSystem.WECLAPP: _snapshot(System.WECLAPP, in_weclapp)}
+        )
+        assert plan.employees == ()
+
+    def test_service_category_without_value_is_not_compared(self) -> None:
+        # a career level without service category leaves it to whoever maintains Decidalo
+        assistant = {"career_level": "GF-Assistenz", "service_category": None, "vacation_days": 30}
+        desired = ERIKA.model_copy(update=PHASE_2 | assistant)
+        in_decidalo = ERIKA_IN_DECIDALO.model_copy(
+            update=PHASE_2 | assistant | {"service_category": "Consultant", "vacation_days": None}
+        )
+        plan = build_plan(
+            _snapshot(System.PERSONIO, desired), {TargetSystem.DECIDALO: _snapshot(System.DECIDALO, in_decidalo)}
+        )
+        assert plan.employees == ()
+
+    def test_career_level_outside_decidalo_is_only_created_in_weclapp(self) -> None:
+        desired = ERIKA.model_copy(update=PHASE_2 | {"career_level": "Marketing", "service_category": None})
+        plan = build_plan(_snapshot(System.PERSONIO, desired), _targets())
+        assert plan.employees == (
+            EmployeePlan(
+                employee_number="00965",
+                operations=(Operation(system=TargetSystem.WECLAPP, type=OperationType.CREATE, record=desired),),
+            ),
+        )
+
+    def test_career_level_outside_decidalo_is_not_compared_there(self) -> None:
+        desired = ERIKA.model_copy(update=PHASE_2 | {"career_level": "Marketing", "service_category": None})
+        # a deviating and deactivated user in Decidalo, e.g. created by hand, is no problem
+        in_decidalo = ERIKA_IN_DECIDALO.model_copy(update={"career_level": "Consultant"})
+        decidalo = _snapshot(System.DECIDALO, in_decidalo).model_copy(update={"deactivated": frozenset({"00965"})})
+        plan = build_plan(_snapshot(System.PERSONIO, desired), _targets(_snapshot(System.WECLAPP, desired), decidalo))
+        assert plan == SyncPlan(only_in_target={TargetSystem.WECLAPP: 0, TargetSystem.DECIDALO: 0})
 
     def test_only_the_given_targets_are_planned(self) -> None:
         plan = build_plan(_snapshot(System.PERSONIO, ERIKA), {TargetSystem.DECIDALO: _snapshot(System.DECIDALO)})

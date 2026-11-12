@@ -4,6 +4,7 @@ Compares the snapshots and creates the plan. Contains no IO.
 
 from collections.abc import Collection, Mapping
 
+from hr_sync.mappings import in_decidalo
 from hr_sync.model import EmployeeRecord, Notice, NoticeReason, Snapshot, TargetSystem, email_key, phone_number_key
 from hr_sync.plan import Deviation, EmployeePlan, Operation, OperationType, SyncPlan
 
@@ -17,7 +18,6 @@ COMPARED_FIELDS: Mapping[TargetSystem, tuple[str, ...]] = {
         "mobile_phone",
         "office",
         "weekly_hours",
-        "vacation_days",
     ),
     TargetSystem.DECIDALO: (
         "display_name",
@@ -32,8 +32,12 @@ COMPARED_FIELDS: Mapping[TargetSystem, tuple[str, ...]] = {
 }
 """
 the fields that are compared per target system; Decidalo has no first and last name, only a display name, and no
-vacation days; weclapp has no service category
+vacation days; weclapp has no service category. The vacation days are never compared: they are a flat value for new
+employees, which may be changed by hand afterwards (see :class:`hr_sync.mappings.CareerLevel`).
 """
+
+_OPEN_WITHOUT_VALUE = frozenset({"service_category"})
+"""the fields that a career level may leave open: without a desired value, HR-Sync neither sets nor compares them"""
 
 _SET_BY_COMPLETE = frozenset({"entry_date", "weekly_hours"})
 """
@@ -53,8 +57,10 @@ def build_plan(
     Creates the plan for the employees from the source (Personio) and the given target systems.
 
     Employees missing in a target system are created. Existing employees are only compared; their deviations are part
-    of the plan, but not changed. With ``only``, the plan is restricted to these employee numbers, and the employee
-    numbers that can't be part of it get a notice (see :func:`check_only`).
+    of the plan, but not changed. Employees whose career level doesn't belong into Decidalo (see
+    :func:`hr_sync.mappings.in_decidalo`) are neither created nor compared there. With ``only``, the plan is
+    restricted to these employee numbers, and the employee numbers that can't be part of it get a notice (see
+    :func:`check_only`).
 
     With ``max_employees``, planning stops as soon as the plan contains that many employees with operations, e.g. to
     keep a test run small. The employees after them are not looked at: they get no operations, deviations or notices
@@ -87,6 +93,9 @@ def build_plan(
         has_problem = False
         for system in TargetSystem:
             if system not in targets:
+                continue
+            if system == TargetSystem.DECIDALO and not in_decidalo(desired.career_level):
+                # e.g. marketing: not created and not compared there, so a user created by hand is no problem
                 continue
             target = targets[system]
             if employee_number in target.excluded:
@@ -199,7 +208,12 @@ def _email_conflicts(employee_number: str, desired: EmployeeRecord, target: Snap
 
 
 def _differing_fields(desired: EmployeeRecord, existing: EmployeeRecord, fields: tuple[str, ...]) -> tuple[str, ...]:
-    return tuple(field for field in fields if not _same(field, getattr(desired, field), getattr(existing, field)))
+    return tuple(
+        field
+        for field in fields
+        if not (field in _OPEN_WITHOUT_VALUE and getattr(desired, field) is None)
+        and not _same(field, getattr(desired, field), getattr(existing, field))
+    )
 
 
 def _same(field: str, desired: object, existing: object) -> bool:

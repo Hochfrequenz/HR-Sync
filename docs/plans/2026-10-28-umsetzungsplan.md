@@ -606,8 +606,8 @@ damit die Vergleichsregeln an einer Stelle liegen.
 
 | System | verglichene Felder |
 |---|---|
-| weclapp | `first_name`, `last_name`, `email`, `entry_date`; seit AP 5 auch `career_level`, `mobile_phone`, `office`, `weekly_hours` und `vacation_days` (4.4) |
-| Decidalo | `display_name`, `email`, `entry_date`; ab AP 8a auch `mobile_phone`, `career_level`, `office`, `service_category` und `weekly_hours` (4.4) |
+| weclapp | `first_name`, `last_name`, `email`, `entry_date`; seit AP 5 auch `career_level`, `mobile_phone`, `office` und `weekly_hours` (4.4). `vacation_days` nicht mehr seit O26 (2026-11-11): Der Urlaubsanspruch ist ein Pauschalwert für die Anlage und darf danach per Hand geändert werden |
+| Decidalo | `display_name`, `email`, `entry_date`; ab AP 8a auch `mobile_phone`, `career_level`, `office`, `service_category` und `weekly_hours` (4.4). `service_category` nur, wenn die Karrierestufe eine vorgibt; Mitarbeiter mit einer Karrierestufe ohne Decidalo werden dort weder angelegt noch verglichen (O26) |
 
 Vor dem Vergleich werden Leerzeichen am Anfang und Ende entfernt. E-Mails werden ohne Rücksicht auf Groß- und
 Kleinschreibung verglichen. Telefonnummern vergleicht der Planner in einer kanonischen Form: international mit `+` und
@@ -663,11 +663,11 @@ AP 8a (Personio, Decidalo), AP 2a (weclapp-client) und AP 5 (weclapp), siehe Abs
 | E-Mail | `email` | `email` | `email` | `email`; den `username` vergibt weclapp selbst (3.2) |
 | MA-Nummer | Custom Attribute `company_employee_id` | `employee_number` | `employeeID` | Zusatzfeld 7621 (`stringValue`) |
 | Eintrittsdatum | `employment_start_date` des relevanten Employments | `entry_date` | `entryDate` | `startDate` des Arbeitszeitprofils an der Personalakte (Zeitstempel in ms), kein `entryDate`; beim Vergleich das früheste Profil (3.2) |
-| Karrierestufe | Custom Attribute `dynamic_625934eadbe629.22673150` | `career_level`, abgeleitet `service_category` | `jobTitle` unverändert, `serviceCategoryName` aus dem Mapping | Zusatzfeld 14175 (`stringValue`); das Standardfeld `title` bleibt leer |
+| Karrierestufe | Custom Attribute `dynamic_625934eadbe629.22673150` | `career_level`, abgeleitet `service_category` | `jobTitle` unverändert, `serviceCategoryName` aus dem Mapping (ohne Wert im Mapping keine) | Zusatzfeld 14175 (`stringValue`); das Standardfeld `title` bleibt leer |
 | Telefonnummer | Custom Attribute `dynamic_6239d4b55575b2.63567609`, z. B. `0151 27 409 444` | `mobile_phone` | `mobilePhoneNumber` wie in Personio | `mobilePhoneNumber` international (`+49 …`) |
 | Standort | `office.id` des relevanten Employments | `office` (Name) | `holidayListCode` (Feiertage); `location` bleibt fest `DE` | Zusatzfeld 9902 (`selectedValueId`, Bundesland für Feiertage) |
 | Wochenstunden | `weekly_working_hours` des relevanten Employments | `weekly_hours` | `standardWeeklyHours` (O22, über die Vorgabe hinaus) | Arbeitszeitprofil der Personalakte; beim Vergleich das heute gültige (3.2) |
-| Urlaubsanspruch | – (aus der Karrierestufe) | abgeleitet `vacation_days` | – | Zusatzfeld 9795 (`numberValue`, Tage pro Jahr) |
+| Urlaubsanspruch | – (aus der Karrierestufe) | abgeleitet `vacation_days` | – | Zusatzfeld 9795 (`numberValue`, Tage pro Jahr), nur bei der Anlage und ohne Vergleich; ohne Wert im Mapping bleibt es leer |
 
 **Mappings** (fest im Code in `mappings.py`, siehe 1.1). Erlaubt sind nur die Karrierestufen und Standorte dieser
 Tabellen und nur die genannten Wochenstunden:
@@ -678,6 +678,24 @@ Tabellen und nur die genannten Wochenstunden:
 | Senior Consultant | Senior Consultant | 26 |
 | Principal Consultant | Manging Consultant (so in Decidalo geschrieben) | 30 |
 | Senior Principal Consultant | Associate Partner | 30 |
+| Geschäftsführer | Associate Partner | – |
+| Finance Director | Associate Partner | – |
+| GF-Assistenz | – | 30 |
+| HR Consultant | Senior Consultant | 25 |
+| Marketing | nicht nach Decidalo | 30 |
+| Systemadministrator | nicht nach Decidalo | 26 |
+
+Die letzten sechs Zeilen kamen mit O26 dazu (2026-11-11). Die Karrierestufe gibt die Werte für die Anlage vor:
+
+- **„–“:** HR-Sync setzt den Wert nicht und vergleicht ihn auch nicht. Pflegt ihn später jemand per Hand, gibt das
+  keine Abweichung.
+- **„nicht nach Decidalo“:** HR-Sync legt Mitarbeiter mit dieser Karrierestufe in Decidalo nicht an und vergleicht sie
+  dort nicht, auch nicht einen User, den jemand per Hand angelegt hat. In weclapp gilt alles wie bei den anderen.
+- **Urlaubsanspruch:** Er ist ein Pauschalwert für neue Mitarbeiter und wird nie verglichen, weil er sich danach
+  ändern darf.
+- **Service-Kategorie:** Sie muss in Decidalo existieren. Einen unbekannten Namen legt der Import als neue Kategorie
+  an. Die Liste `ResourceRequest/ServiceCategories` der API taugt nicht zur Prüfung, sie gehört zu den
+  Ressourcenanfragen.
 
 | `office.id` (Personio) | Standort | Decidalo `holidayListCode` | weclapp 9902 `selectedValueId` |
 |---|---|---|---|
@@ -727,14 +745,17 @@ später per Hand in weclapp (O20). Bis 2026-10-30 stand hier vorläufig `59`. Ob
 Umgesetzt in [`mappings.py`](../../src/hr_sync/mappings.py) (AP 8a): `CAREER_LEVELS` (Service-Kategorie und
 Urlaubsanspruch je Karrierestufe), `OFFICES` (Name, `holidayListCode` und weclapp-Auswahlwert je `office.id`) und
 `WORK_SCHEDULE_PROFILES` (Profil je Wochenstunden). `work_schedule_profile(weekly_hours)` liefert das Profil oder
-`None`, z. B. für 37,5 Stunden. Ein Test prüft, dass sich jedes Mapping eindeutig zurückübersetzen lässt.
+`None`, z. B. für 37,5 Stunden. Ein Test prüft, dass sich die Mappings der Standorte und Wochenstunden eindeutig
+zurückübersetzen lassen. Eine Service-Kategorie dürfen sich mehrere Karrierestufen teilen, weil der Planner sie als
+eigenes Feld vergleicht (seit O26).
 - **Abweichungen:** Die neuen Felder werden bei bestehenden Personen verglichen und nur geloggt (4.2). Dafür mappt
   jeder Zieladapter seine Werte auf das gemeinsame Modell:
   - Eindeutig umkehrbare Mappings übersetzt er zurück, z. B. `DE-BY` → Grünwald oder Profil 7177 → 40 Wochenstunden.
   - Abgeleitete Werte, die sich nicht eindeutig zurückübersetzen lassen, sind eigene Felder im Modell:
     `service_category` und `vacation_days`. Personio füllt sie als Sollwert aus dem Mapping der Karrierestufe, die
-    Zieladapter mit dem Istwert. Der Planner vergleicht sie wie jedes andere Feld. So fällt z. B. ein richtiger
-    Jobtitel mit falscher Service-Kategorie auf.
+    Zieladapter mit dem Istwert. Der Planner vergleicht `service_category` wie jedes andere Feld, außer die
+    Karrierestufe gibt keine vor. So fällt z. B. ein richtiger Jobtitel mit falscher Service-Kategorie auf.
+    `vacation_days` vergleicht er seit O26 nicht mehr.
   - Wird ein heute eindeutiges Mapping später mehrdeutig, etwa zwei Standorte in Bayern, bekommt der abgeleitete Wert
     ebenfalls ein eigenes Feld.
 - **Test-Modus:** Die Telefonnummer wird durch die feste Ersatznummer `+49 000 <MA-Nummer>` ersetzt, alle anderen
@@ -1381,7 +1402,7 @@ Fake-Client, `aioresponses` ist nicht nötig.
 | Ende-zu-Ende | ganzer Lauf gegen die Fakes; **ein zweiter Lauf erzeugt keine Schreibzugriffe**; Dry-Run schreibt nichts. Umgesetzt in `test_sync.py` (über `run`) und `test_cli.py` (über `main`, mit der JSON-Ausgabe auf stdout). Ein Fixture in `conftest.py` entfernt die Variablen von HR-Sync aus der Umgebung und wechselt in ein leeres Verzeichnis, damit kein Test echte Zugangsdaten findet |
 | Events | Loguru-Sink in eine Liste; Felder und Level prüfen; keine personenbezogenen Werte |
 | Test-Modus | jedes Feld hat eine Anonymisierungsregel; der Payload an Decidalo enthält keine echten Namen oder E-Mails; `hasLogin=false`; Abbruch bei weclapp als Ziel, bei fehlenden `DECIDALO_TEST_*` oder bei der produktiven Decidalo-URL; der Produktionsmodus nutzt die produktive URL, auch wenn `DECIDALO_TEST_*` gesetzt sind |
-| Felder der Phase 2 | jede erlaubte Karrierestufe und jeder Standort haben alle Zielwerte; fehlende Pflichtfelder und Werte außerhalb der Mappings erzeugen ein Datenproblem; eine deswegen ausgeschlossene Person zählt für doppelte E-Mails und MA-Nummern mit; Umwandlung der Telefonnummer (`0…`, `00…`, `+…`) und Vergleich in kanonischer Form; Ersatznummer im Test-Modus; Vergleich von `service_category` und `vacation_days` gegen den Sollwert aus der Karrierestufe; Wochenstunden aus dem heute gültigen und Eintrittsdatum aus dem frühesten Arbeitszeitprofil; bei `COMPLETE` kein Vergleich von `entry_date` und `weekly_hours`; Payload an weclapp nach der Vorgabe, u. a. `title` leer |
+| Felder der Phase 2 | jede erlaubte Karrierestufe und jeder Standort haben alle Zielwerte; fehlende Pflichtfelder und Werte außerhalb der Mappings erzeugen ein Datenproblem; eine deswegen ausgeschlossene Person zählt für doppelte E-Mails und MA-Nummern mit; Umwandlung der Telefonnummer (`0…`, `00…`, `+…`) und Vergleich in kanonischer Form; Ersatznummer im Test-Modus; Vergleich von `service_category` gegen den Sollwert aus der Karrierestufe, ohne Sollwert kein Vergleich; kein Vergleich von `vacation_days`; weclapp-User ohne Urlaubsanspruch, wenn die Karrierestufe keinen vorgibt; Karrierestufen ohne Decidalo werden dort weder angelegt noch verglichen; Wochenstunden aus dem heute gültigen und Eintrittsdatum aus dem frühesten Arbeitszeitprofil; bei `COMPLETE` kein Vergleich von `entry_date` und `weekly_hours`; Payload an weclapp nach der Vorgabe, u. a. `title` leer |
 | Integration | gegen die Decidalo-Testumgebung, siehe [8.3](#83-integrationstest-gegen-die-decidalo-testumgebung) |
 
 ## 12. Arbeitspakete
@@ -1464,7 +1485,7 @@ haben wir verzichtet. Einzelheiten liegen lokal beim Auftraggeber (1.1).
 | O23 | Heißt das Feld für die Arbeitszeitprofile an der weclapp-Personalakte `workScheduleProfileAssignments` (Vorgabe) oder `workingTimeRuleAssignments` (Testdaten des weclapp-client)? **Weitgehend geklärt:** Laut der API-Analyse des Clients gibt es beide als getrennte Felder, für die Arbeitszeitprofile ist es `workScheduleProfileAssignments`. Offen ist nur die lesende Bestätigung gegen die API | AP 2a | Abschnitt 3.2 |
 | O24 | ~~In der Decidalo-Testumgebung heißen die Service-Kategorien intern anders als angezeigt (z. B. „DE Services 1“ für „Senior Consultant“). Klappt der Import über `serviceCategoryName` dort? Wenn nicht, braucht der Test-Modus eine Lösung~~ **Erledigt in AP 8a:** Ja. Der Import nimmt auch übersetzte Namen an, gelesen werden die angezeigten Namen, es entstehen keine falschen Abweichungen (3.3) | – | Abschnitt 3.3 |
 | O25 | ~~Wer hat Zugriff auf die Decidalo-Testumgebung? Die Testdaten sind pseudonymisiert, nicht anonym (Abschnitt 8): Über die echte MA-Nummer lassen sie sich einem Mitarbeiter zuordnen. Der Zugriff muss deshalb auf Berechtigte beschränkt sein, wie in der Produktion. Bestätigen vor weiteren schreibenden Läufen in die Testumgebung~~ **Erledigt (2026-10-30):** Zugriff hat nur, wer auch die Produktion sieht. Die pseudonymisierten Testdaten dürfen weiter dorthin (1.1) | – | Abschnitt 8 |
-| O26 | Karrierestufen außerhalb des Mappings: In Personio gibt es Karrierestufen, die das Mapping nicht kennt (welche, steht in der lokalen Auswertung, 12.1). Bis das Mapping sie kennt, erzeugen sie bei jedem Lauf eine Warnung `unmapped_value`, und mit diesen Mitarbeitern passiert nichts. Vorläufige Richtung: einzelne Rollen bewusst ausnehmen (ohne Warnung, Anlage per Hand), die übrigen ins Mapping, nach Decidalo wie alle. Offen: je Rolle Decidalo-Service-Kategorie (muss in der Produktion existieren) und Urlaubsanspruch. Bis dahin bleibt das Mapping bei den vier Beraterstufen | später | Abschnitt 4.4 |
+| O26 | ~~Karrierestufen außerhalb des Mappings: In Personio gibt es Karrierestufen, die das Mapping nicht kennt. Bis das Mapping sie kennt, erzeugen sie bei jedem Lauf eine Warnung `unmapped_value`, und mit diesen Mitarbeitern passiert nichts. Vorläufige Richtung: einzelne Rollen bewusst ausnehmen (ohne Warnung, Anlage per Hand), die übrigen ins Mapping, nach Decidalo wie alle~~ **Erledigt (2026-11-11):** Die sechs Karrierestufen außerhalb des Mappings sind jetzt im Mapping (4.4). Die Werte hat der Auftraggeber festgelegt, nach einer lokalen Auswertung der bisherigen Pflege in weclapp und Decidalo (1.1). Abweichungen von der vorläufigen Richtung: Keine Rolle wird ausgenommen. Marketing und Systemadministrator gehen nur nach weclapp. Eine Karrierestufe darf Service-Kategorie oder Urlaubsanspruch offen lassen. Der Urlaubsanspruch ist ein Pauschalwert für die Anlage und wird nicht mehr verglichen (4.2). Unbekannte Karrierestufen erzeugen weiter eine Warnung, bis das Mapping sie kennt | – | Abschnitt 4.2, 4.4 |
 | O27 | Darf der Kostensatz (8211) beim Anlegen eines weclapp-Users leer bleiben? Bis das geklärt ist, setzt HR-Sync 1 EUR/h als Platzhalter (O20). Darf das Feld leer bleiben, schickt HR-Sync es nicht mehr mit. Zu klären mit dem weclapp-Admin, z. B. ob Zeitbuchungen oder die automatische Zuweisung zu den INT-Projekten einen Kostensatz brauchen | vor dem Go-live | Abschnitt 4.4, O20 |
 | O29 | Wann setzt Personio am Starttag den Status des Employments von `ONBOARDING` auf `ACTIVE`? HR-Sync läuft um 0:00 Uhr (7.1). Wechselt der Status erst im Laufe des Tages, wird der Mitarbeiter erst in der Nacht danach angelegt. Zu prüfen beim nächsten neuen Mitarbeiter oder in der Doku von Personio. Falls nötig: den Lauf später ansetzen oder ein Employment mit Status `ONBOARDING` und Startdatum heute als relevant zählen | vor dem Go-live | Abschnitt 7.1, O9 |
 | O28 | ~~Soll HR-Sync neue weclapp-User selbst einladen? Beim Anlegen per API verschickt weclapp keine Einladungsmail (O2), bisher stößt sie jemand per Hand in der Weboberfläche an. Die API v2 hat dafür `POST /user/id/{id}/invite` (leerer Body, ohne `dryRun`, ein Aufruf schickt also echt eine Mail). Voraussetzung: Der `weclapp-client` kann die Aktion (Hochfrequenz/weclapp_client.py#35, Pre-Release `v0.1.0a4`). Vorläufige Richtung: Einladung als letzter Schritt von `CREATE`, nach User und Personalakte. Zu entscheiden: wie HR-Sync eine fehlgeschlagene Einladung meldet (User angelegt, Einladung fehlt) und ob es sie später erneut versucht. Ob ein zweiter Aufruf eine zweite Mail schickt, klärt das Client-Issue. Bis dahin wird weiter per Hand eingeladen~~ **Erledigt (2026-11-03):** Der Client kann es seit `0.1.0` (statt des geplanten Pre-Release `0.1.0a4`). HR-Sync lädt nach der Personalakte ein, nur bei `CREATE`; eine gescheiterte Einladung meldet es mit `detail=invitation_not_sent` und wiederholt sie nicht (1.1, 3.2). Offen: Die erste echte Einladung prüfen wir beim nächsten echten Lauf. Kommt die Mail an, und lädt niemand zusätzlich per Hand ein? Bis dahin ist ungeprüft, ob weclapp für die Einladung etwas am User voraussetzt | nächster echter Lauf | [weclapp_client.py#35](https://github.com/Hochfrequenz/weclapp_client.py/issues/35), O2, O5 |
@@ -1480,7 +1501,7 @@ Keiner der offenen Punkte blockiert AP 2–7:
 - O29 (Zeitpunkt des Statuswechsels in Personio) klären wir vor dem Go-live.
 - O16 und O18 liegen in anderen Repos. O19, O20 und O21 kommen nach Bedarf.
 - O22, O24 und O25 sind in AP 8a geklärt. O23 klären wir in AP 2a.
-- O26 (weitere Karrierestufen) kommt später. Bis dahin bleibt das Mapping bei den vier Beraterstufen.
+- O26 (weitere Karrierestufen) ist umgesetzt (4.4).
 - O27 (leerer Kostensatz) klären wir mit dem weclapp-Admin. Bis dahin setzt HR-Sync 1 EUR/h.
 - O28 (Einladung in weclapp per API) ist umgesetzt. Die erste echte Einladung prüfen wir beim nächsten echten Lauf.
 - O30 (Personio-Webhooks) kommt nach dem Go-live.

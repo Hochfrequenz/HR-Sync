@@ -16,10 +16,20 @@ from decimal import Decimal
 class CareerLevel:
     """The values derived from a career level of Personio."""
 
-    service_category: str
-    """the ``serviceCategoryName`` in Decidalo"""
-    vacation_days: int
-    """the vacation entitlement in days per year, in weclapp"""
+    service_category: str | None
+    """
+    the ``serviceCategoryName`` in Decidalo, which must exist there: for an unknown name, the import creates a new
+    one; ``None``: new users get none, and it's not compared
+    """
+    vacation_days: int | None
+    """
+    the vacation entitlement in days per year, in weclapp; a flat value for new users only, which is never compared,
+    because it may be changed by hand afterwards; ``None``: new users get none
+    """
+    in_decidalo: bool = True
+    """
+    whether employees with this career level belong into Decidalo; if not, they are neither created nor compared there
+    """
 
 
 CAREER_LEVELS: Mapping[str, CareerLevel] = {
@@ -28,8 +38,23 @@ CAREER_LEVELS: Mapping[str, CareerLevel] = {
     # spelled like that in Decidalo
     "Principal Consultant": CareerLevel(service_category="Manging Consultant", vacation_days=30),
     "Senior Principal Consultant": CareerLevel(service_category="Associate Partner", vacation_days=30),
+    "Geschäftsführer": CareerLevel(service_category="Associate Partner", vacation_days=None),
+    "Finance Director": CareerLevel(service_category="Associate Partner", vacation_days=None),
+    "GF-Assistenz": CareerLevel(service_category=None, vacation_days=30),
+    "HR Consultant": CareerLevel(service_category="Senior Consultant", vacation_days=25),
+    "Marketing": CareerLevel(service_category=None, vacation_days=30, in_decidalo=False),
+    "Systemadministrator": CareerLevel(service_category=None, vacation_days=26, in_decidalo=False),
 }
 """the allowed career levels, as written in Personio"""
+
+
+def in_decidalo(career_level: str | None) -> bool:
+    """
+    Returns whether employees with the career level belong into Decidalo; an unknown career level is a data problem,
+    which Personio reports, so it doesn't matter here.
+    """
+    level = CAREER_LEVELS.get(career_level or "")
+    return level is None or level.in_decidalo
 
 
 @dataclass(frozen=True)
