@@ -1,10 +1,5 @@
 # HR-Sync
 
-![Unittests status badge](https://github.com/Hochfrequenz/HR-Sync/workflows/Unittests/badge.svg)
-![Coverage status badge](https://github.com/Hochfrequenz/HR-Sync/workflows/Coverage/badge.svg)
-![Linting status badge](https://github.com/Hochfrequenz/HR-Sync/workflows/Linting/badge.svg)
-![Formatting status badge](https://github.com/Hochfrequenz/HR-Sync/workflows/Formatting/badge.svg)
-
 HR-Sync rolls out the master data of new employees from [Personio](https://www.personio.de/) to
 [weclapp](https://www.weclapp.com/) and [decidalo](https://decidalo.de/).
 The employee number is the key that links an employee across the three systems.
@@ -146,9 +141,12 @@ them. For now, that's accepted; where the logs are kept for good will follow a c
 
 To set it up:
 
-1. Check that the image of the release is in the GHCR. If the package is private, make it public in its settings or
-   log in to the GHCR on the server. Set the timezone of the Dockhand environment to `Europe/Berlin`; the template
-   needs Docker Compose 2.24 or later.
+1. Check that the image of the release is in the GHCR. The package stays private like the repository, because the
+   image contains the source code. So the server logs in to `ghcr.io` with a personal access token (classic) that
+   has only the scope `read:packages` and belongs to an account that can read this repository; the GHCR doesn't
+   accept fine-grained tokens. Log in with `docker login ghcr.io` for the `docker compose` commands below, and add
+   the registry in Dockhand for its deployments. Set the timezone of the Dockhand environment to `Europe/Berlin`;
+   the template needs Docker Compose 2.24 or later.
 2. Put `deploy/compose.yaml` and the `.env` (see [`.env.example`](.env.example)) into one directory on the server,
    readable only by the operators. Fill in the ignore lists and the variables of the [report](#report).
 3. Check the setup with a dry run that sends the report, marked as a dry run:
