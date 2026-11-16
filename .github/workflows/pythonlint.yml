@@ -33,6 +33,6 @@ jobs:
         with:
           python-version: "3.14"
       - name: Install Dependencies
-        run: uv sync --group ${{ matrix.linter-env }}
+        run: uv sync --locked --group ${{ matrix.linter-env }}
       - name: Run ${{ matrix.linter-env }}
         run: ${{ matrix.commands }}
